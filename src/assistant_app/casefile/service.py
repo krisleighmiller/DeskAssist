@@ -10,7 +10,12 @@ from assistant_app.casefile.context import (
 )
 from assistant_app.casefile.findings import Finding, SourceRef
 from assistant_app.casefile.models import CasefileSnapshot, Lane, LaneAttachment
-from assistant_app.casefile.scope import ScopeContext, resolve_scope
+from assistant_app.casefile.scope import (
+    ScopeContext,
+    comparison_id_for_lanes,
+    resolve_comparison_scope,
+    resolve_scope,
+)
 from assistant_app.casefile.store import CasefileStore
 
 
@@ -80,6 +85,27 @@ class CasefileService:
     def resolve_scope(self, lane_id: str) -> ScopeContext:
         snapshot = self.store.load_snapshot()
         return resolve_scope(snapshot, lane_id)
+
+    # ----- comparison sessions (M3.5c) -----
+
+    def comparison_id(self, lane_ids: list[str]) -> str:
+        return comparison_id_for_lanes(lane_ids)
+
+    def resolve_comparison_scope(self, lane_ids: list[str]) -> ScopeContext:
+        snapshot = self.store.load_snapshot()
+        return resolve_comparison_scope(snapshot, lane_ids)
+
+    def append_comparison_chat(
+        self, lane_ids: list[str], messages: list[dict[str, Any]]
+    ) -> None:
+        if not messages:
+            return
+        self.store.append_comparison_chat_messages(lane_ids, messages)
+
+    def read_comparison_chat(
+        self, lane_ids: list[str]
+    ) -> tuple[list[dict[str, Any]], int]:
+        return self.store.read_comparison_chat_messages(lane_ids)
 
     # ----- lookups used by the chat bridge -----
 

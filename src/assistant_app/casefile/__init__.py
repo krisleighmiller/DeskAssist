@@ -38,8 +38,11 @@ from assistant_app.casefile.scope import (
     ANCESTOR_PREFIX,
     ATTACHMENT_PREFIX,
     CONTEXT_PREFIX,
+    LANES_PREFIX,
     ReadOverlay,
     ScopeContext,
+    comparison_id_for_lanes,
+    resolve_comparison_scope,
     resolve_scope,
 )
 from assistant_app.casefile.service import CasefileService, serialize_lane
@@ -66,6 +69,7 @@ __all__ = [
     "Finding",
     "FindingFileError",
     "FindingsStore",
+    "LANES_PREFIX",
     "LANE_KINDS",
     "Lane",
     "LaneAttachment",
@@ -80,10 +84,12 @@ __all__ = [
     "Severity",
     "SourceRef",
     "compare_lanes",
+    "comparison_id_for_lanes",
     "export_review",
     "generate_finding_id",
     "normalize_attachment_name",
     "render_review_markdown",
+    "resolve_comparison_scope",
     "resolve_scope",
     "serialize_lane",
 ]

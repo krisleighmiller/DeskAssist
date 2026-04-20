@@ -884,6 +884,50 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
   );
 });
 
+// ----- M3.5c: comparison-chat sessions -----
+
+function normalizeLaneIds(raw) {
+  if (!Array.isArray(raw)) {
+    throw new Error("laneIds must be an array of at least two lane ids");
+  }
+  const ids = raw
+    .filter((x) => typeof x === "string" && x.trim().length > 0)
+    .map((x) => x.trim());
+  if (ids.length < 2 || new Set(ids).size < 2) {
+    throw new Error("laneIds must contain at least two distinct ids");
+  }
+  return ids;
+}
+
+ipcMain.handle("casefile:openComparison", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneIds = normalizeLaneIds(args.laneIds);
+  const response = await runPythonBridge({
+    command: "casefile:openComparison",
+    casefileRoot,
+    laneIds,
+  });
+  return response.comparison;
+});
+
+ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneIds = normalizeLaneIds(payload.laneIds);
+  return runPythonBridge(
+    {
+      command: "casefile:sendComparisonChat",
+      casefileRoot,
+      laneIds,
+      provider: payload.provider || "openai",
+      model: payload.model || null,
+      messages: Array.isArray(payload.messages) ? payload.messages : [],
+      userMessage: payload.userMessage || "",
+      resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
+    },
+    { attachApiKeys: true }
+  );
+});
+
 ipcMain.handle("keys:getStatus", async () => {
   return {
     openaiConfigured: Boolean(apiKeysCache.openai),

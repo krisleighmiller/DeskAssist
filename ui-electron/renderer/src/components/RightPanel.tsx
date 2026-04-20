@@ -2,6 +2,7 @@ import type {
   ApiKeyStatus,
   CasefileSnapshot,
   ChatMessage,
+  ComparisonSession,
   ContextManifestDto,
   ExportResult,
   FindingDraft,
@@ -16,8 +17,9 @@ import { ChatTab } from "./ChatTab";
 import { NotesTab } from "./NotesTab";
 import { FindingsTab } from "./FindingsTab";
 import { LanesTab } from "./LanesTab";
+import { ComparisonChatTab } from "./ComparisonChatTab";
 
-export type RightTabKey = "chat" | "notes" | "findings" | "lanes";
+export type RightTabKey = "chat" | "notes" | "findings" | "lanes" | "compare";
 
 interface RightPanelProps {
   activeTab: RightTabKey;
@@ -62,6 +64,7 @@ interface RightPanelProps {
     onClearComparison: () => void;
     onOpenDiff: (path: string) => void;
     onOpenLaneFile: (laneId: string, path: string) => void;
+    onOpenComparisonChat: (laneIds: string[]) => Promise<void>;
     context: ContextManifestDto | null;
     contextBusy: boolean;
     contextError: string | null;
@@ -72,6 +75,14 @@ interface RightPanelProps {
       attachments: LaneAttachmentInput[]
     ) => Promise<void>;
   };
+  compareChat: {
+    provider: Provider;
+    keyStatus: ApiKeyStatus;
+    session: ComparisonSession | null;
+    busy: boolean;
+    onSend: (text: string) => void;
+    onClose: () => void;
+  };
 }
 
 const TABS: { key: RightTabKey; label: string }[] = [
@@ -79,6 +90,7 @@ const TABS: { key: RightTabKey; label: string }[] = [
   { key: "notes", label: "Notes" },
   { key: "findings", label: "Findings" },
   { key: "lanes", label: "Lanes" },
+  { key: "compare", label: "Compare" },
 ];
 
 export function RightPanel({
@@ -88,6 +100,7 @@ export function RightPanel({
   notes,
   findings,
   lanes,
+  compareChat,
 }: RightPanelProps): JSX.Element {
   return (
     <>
@@ -151,12 +164,23 @@ export function RightPanel({
             onClearComparison={lanes.onClearComparison}
             onOpenDiff={lanes.onOpenDiff}
             onOpenLaneFile={lanes.onOpenLaneFile}
+            onOpenComparisonChat={lanes.onOpenComparisonChat}
             context={lanes.context}
             contextBusy={lanes.contextBusy}
             contextError={lanes.contextError}
             onSaveContext={lanes.onSaveContext}
             onSetLaneParent={lanes.onSetLaneParent}
             onUpdateLaneAttachments={lanes.onUpdateLaneAttachments}
+          />
+        )}
+        {activeTab === "compare" && (
+          <ComparisonChatTab
+            provider={compareChat.provider}
+            keyStatus={compareChat.keyStatus}
+            session={compareChat.session}
+            busy={compareChat.busy}
+            onSend={compareChat.onSend}
+            onClose={compareChat.onClose}
           />
         )}
       </div>

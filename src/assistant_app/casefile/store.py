@@ -334,6 +334,74 @@ class CasefileStore:
         safe = normalize_lane_id(lane_id)
         return self.casefile.chats_dir / f"{safe}.jsonl"
 
+    def comparison_chat_log_path(self, lane_ids: Iterable[str]) -> Path:
+        """Return the on-disk log path for a comparison chat over ``lane_ids``.
+
+        Filename is ``_compare__<sorted-ids>.jsonl`` so the same set of lanes
+        always reuses the same log regardless of selection order.  Each id is
+        re-validated through ``normalize_lane_id`` so a bad caller cannot
+        smuggle path separators into the filename.
+        """
+        ids = sorted({normalize_lane_id(raw) for raw in lane_ids})
+        if len(ids) < 2:
+            raise ValueError("Comparison log requires at least two distinct lane ids")
+        # Leading underscore on the synthetic id keeps it out of the
+        # `[a-z0-9]`-prefixed lane-id namespace, so it can never collide with
+        # a real lane's chat log.
+        return self.casefile.chats_dir / ("_compare__" + "__".join(ids) + ".jsonl")
+
+    def append_comparison_chat_messages(
+        self, lane_ids: Iterable[str], messages: list[dict[str, Any]]
+    ) -> Path:
+        """Append messages to the comparison-session log; same caps as
+        per-lane appends so a runaway response can't bloat the log."""
+        path = self.comparison_chat_log_path(lane_ids)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        serialized: list[str] = []
+        for message in messages:
+            line = json.dumps(message, ensure_ascii=False)
+            line_bytes = len(line.encode("utf-8"))
+            if line_bytes > MAX_CHAT_LINE_BYTES:
+                raise ValueError(
+                    f"Comparison chat message exceeds maximum line size "
+                    f"({line_bytes:,} bytes > {MAX_CHAT_LINE_BYTES:,} bytes)"
+                )
+            serialized.append(line)
+        with path.open("a", encoding="utf-8") as handle:
+            for line in serialized:
+                handle.write(line)
+                handle.write("\n")
+        return path
+
+    def read_comparison_chat_messages(
+        self, lane_ids: Iterable[str]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Read the comparison-session log; mirrors ``read_chat_messages``."""
+        path = self.comparison_chat_log_path(lane_ids)
+        if not path.exists():
+            return [], 0
+        out: list[dict[str, Any]] = []
+        skipped = 0
+        with path.open("r", encoding="utf-8") as handle:
+            for line_no, raw_line in enumerate(handle, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    _logger.warning(
+                        "Skipping corrupt line %d in comparison chat log %s: %s",
+                        line_no,
+                        path,
+                        exc,
+                    )
+                    skipped += 1
+                    continue
+                if isinstance(parsed, dict):
+                    out.append(parsed)
+        return out, skipped
+
     def append_chat_messages(
         self, lane_id: str, messages: list[dict[str, Any]]
     ) -> Path:

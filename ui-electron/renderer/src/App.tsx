@@ -3,6 +3,7 @@ import type {
   ApiKeyStatus,
   CasefileSnapshot,
   ChatMessage,
+  ComparisonSession,
   ContextManifestDto,
   ExportResult,
   FindingDraft,
@@ -210,6 +211,11 @@ export function App(): JSX.Element {
 
   const [comparison, setComparison] = useState<LaneComparisonDto | null>(null);
   const [comparisonBusy, setComparisonBusy] = useState(false);
+
+  // ----- M3.5c: comparison chat session (read-only multi-lane) -----
+  const [comparisonSession, setComparisonSession] =
+    useState<ComparisonSession | null>(null);
+  const [comparisonChatBusy, setComparisonChatBusy] = useState(false);
 
   // ----- M3.5: casefile context manifest + ancestor-files overlays -----
 
@@ -595,6 +601,86 @@ export function App(): JSX.Element {
   );
 
   const handleClearComparison = useCallback(() => setComparison(null), []);
+
+  // ----- Comparison chat (M3.5c) -----
+
+  const handleOpenComparisonChat = useCallback(
+    async (laneIds: string[]) => {
+      if (!casefile || laneIds.length < 2) return;
+      try {
+        const session = await api().openComparison(laneIds);
+        setComparisonSession(session);
+        setRightTab("compare");
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [casefile]
+  );
+
+  const handleCloseComparisonChat = useCallback(() => {
+    setComparisonSession(null);
+  }, []);
+
+  const sendComparisonChat = useCallback(
+    async (text: string) => {
+      const value = text.trim();
+      if (!value || comparisonChatBusy || !comparisonSession || !casefile) return;
+      setComparisonChatBusy(true);
+      const historyBeforeTurn = comparisonSession.messages;
+      // Optimistically render the user's message; the bridge will replace
+      // history with the canonical delta on success.
+      setComparisonSession((prev) =>
+        prev
+          ? { ...prev, messages: [...prev.messages, { role: "user", content: value }] }
+          : prev
+      );
+      try {
+        const response = await api().sendComparisonChat({
+          laneIds: comparisonSession.laneIds,
+          provider,
+          messages: historyBeforeTurn,
+          userMessage: value,
+          resumePendingToolCalls: false,
+        });
+        const delta = Array.isArray(response.messages) ? response.messages : [];
+        setComparisonSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                messages:
+                  delta.length > 0
+                    ? [...historyBeforeTurn, ...delta]
+                    : response.message
+                      ? [
+                          ...historyBeforeTurn,
+                          { role: "user", content: value },
+                          response.message,
+                        ]
+                      : prev.messages,
+              }
+            : prev
+        );
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        setComparisonSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                messages: [
+                  ...historyBeforeTurn,
+                  { role: "user", content: value },
+                  { role: "assistant", content: `Error: ${errMsg}` },
+                ],
+              }
+            : prev
+        );
+      } finally {
+        setComparisonChatBusy(false);
+      }
+    },
+    [casefile, comparisonChatBusy, comparisonSession, provider]
+  );
 
   const handleOpenDiff = useCallback(
     async (path: string) => {
@@ -994,12 +1080,21 @@ export function App(): JSX.Element {
               onClearComparison: handleClearComparison,
               onOpenDiff: handleOpenDiff,
               onOpenLaneFile: handleOpenLaneFile,
+              onOpenComparisonChat: handleOpenComparisonChat,
               context: contextManifest,
               contextBusy,
               contextError,
               onSaveContext: handleSaveContext,
               onSetLaneParent: handleSetLaneParent,
               onUpdateLaneAttachments: handleUpdateLaneAttachments,
+            }}
+            compareChat={{
+              provider,
+              keyStatus,
+              session: comparisonSession,
+              busy: comparisonChatBusy,
+              onSend: sendComparisonChat,
+              onClose: handleCloseComparisonChat,
             }}
           />
         </section>

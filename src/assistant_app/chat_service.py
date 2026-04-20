@@ -22,6 +22,7 @@ class ChatService:
         model_defaults: dict[str, str] | None = None,
         casefile_root: Path | None = None,
         read_overlays: Mapping[str, Path] | None = None,
+        enable_writes: bool = True,
     ) -> None:
         provided = providers or [
             OpenAIProvider(),
@@ -46,6 +47,7 @@ class ChatService:
             resolved_workspace_root,
             casefile_root=resolved_casefile_root,
             read_overlays=read_overlays,
+            enable_writes=enable_writes,
         )
         self._default_models = {
             "openai": "gpt-4o-mini",

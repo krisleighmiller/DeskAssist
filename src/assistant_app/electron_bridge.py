@@ -688,6 +688,152 @@ def handle_casefile_read_overlay_file(request: dict[str, Any]) -> dict[str, Any]
     return {"ok": True, "path": str(target), "content": content, "truncated": truncated}
 
 
+# ---------------------------------------------------------------------------
+# M3.5c: comparison chat handlers
+# ---------------------------------------------------------------------------
+
+
+def _parse_lane_ids(request: dict[str, Any]) -> list[str]:
+    raw = request.get("laneIds")
+    if not isinstance(raw, list) or len(raw) < 2:
+        raise ValueError("laneIds must be an array of at least two lane ids")
+    ids: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("each laneIds entry must be a non-empty string")
+        ids.append(item.strip())
+    if len(set(ids)) < 2:
+        raise ValueError("laneIds must contain at least two distinct ids")
+    return ids
+
+
+def _serialize_comparison_summary(
+    service: CasefileService, lane_ids: list[str]
+) -> dict[str, Any]:
+    """Build the IPC-shaped session metadata for a comparison chat.
+
+    Lane summaries are emitted in the *same sorted order* used to build the
+    synthetic id and the log filename, so the renderer banner stays stable
+    across selection orderings.
+    """
+    snapshot = service.snapshot()
+    sorted_ids = sorted(set(lane_ids))
+    lanes = [snapshot.lane_by_id(lid) for lid in sorted_ids]
+    return {
+        "id": service.comparison_id(sorted_ids),
+        "laneIds": sorted_ids,
+        "lanes": [
+            {"id": lane.id, "name": lane.name, "root": str(lane.root)}
+            for lane in lanes
+        ],
+    }
+
+
+def handle_casefile_open_comparison(request: dict[str, Any]) -> dict[str, Any]:
+    """Open (or re-open) a comparison chat session over ``laneIds``.
+
+    Returns the synthetic session id, the lane summaries (in the canonical
+    sorted order), and any persisted history loaded from the comparison
+    chat log.  Idempotent: re-opening the same set of lanes yields the
+    same id and surfaces the existing history.
+    """
+    root = _require_casefile_root(request)
+    lane_ids = _parse_lane_ids(request)
+    service = CasefileService(root)
+    # Validate the lanes exist and the cascade resolves cleanly.  If a lane
+    # in the set was deleted out-of-band, this raises before we report a
+    # "loaded" session that is already broken.
+    service.resolve_comparison_scope(lane_ids)
+    summary = _serialize_comparison_summary(service, lane_ids)
+    messages, skipped = service.read_comparison_chat(lane_ids)
+    payload: dict[str, Any] = {
+        "ok": True,
+        "comparison": {**summary, "messages": messages},
+    }
+    if skipped:
+        payload["comparison"]["skippedCorruptLines"] = skipped
+    return payload
+
+
+def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, Any]:
+    """Run one chat turn against a comparison session.
+
+    The session is read-only by construction: the registry is built with
+    ``enable_writes=False`` so no save / append / delete tool exists for
+    the model to call.  ``allowWriteTools`` and ``resumePendingToolCalls``
+    are accepted for shape parity with ``chat:send`` but the former is
+    forced to ``False`` here — there are no write tools to approve.
+    """
+    root = _require_casefile_root(request)
+    lane_ids = _parse_lane_ids(request)
+    provider = str(request.get("provider") or "openai")
+    model = request.get("model")
+    user_message = request.get("userMessage")
+    resume_pending = bool(request.get("resumePendingToolCalls", False))
+    if not resume_pending and (
+        not isinstance(user_message, str) or not user_message.strip()
+    ):
+        raise ValueError("userMessage is required")
+
+    _apply_api_keys(request.get("apiKeys"))
+
+    history_raw = request.get("messages") or []
+    if not isinstance(history_raw, list):
+        raise ValueError("messages must be an array")
+
+    service = CasefileService(root)
+    scope = service.resolve_comparison_scope(lane_ids)
+
+    chat = ChatService(
+        default_provider_name=provider,
+        workspace_root=scope.write_root,
+        casefile_root=root,
+        read_overlays=scope.overlay_map(),
+        enable_writes=False,
+    )
+    parsed_history = _parse_messages(history_raw)
+    context_prompt = _build_context_system_prompt(scope)
+    if context_prompt and not _history_has_context_marker(parsed_history):
+        parsed_history.insert(0, ChatMessage(role="system", content=context_prompt))
+    chat.replace_history(parsed_history)
+    history_before_count = len(chat.history)
+    if resume_pending:
+        response = chat.resume_pending_tool_calls(
+            model=model if isinstance(model, str) else None,
+            allow_write_tools=False,
+        )
+    else:
+        response = chat.send_user_message(
+            user_message,
+            model=model if isinstance(model, str) else None,
+            allow_write_tools=False,
+        )
+    history_delta = chat.history[history_before_count:]
+    serialized_delta = [_serialize_message(m) for m in history_delta]
+
+    persistence_error: str | None = None
+    try:
+        service.append_comparison_chat(lane_ids, serialized_delta)
+    except Exception as exc:  # noqa: BLE001
+        persistence_error = (
+            f"comparison chat persistence failed: {type(exc).__name__}: {exc}"
+        )
+
+    payload: dict[str, Any] = {
+        "ok": True,
+        "message": _serialize_message(response),
+        "messages": serialized_delta,
+        # Comparison sessions never produce write-tool approvals (no write
+        # tools are registered) but we emit the empty list for shape parity
+        # with chat:send so the renderer can reuse its rendering code.
+        "pendingApprovals": [],
+        "comparison": _serialize_comparison_summary(service, lane_ids),
+    }
+    if persistence_error:
+        payload["persistenceError"] = persistence_error
+    return payload
+
+
 def handle_lane_read_file(request: dict[str, Any]) -> dict[str, Any]:
     """Read a file from a specific lane (not necessarily the active one).
 
@@ -738,6 +884,8 @@ _HANDLERS = {
     "casefile:exportFindings": handle_casefile_export,
     "lane:readFile": handle_lane_read_file,
     "casefile:readOverlayFile": handle_casefile_read_overlay_file,
+    "casefile:openComparison": handle_casefile_open_comparison,
+    "casefile:sendComparisonChat": handle_casefile_send_comparison_chat,
 }
 
 

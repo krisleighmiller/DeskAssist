@@ -23,6 +23,7 @@ def build_default_tool_registry(
     casefile_root: Path | None = None,
     read_overlays: Mapping[str, Path] | None = None,
     register_system_exec: bool = False,
+    enable_writes: bool = True,
 ) -> ToolRegistry:
     """Build the standard tool registry rooted at `workspace_root`.
 
@@ -43,6 +44,12 @@ def build_default_tool_registry(
     shipped bridge handler sets this flag; the tool exists for future
     trusted-automation use cases only.
 
+    `enable_writes` (M3.5c) controls whether the write-permission tools
+    (``save_file``, ``append_file``, ``delete_file``, ``delete_path``) are
+    registered at all.  Comparison-chat sessions set this to ``False`` so a
+    multi-lane chat physically cannot mutate either side's files even if a
+    bug elsewhere granted ``workspace_write`` permission.
+
     AUDIT INVARIANT: no bridge handler in ``electron_bridge`` passes
     ``capability=INTERNAL_CAPABILITY`` to ``execute_tool_command``.  If
     you add one, follow the checklist in
@@ -52,7 +59,9 @@ def build_default_tool_registry(
     ``tests/test_tools.py::test_no_bridge_handler_uses_internal_capability``
     asserts this invariant — update it if you intentionally break it.
     """
-    enabled = {"append_file", "delete_file", "delete_path", "list_dir", "read_file", "save_file"}
+    enabled: set[str] = {"list_dir", "read_file"}
+    if enable_writes:
+        enabled |= {"append_file", "delete_file", "delete_path", "save_file"}
     if casefile_root is not None:
         enabled |= {"findings_list", "findings_read"}
     registry = ToolRegistry(
@@ -73,34 +82,35 @@ def build_default_tool_registry(
         required_params={"path"},
         permission="workspace_read",
     )
-    registry.register(
-        "save_file",
-        make_save_file_tool(workspace_root, read_overlays=read_overlays),
-        input_schema={"path": str, "content": str, "overwrite": bool},
-        required_params={"path", "content"},
-        permission="workspace_write",
-    )
-    registry.register(
-        "append_file",
-        make_append_file_tool(workspace_root, read_overlays=read_overlays),
-        input_schema={"path": str, "content": str},
-        required_params={"path", "content"},
-        permission="workspace_write",
-    )
-    registry.register(
-        "delete_file",
-        make_delete_file_tool(workspace_root, read_overlays=read_overlays),
-        input_schema={"path": str},
-        required_params={"path"},
-        permission="workspace_write",
-    )
-    registry.register(
-        "delete_path",
-        make_delete_path_tool(workspace_root, read_overlays=read_overlays),
-        input_schema={"path": str, "recursive": bool},
-        required_params={"path"},
-        permission="workspace_write",
-    )
+    if enable_writes:
+        registry.register(
+            "save_file",
+            make_save_file_tool(workspace_root, read_overlays=read_overlays),
+            input_schema={"path": str, "content": str, "overwrite": bool},
+            required_params={"path", "content"},
+            permission="workspace_write",
+        )
+        registry.register(
+            "append_file",
+            make_append_file_tool(workspace_root, read_overlays=read_overlays),
+            input_schema={"path": str, "content": str},
+            required_params={"path", "content"},
+            permission="workspace_write",
+        )
+        registry.register(
+            "delete_file",
+            make_delete_file_tool(workspace_root, read_overlays=read_overlays),
+            input_schema={"path": str},
+            required_params={"path"},
+            permission="workspace_write",
+        )
+        registry.register(
+            "delete_path",
+            make_delete_path_tool(workspace_root, read_overlays=read_overlays),
+            input_schema={"path": str, "recursive": bool},
+            required_params={"path"},
+            permission="workspace_write",
+        )
     if casefile_root is not None:
         registry.register(
             "findings_list",

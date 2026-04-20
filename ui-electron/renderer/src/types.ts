@@ -182,6 +182,39 @@ export interface LaneComparisonDto {
   changed: ChangedFileDto[];
 }
 
+export interface ComparisonLaneSummary {
+  id: string;
+  name: string;
+  root: string;
+}
+
+export interface ComparisonSession {
+  id: string;
+  laneIds: string[];
+  lanes: ComparisonLaneSummary[];
+  messages: ChatMessage[];
+  skippedCorruptLines?: number;
+}
+
+export interface ComparisonChatSendPayload {
+  laneIds: string[];
+  provider: Provider;
+  model?: string | null;
+  messages: ChatMessage[];
+  userMessage: string;
+  resumePendingToolCalls?: boolean;
+}
+
+export interface ComparisonChatSendResponse {
+  ok?: boolean;
+  message?: ChatMessage;
+  messages?: ChatMessage[];
+  pendingApprovals?: ToolCall[];
+  comparison?: Omit<ComparisonSession, "messages">;
+  persistenceError?: string;
+  error?: string;
+}
+
 export interface ExportResult {
   path: string;
   markdown: string;
@@ -240,6 +273,12 @@ export interface AssistantApi {
 
   // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;
+
+  // M3.5c: comparison-chat sessions (multi-lane, read-only).
+  openComparison: (laneIds: string[]) => Promise<ComparisonSession>;
+  sendComparisonChat: (
+    payload: ComparisonChatSendPayload
+  ) => Promise<ComparisonChatSendResponse>;
 
   // API keys
   getApiKeyStatus: () => Promise<ApiKeyStatus>;

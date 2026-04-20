@@ -24,6 +24,8 @@ interface LanesTabProps {
   onClearComparison: () => void;
   onOpenDiff: (path: string) => void;
   onOpenLaneFile: (laneId: string, path: string) => void;
+  /** M3.5c: open a multi-lane comparison chat session. */
+  onOpenComparisonChat: (laneIds: string[]) => Promise<void>;
   // M3.5
   context: ContextManifestDto | null;
   contextBusy: boolean;
@@ -75,6 +77,7 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
     onClearComparison,
     onOpenDiff,
     onOpenLaneFile,
+    onOpenComparisonChat,
     context,
     contextBusy,
     contextError,
@@ -215,6 +218,20 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
               Clear
             </button>
           )}
+          <button
+            type="button"
+            disabled={
+              !effectiveLeft || !effectiveRight || effectiveLeft === effectiveRight
+            }
+            onClick={() => {
+              if (effectiveLeft && effectiveRight && effectiveLeft !== effectiveRight) {
+                void onOpenComparisonChat([effectiveLeft, effectiveRight]);
+              }
+            }}
+            title="Open a read-only chat that can read both lanes at once"
+          >
+            Open compare chat
+          </button>
         </div>
       )}
       {comparison && (
