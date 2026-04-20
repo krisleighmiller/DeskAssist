@@ -50,6 +50,25 @@ contextBridge.exposeInMainWorld("assistantApi", {
     ipcRenderer.invoke("casefile:savePrompt", { promptId, prompt }),
   deletePrompt: (promptId) => ipcRenderer.invoke("casefile:deletePrompt", { promptId }),
 
+  // M4.2: command runs (casefile-scoped, optionally lane-scoped).
+  listRuns: (laneId) => ipcRenderer.invoke("casefile:listRuns", { laneId }),
+  getRun: (runId) => ipcRenderer.invoke("casefile:getRun", { runId }),
+  runCommand: (payload) => ipcRenderer.invoke("casefile:runCommand", payload),
+  deleteRun: (runId) => ipcRenderer.invoke("casefile:deleteRun", { runId }),
+
+  // M4.3: external local-directory inboxes.
+  listInboxSources: () => ipcRenderer.invoke("casefile:listInboxSources"),
+  addInboxSource: (input) => ipcRenderer.invoke("casefile:addInboxSource", input),
+  updateInboxSource: (sourceId, update) =>
+    ipcRenderer.invoke("casefile:updateInboxSource", { sourceId, ...update }),
+  removeInboxSource: (sourceId) =>
+    ipcRenderer.invoke("casefile:removeInboxSource", { sourceId }),
+  listInboxItems: (sourceId, maxDepth) =>
+    ipcRenderer.invoke("casefile:listInboxItems", { sourceId, maxDepth }),
+  readInboxItem: (sourceId, path, maxChars) =>
+    ipcRenderer.invoke("casefile:readInboxItem", { sourceId, path, maxChars }),
+  chooseInboxRoot: () => ipcRenderer.invoke("casefile:chooseInboxRoot"),
+
   // Chat (against the currently active casefile + lane).
   sendChat: (payload) => ipcRenderer.invoke("chat:send", payload),
 

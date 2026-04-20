@@ -221,6 +221,66 @@ export interface ComparisonChatSendResponse {
   error?: string;
 }
 
+// M4.3: external local-directory inboxes (read-only, casefile-scoped).
+
+export interface InboxSourceDto {
+  id: string;
+  name: string;
+  root: string;
+}
+
+export interface InboxItemDto {
+  sourceId: string;
+  path: string;
+  sizeBytes: number;
+}
+
+export interface InboxItemContent {
+  content: string;
+  truncated: boolean;
+  absolutePath: string;
+}
+
+export interface InboxSourceInput {
+  name: string;
+  root: string;
+  sourceId?: string;
+}
+
+export interface InboxSourceUpdate {
+  name?: string;
+  root?: string;
+}
+
+// M4.2: command runs (user-initiated, persisted under .casefile/runs).
+
+export interface RunSummaryDto {
+  id: string;
+  command: string;
+  laneId: string | null;
+  startedAt: string;
+  exitCode: number | null;
+  error: string | null;
+}
+
+export interface RunRecordDto extends RunSummaryDto {
+  cwd: string;
+  finishedAt: string;
+  stdout: string;
+  stderr: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  timeoutSeconds: number;
+  maxOutputChars: number;
+}
+
+export interface RunCommandPayload {
+  commandLine: string;
+  laneId?: string | null;
+  timeoutSeconds?: number;
+  maxOutputChars?: number;
+}
+
 // M4.1: prompt drafts (casefile-scoped, lightweight markdown bodies).
 
 export interface PromptSummaryDto {
@@ -303,6 +363,28 @@ export interface AssistantApi {
   createPrompt: (prompt: PromptInputDto) => Promise<PromptDraftDto>;
   savePrompt: (promptId: string, prompt: PromptInputDto) => Promise<PromptDraftDto>;
   deletePrompt: (promptId: string) => Promise<true>;
+
+  // M4.2: command runs (casefile-scoped, optionally lane-scoped).
+  listRuns: (laneId?: string | null) => Promise<RunSummaryDto[]>;
+  getRun: (runId: string) => Promise<RunRecordDto>;
+  runCommand: (payload: RunCommandPayload) => Promise<RunRecordDto>;
+  deleteRun: (runId: string) => Promise<true>;
+
+  // M4.3: inbox sources + item access (read-only).
+  listInboxSources: () => Promise<InboxSourceDto[]>;
+  addInboxSource: (input: InboxSourceInput) => Promise<InboxSourceDto>;
+  updateInboxSource: (
+    sourceId: string,
+    update: InboxSourceUpdate
+  ) => Promise<InboxSourceDto>;
+  removeInboxSource: (sourceId: string) => Promise<true>;
+  listInboxItems: (sourceId: string, maxDepth?: number) => Promise<InboxItemDto[]>;
+  readInboxItem: (
+    sourceId: string,
+    path: string,
+    maxChars?: number
+  ) => Promise<InboxItemContent>;
+  chooseInboxRoot: () => Promise<string | null>;
 
   // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;

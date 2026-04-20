@@ -930,3 +930,296 @@ def test_chat_send_unknown_prompt_id_raises(
                 "systemPromptId": "does-not-exist",
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# M4.2: runs dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_run_command_dispatch_round_trip_with_lane(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane_a = tmp_path / "lane_a"
+    lane_a.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+        }
+    )
+
+    started = bridge.dispatch(
+        {
+            "command": "casefile:runCommand",
+            "casefileRoot": str(casefile_root),
+            "laneId": "a",
+            "commandLine": "echo hi",
+        }
+    )
+    assert started["run"]["exitCode"] == 0
+    assert started["run"]["stdout"].strip() == "hi"
+    assert started["run"]["laneId"] == "a"
+    assert started["run"]["cwd"] == str(lane_a.resolve())
+
+    listed = bridge.dispatch(
+        {"command": "casefile:listRuns", "casefileRoot": str(casefile_root)}
+    )
+    assert [r["id"] for r in listed["runs"]] == [started["run"]["id"]]
+
+    fetched = bridge.dispatch(
+        {
+            "command": "casefile:getRun",
+            "casefileRoot": str(casefile_root),
+            "runId": started["run"]["id"],
+        }
+    )
+    assert fetched["run"]["stdout"].strip() == "hi"
+
+    bridge.dispatch(
+        {
+            "command": "casefile:deleteRun",
+            "casefileRoot": str(casefile_root),
+            "runId": started["run"]["id"],
+        }
+    )
+    listed_after = bridge.dispatch(
+        {"command": "casefile:listRuns", "casefileRoot": str(casefile_root)}
+    )
+    assert listed_after["runs"] == []
+
+
+def test_run_command_without_lane_uses_casefile_root(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+
+    response = bridge.dispatch(
+        {
+            "command": "casefile:runCommand",
+            "casefileRoot": str(casefile_root),
+            "commandLine": "echo casefile",
+        }
+    )
+    assert response["run"]["laneId"] is None
+    assert response["run"]["cwd"] == str(casefile_root.resolve())
+    assert response["run"]["stdout"].strip() == "casefile"
+
+
+def test_run_command_with_disallowed_command_returns_run_with_error(
+    tmp_path: Path,
+):
+    """Validation failures must show up as a persisted run record (so the
+    UI can render them in the same list as successful runs), not as a
+    bridge-level exception."""
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+
+    response = bridge.dispatch(
+        {
+            "command": "casefile:runCommand",
+            "casefileRoot": str(casefile_root),
+            "commandLine": "rm -rf /",
+        }
+    )
+    assert response["run"]["exitCode"] is None
+    assert response["run"]["error"] is not None
+    assert "PermissionError" in response["run"]["error"]
+
+
+def test_run_command_with_unknown_lane_raises(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    with pytest.raises(KeyError):
+        bridge.dispatch(
+            {
+                "command": "casefile:runCommand",
+                "casefileRoot": str(casefile_root),
+                "laneId": "ghost",
+                "commandLine": "echo hi",
+            }
+        )
+
+
+def test_run_command_requires_command(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    with pytest.raises(ValueError):
+        bridge.dispatch(
+            {
+                "command": "casefile:runCommand",
+                "casefileRoot": str(casefile_root),
+            }
+        )
+
+
+def test_get_run_unknown_id_raises(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    with pytest.raises(KeyError):
+        bridge.dispatch(
+            {
+                "command": "casefile:getRun",
+                "casefileRoot": str(casefile_root),
+                "runId": "nope",
+            }
+        )
+
+
+def test_list_runs_filters_by_lane(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane_a = tmp_path / "lane_a"
+    lane_a.mkdir()
+    lane_b = tmp_path / "lane_b"
+    lane_b.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "B", "kind": "repo", "root": str(lane_b), "id": "b"},
+        }
+    )
+    a = bridge.dispatch(
+        {
+            "command": "casefile:runCommand",
+            "casefileRoot": str(casefile_root),
+            "laneId": "a",
+            "commandLine": "echo a",
+        }
+    )["run"]
+    bridge.dispatch(
+        {
+            "command": "casefile:runCommand",
+            "casefileRoot": str(casefile_root),
+            "laneId": "b",
+            "commandLine": "echo b",
+        }
+    )
+    only_a = bridge.dispatch(
+        {
+            "command": "casefile:listRuns",
+            "casefileRoot": str(casefile_root),
+            "laneId": "a",
+        }
+    )
+    assert [r["id"] for r in only_a["runs"]] == [a["id"]]
+
+
+def test_inbox_source_lifecycle(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    inbox_dir = tmp_path / "external"
+    inbox_dir.mkdir()
+    (inbox_dir / "note.md").write_text("hello", encoding="utf-8")
+
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+
+    added = bridge.dispatch(
+        {
+            "command": "casefile:addInboxSource",
+            "casefileRoot": str(casefile_root),
+            "name": "External",
+            "root": str(inbox_dir),
+        }
+    )
+    assert added["ok"] is True
+    source_id = added["source"]["id"]
+    assert source_id == "external"
+
+    listed = bridge.dispatch(
+        {
+            "command": "casefile:listInboxSources",
+            "casefileRoot": str(casefile_root),
+        }
+    )
+    assert [s["id"] for s in listed["sources"]] == [source_id]
+
+    items = bridge.dispatch(
+        {
+            "command": "casefile:listInboxItems",
+            "casefileRoot": str(casefile_root),
+            "sourceId": source_id,
+        }
+    )
+    assert [it["path"] for it in items["items"]] == ["note.md"]
+
+    read = bridge.dispatch(
+        {
+            "command": "casefile:readInboxItem",
+            "casefileRoot": str(casefile_root),
+            "sourceId": source_id,
+            "path": "note.md",
+        }
+    )
+    assert read["content"] == "hello"
+    assert read["truncated"] is False
+
+    bridge.dispatch(
+        {
+            "command": "casefile:updateInboxSource",
+            "casefileRoot": str(casefile_root),
+            "sourceId": source_id,
+            "name": "Renamed",
+        }
+    )
+    after_update = bridge.dispatch(
+        {
+            "command": "casefile:listInboxSources",
+            "casefileRoot": str(casefile_root),
+        }
+    )
+    assert after_update["sources"][0]["name"] == "Renamed"
+
+    bridge.dispatch(
+        {
+            "command": "casefile:removeInboxSource",
+            "casefileRoot": str(casefile_root),
+            "sourceId": source_id,
+        }
+    )
+    final = bridge.dispatch(
+        {
+            "command": "casefile:listInboxSources",
+            "casefileRoot": str(casefile_root),
+        }
+    )
+    assert final["sources"] == []
+
+
+def test_inbox_add_source_validates_inputs(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    with pytest.raises(ValueError):
+        bridge.dispatch(
+            {
+                "command": "casefile:addInboxSource",
+                "casefileRoot": str(casefile_root),
+                "name": "",
+                "root": str(tmp_path),
+            }
+        )
+    with pytest.raises(ValueError):
+        bridge.dispatch(
+            {
+                "command": "casefile:addInboxSource",
+                "casefileRoot": str(casefile_root),
+                "name": "X",
+                "root": str(tmp_path / "missing"),
+            }
+        )

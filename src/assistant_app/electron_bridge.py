@@ -10,10 +10,18 @@ from typing import Any
 from assistant_app.casefile import (
     CasefileService,
     ContextManifest,
+    DEFAULT_RUN_MAX_OUTPUT_CHARS,
+    DEFAULT_RUN_TIMEOUT_SECONDS,
     FindingsStore,
+    InboxItem,
+    InboxSource,
+    InboxStore,
     NotesStore,
     PromptsStore,
     ResolvedContextFile,
+    RunRecord,
+    RunsStore,
+    RunSummary,
     ScopeContext,
     compare_lanes,
     export_review,
@@ -850,6 +858,224 @@ def handle_casefile_delete_prompt(request: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# M4.2: runs handlers
+# ---------------------------------------------------------------------------
+
+
+def _serialize_run_summary(summary: RunSummary) -> dict[str, Any]:
+    return {
+        "id": summary.id,
+        "command": summary.command,
+        "laneId": summary.lane_id,
+        "startedAt": summary.started_at,
+        "exitCode": summary.exit_code,
+        "error": summary.error,
+    }
+
+
+def _serialize_run(record: RunRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "command": record.command,
+        "laneId": record.lane_id,
+        "cwd": record.cwd,
+        "startedAt": record.started_at,
+        "finishedAt": record.finished_at,
+        "exitCode": record.exit_code,
+        "stdout": record.stdout,
+        "stderr": record.stderr,
+        "stdoutTruncated": record.stdout_truncated,
+        "stderrTruncated": record.stderr_truncated,
+        "timeoutSeconds": record.timeout_seconds,
+        "maxOutputChars": record.max_output_chars,
+        "error": record.error,
+    }
+
+
+def handle_casefile_list_runs(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    raw_lane = request.get("laneId")
+    lane_id = raw_lane.strip() if isinstance(raw_lane, str) and raw_lane.strip() else None
+    summaries = RunsStore(root).list(lane_id=lane_id)
+    return {"ok": True, "runs": [_serialize_run_summary(s) for s in summaries]}
+
+
+def handle_casefile_get_run(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    run_id = request.get("runId")
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("runId is required")
+    record = RunsStore(root).get(run_id.strip())
+    return {"ok": True, "run": _serialize_run(record)}
+
+
+def handle_casefile_delete_run(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    run_id = request.get("runId")
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("runId is required")
+    RunsStore(root).delete(run_id.strip())
+    return {"ok": True}
+
+
+def handle_casefile_run_command(request: dict[str, Any]) -> dict[str, Any]:
+    """Execute one safe-allowlisted command and persist the result.
+
+    The cwd resolves to the lane root when ``laneId`` is supplied, otherwise
+    the casefile root itself — same as how findings/notes scope. We never
+    fall back to an arbitrary directory: the lane root is the only path
+    surface the user has explicitly registered as workspace-writable.
+
+    Validation/permission/timeout failures are recorded *into* the run
+    record (with ``exit_code: null`` and a populated ``error`` field) rather
+    than raised, so the renderer can render the failed run alongside
+    successful ones from the list endpoint without two error paths.
+    """
+    root = _require_casefile_root(request)
+    # The dispatch envelope already uses "command" for the bridge command
+    # name (e.g. "casefile:runCommand"), so the shell command lives under
+    # a separate "commandLine" field. Renaming once here keeps the public
+    # IPC surface unambiguous.
+    command_line = request.get("commandLine")
+    if not isinstance(command_line, str) or not command_line.strip():
+        raise ValueError("commandLine is required")
+    raw_lane = request.get("laneId")
+    lane_id = raw_lane.strip() if isinstance(raw_lane, str) and raw_lane.strip() else None
+    if lane_id is not None:
+        snapshot = CasefileService(root).snapshot()
+        # `lane_by_id` raises KeyError on miss — propagate as the bridge
+        # error path so a stale lane id from the renderer surfaces clearly.
+        lane = snapshot.lane_by_id(lane_id)
+        cwd = lane.root
+    else:
+        cwd = root
+
+    timeout_raw = request.get("timeoutSeconds")
+    timeout_seconds = (
+        int(timeout_raw)
+        if isinstance(timeout_raw, int) and timeout_raw > 0
+        else DEFAULT_RUN_TIMEOUT_SECONDS
+    )
+    max_chars_raw = request.get("maxOutputChars")
+    max_output_chars = (
+        int(max_chars_raw)
+        if isinstance(max_chars_raw, int) and max_chars_raw > 0
+        else DEFAULT_RUN_MAX_OUTPUT_CHARS
+    )
+
+    record = RunsStore(root).start(
+        command=command_line,
+        cwd=cwd,
+        lane_id=lane_id,
+        timeout_seconds=timeout_seconds,
+        max_output_chars=max_output_chars,
+    )
+    return {"ok": True, "run": _serialize_run(record)}
+
+
+# ---------------------------------------------------------------------------
+# M4.3: inbox handlers
+# ---------------------------------------------------------------------------
+
+
+def _serialize_inbox_source(source: InboxSource) -> dict[str, Any]:
+    return {"id": source.id, "name": source.name, "root": source.root}
+
+
+def _serialize_inbox_item(item: InboxItem) -> dict[str, Any]:
+    return {
+        "sourceId": item.source_id,
+        "path": item.path,
+        "sizeBytes": item.size_bytes,
+    }
+
+
+def handle_casefile_list_inbox_sources(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    sources = InboxStore(root).list_sources()
+    return {"ok": True, "sources": [_serialize_inbox_source(s) for s in sources]}
+
+
+def handle_casefile_add_inbox_source(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    name = request.get("name")
+    src_root = request.get("root")
+    raw_id = request.get("sourceId")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("name is required")
+    if not isinstance(src_root, str) or not src_root.strip():
+        raise ValueError("root is required")
+    source_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else None
+    source = InboxStore(root).add_source(
+        name=name, root=src_root, source_id=source_id
+    )
+    return {"ok": True, "source": _serialize_inbox_source(source)}
+
+
+def handle_casefile_update_inbox_source(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    source_id = request.get("sourceId")
+    if not isinstance(source_id, str) or not source_id.strip():
+        raise ValueError("sourceId is required")
+    name = request.get("name")
+    src_root = request.get("root")
+    update_kwargs: dict[str, Any] = {}
+    if isinstance(name, str):
+        update_kwargs["name"] = name
+    if isinstance(src_root, str):
+        update_kwargs["root"] = src_root
+    if not update_kwargs:
+        raise ValueError("nothing to update: provide name and/or root")
+    source = InboxStore(root).update_source(source_id.strip(), **update_kwargs)
+    return {"ok": True, "source": _serialize_inbox_source(source)}
+
+
+def handle_casefile_remove_inbox_source(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    source_id = request.get("sourceId")
+    if not isinstance(source_id, str) or not source_id.strip():
+        raise ValueError("sourceId is required")
+    InboxStore(root).remove_source(source_id.strip())
+    return {"ok": True}
+
+
+def handle_casefile_list_inbox_items(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    source_id = request.get("sourceId")
+    if not isinstance(source_id, str) or not source_id.strip():
+        raise ValueError("sourceId is required")
+    raw_depth = request.get("maxDepth")
+    max_depth = int(raw_depth) if isinstance(raw_depth, int) and raw_depth > 0 else None
+    items = InboxStore(root).list_items(source_id.strip(), max_depth=max_depth)
+    return {"ok": True, "items": [_serialize_inbox_item(it) for it in items]}
+
+
+def handle_casefile_read_inbox_item(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    source_id = request.get("sourceId")
+    relative = request.get("path")
+    if not isinstance(source_id, str) or not source_id.strip():
+        raise ValueError("sourceId is required")
+    if not isinstance(relative, str) or not relative.strip():
+        raise ValueError("path is required")
+    raw_max = request.get("maxChars")
+    if isinstance(raw_max, int) and raw_max > 0:
+        content, truncated, abs_path = InboxStore(root).read_item(
+            source_id.strip(), relative, max_chars=raw_max
+        )
+    else:
+        content, truncated, abs_path = InboxStore(root).read_item(
+            source_id.strip(), relative
+        )
+    return {
+        "ok": True,
+        "content": content,
+        "truncated": truncated,
+        "absolutePath": abs_path,
+    }
+
+
+# ---------------------------------------------------------------------------
 # M3.5c: comparison chat handlers
 # ---------------------------------------------------------------------------
 
@@ -1052,6 +1278,16 @@ _HANDLERS = {
     "casefile:createPrompt": handle_casefile_create_prompt,
     "casefile:savePrompt": handle_casefile_save_prompt,
     "casefile:deletePrompt": handle_casefile_delete_prompt,
+    "casefile:listRuns": handle_casefile_list_runs,
+    "casefile:getRun": handle_casefile_get_run,
+    "casefile:deleteRun": handle_casefile_delete_run,
+    "casefile:runCommand": handle_casefile_run_command,
+    "casefile:listInboxSources": handle_casefile_list_inbox_sources,
+    "casefile:addInboxSource": handle_casefile_add_inbox_source,
+    "casefile:updateInboxSource": handle_casefile_update_inbox_source,
+    "casefile:removeInboxSource": handle_casefile_remove_inbox_source,
+    "casefile:listInboxItems": handle_casefile_list_inbox_items,
+    "casefile:readInboxItem": handle_casefile_read_inbox_item,
 }
 
 

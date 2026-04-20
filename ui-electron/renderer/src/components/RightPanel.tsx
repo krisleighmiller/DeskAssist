@@ -7,6 +7,11 @@ import type {
   ExportResult,
   FindingDraft,
   FindingDto,
+  InboxItemContent,
+  InboxItemDto,
+  InboxSourceDto,
+  InboxSourceInput,
+  Lane,
   LaneAttachmentInput,
   LaneComparisonDto,
   PromptDraftDto,
@@ -14,6 +19,9 @@ import type {
   PromptSummaryDto,
   Provider,
   RegisterLaneInput,
+  RunCommandPayload,
+  RunRecordDto,
+  RunSummaryDto,
   ToolCall,
 } from "../types";
 import { ChatTab } from "./ChatTab";
@@ -21,7 +29,9 @@ import { NotesTab } from "./NotesTab";
 import { FindingsTab } from "./FindingsTab";
 import { LanesTab } from "./LanesTab";
 import { ComparisonChatTab } from "./ComparisonChatTab";
+import { InboxTab } from "./InboxTab";
 import { PromptsTab } from "./PromptsTab";
+import { RunsTab, RUNS_ALLOWED_EXECUTABLES } from "./RunsTab";
 
 export type RightTabKey =
   | "chat"
@@ -29,7 +39,9 @@ export type RightTabKey =
   | "findings"
   | "lanes"
   | "compare"
-  | "prompts";
+  | "prompts"
+  | "runs"
+  | "inbox";
 
 interface RightPanelProps {
   activeTab: RightTabKey;
@@ -108,6 +120,33 @@ interface RightPanelProps {
     onDelete: (promptId: string) => Promise<void>;
     onLoad: (promptId: string) => Promise<PromptDraftDto>;
   };
+  runs: {
+    hasCasefile: boolean;
+    hasActiveLane: boolean;
+    activeLaneId: string | null;
+    lanes: Lane[];
+    runs: RunSummaryDto[];
+    loading: boolean;
+    error: string | null;
+    onRun: (payload: RunCommandPayload) => Promise<RunRecordDto>;
+    onLoadRun: (runId: string) => Promise<RunRecordDto>;
+    onDelete: (runId: string) => Promise<void>;
+  };
+  inbox: {
+    hasCasefile: boolean;
+    hasActiveLane: boolean;
+    activeLaneId: string | null;
+    activeLaneName: string | null;
+    sources: InboxSourceDto[];
+    loading: boolean;
+    error: string | null;
+    onAddSource: (input: InboxSourceInput) => Promise<InboxSourceDto>;
+    onRemoveSource: (sourceId: string) => Promise<void>;
+    onChooseRoot: () => Promise<string | null>;
+    onListItems: (sourceId: string) => Promise<InboxItemDto[]>;
+    onReadItem: (sourceId: string, path: string) => Promise<InboxItemContent>;
+    onCreateFinding: (draft: FindingDraft) => Promise<void>;
+  };
 }
 
 const TABS: { key: RightTabKey; label: string }[] = [
@@ -117,6 +156,8 @@ const TABS: { key: RightTabKey; label: string }[] = [
   { key: "lanes", label: "Lanes" },
   { key: "compare", label: "Compare" },
   { key: "prompts", label: "Prompts" },
+  { key: "runs", label: "Runs" },
+  { key: "inbox", label: "Inbox" },
 ];
 
 export function RightPanel({
@@ -128,6 +169,8 @@ export function RightPanel({
   lanes,
   compareChat,
   prompts,
+  runs,
+  inbox,
 }: RightPanelProps): JSX.Element {
   return (
     <>
@@ -210,6 +253,38 @@ export function RightPanel({
             busy={compareChat.busy}
             onSend={compareChat.onSend}
             onClose={compareChat.onClose}
+          />
+        )}
+        {activeTab === "runs" && (
+          <RunsTab
+            hasCasefile={runs.hasCasefile}
+            hasActiveLane={runs.hasActiveLane}
+            activeLaneId={runs.activeLaneId}
+            lanes={runs.lanes}
+            runs={runs.runs}
+            loading={runs.loading}
+            error={runs.error}
+            allowedExecutables={RUNS_ALLOWED_EXECUTABLES}
+            onRun={runs.onRun}
+            onLoadRun={runs.onLoadRun}
+            onDelete={runs.onDelete}
+          />
+        )}
+        {activeTab === "inbox" && (
+          <InboxTab
+            hasCasefile={inbox.hasCasefile}
+            hasActiveLane={inbox.hasActiveLane}
+            activeLaneId={inbox.activeLaneId}
+            activeLaneName={inbox.activeLaneName}
+            sources={inbox.sources}
+            loading={inbox.loading}
+            error={inbox.error}
+            onAddSource={inbox.onAddSource}
+            onRemoveSource={inbox.onRemoveSource}
+            onChooseRoot={inbox.onChooseRoot}
+            onListItems={inbox.onListItems}
+            onReadItem={inbox.onReadItem}
+            onCreateFinding={inbox.onCreateFinding}
           />
         )}
         {activeTab === "prompts" && (

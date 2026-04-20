@@ -16,10 +16,16 @@ Electron shell (ui-electron/)
 Python backend (src/assistant_app/)
  ├─ chat_service.py    — conversation state + provider routing + tool dispatch
  ├─ providers/         — HttpChatProvider contract + OpenAI/Anthropic/DeepSeek
- ├─ tools/             — registry, schemas, file_tools, system_tools
+ ├─ tools/             — registry, schemas, file_tools, system_tools (LLM-facing)
+ ├─ system_exec.py     — single safe-exec primitive (allowlist + bounded IO +
+ │                       timeout) shared by sys_exec tool and user runs
  ├─ filesystem/        — workspace-root-bound path/read/write helpers
  ├─ security/          — command authorization policy (sys_exec confirmation,
  │                       allowlists, output bounds)
+ ├─ casefile/          — casefile/lane services + per-feature stores:
+ │                       findings, notes, prompts (M4.1), runs (M4.2),
+ │                       inbox (M4.3), context manifest, scope/overlay
+ ├─ electron_bridge.py — JSON-over-stdio dispatch for every IPC command
  ├─ config.py          — AppConfig and workspace root setup
  └─ models.py          — chat request/response primitives
 ```
@@ -34,15 +40,14 @@ The Electron main process spawns the Python backend and routes messages through 
 - File tools: `list_dir`, `read_file`, `save_file`, `append_file`, `delete_file`.
 - System tool: `sys_exec` with explicit `confirm`, low-risk executable allowlist, bounded output, timeout.
 - Electron shell with workspace picker, file browse, chat panel, API key storage (keytar with file fallback).
+- **M1–M3 (shipped).** Workbench shell (React + Monaco + tabbed right panel), casefile + lane model, hierarchical scopes / inherited context (M3.5), comparison chat (M3.5c).
+- **M4 — Streamlining (shipped).** Prompt drafts (`.casefile/prompts/`), run launcher (`.casefile/runs/`) sharing the safe-exec primitive with the LLM tool, and external local-directory inbox sources (`.casefile/inbox.json`).
 
-## What Is Planned (M1–M4)
+### M4 components
 
-See [`../plans/MILESTONES.md`](../plans/MILESTONES.md) for the full plan. Short version:
-
-- **M1 — Workbench shell.** Replace the current renderer with React + Monaco + a four-tab right panel (Chat / Notes / Findings / Lanes). Backend unchanged.
-- **M2 — Casefile + lanes.** New `Casefile` and `Lane` services. `lanes.json` source of truth. Per-lane chat, file tree, notes. Lane switcher in the UI.
-- **M3 — Cross-lane operations.** Compare lanes (file-tree diff + per-file Monaco diff), structured Findings panel, markdown export.
-- **M4 — Streamlining.** Prompt drafts as first-class objects, run launcher that captures stdout into the casefile, first local "inbox" source.
+- **Prompts (M4.1).** `PromptsStore` persists prompt bodies as `.md` plus a `.json` sidecar with metadata. The renderer's `PromptsTab` lets the user create/edit/delete prompts and pick one as the active system prompt for a lane; `chat:send` injects the selected body as a marker-tagged system message *after* auto-context, with idempotent retries.
+- **Runs (M4.2).** `system_exec` is the single source of truth for spawning child processes: it owns the executable allowlist, command-line validation, bounded stdout/stderr capture, and timeout. The legacy `sys_exec` tool is now a thin wrapper around it. `RunsStore` persists each user-launched command as a `RunRecord` (cwd-scoped to a lane or the casefile root) so the `RunsTab` can list, inspect, and delete prior runs.
+- **Inbox (M4.3).** `InboxStore` registers external read-only directories in `.casefile/inbox.json`. Items are walked depth-bounded and filtered to text suffixes; reads are size-capped and reject path-escape. The `InboxTab` exposes a "Create finding" action that links the item via the virtual path `_inbox/<source>/<rel>` on a finding owned by the active lane — no schema change to findings.
 
 ## Key Architectural Decisions
 

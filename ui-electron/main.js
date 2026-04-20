@@ -964,6 +964,163 @@ ipcMain.handle("casefile:deletePrompt", async (_, args = {}) => {
   return true;
 });
 
+// ----- M4.2: command runs -----
+
+ipcMain.handle("casefile:listRuns", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const payload = { command: "casefile:listRuns", casefileRoot };
+  if (typeof args.laneId === "string" && args.laneId) payload.laneId = args.laneId;
+  const response = await runPythonBridge(payload);
+  return Array.isArray(response.runs) ? response.runs : [];
+});
+
+ipcMain.handle("casefile:getRun", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const runId = typeof args.runId === "string" ? args.runId : "";
+  if (!runId) throw new Error("runId is required");
+  const response = await runPythonBridge({
+    command: "casefile:getRun",
+    casefileRoot,
+    runId,
+  });
+  return response.run;
+});
+
+ipcMain.handle("casefile:runCommand", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const commandLine = typeof args.commandLine === "string" ? args.commandLine : "";
+  if (!commandLine.trim()) throw new Error("commandLine is required");
+  const payload = {
+    command: "casefile:runCommand",
+    casefileRoot,
+    commandLine,
+  };
+  if (typeof args.laneId === "string" && args.laneId) payload.laneId = args.laneId;
+  if (Number.isInteger(args.timeoutSeconds) && args.timeoutSeconds > 0) {
+    payload.timeoutSeconds = args.timeoutSeconds;
+  }
+  if (Number.isInteger(args.maxOutputChars) && args.maxOutputChars > 0) {
+    payload.maxOutputChars = args.maxOutputChars;
+  }
+  const response = await runPythonBridge(payload);
+  return response.run;
+});
+
+ipcMain.handle("casefile:deleteRun", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const runId = typeof args.runId === "string" ? args.runId : "";
+  if (!runId) throw new Error("runId is required");
+  await runPythonBridge({
+    command: "casefile:deleteRun",
+    casefileRoot,
+    runId,
+  });
+  return true;
+});
+
+// ----- M4.3: external local-directory inboxes -----
+
+ipcMain.handle("casefile:listInboxSources", async () => {
+  const casefileRoot = requireCasefile();
+  const response = await runPythonBridge({
+    command: "casefile:listInboxSources",
+    casefileRoot,
+  });
+  return Array.isArray(response.sources) ? response.sources : [];
+});
+
+ipcMain.handle("casefile:addInboxSource", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const name = typeof args.name === "string" ? args.name : "";
+  const root = typeof args.root === "string" ? args.root : "";
+  if (!name.trim()) throw new Error("name is required");
+  if (!root.trim()) throw new Error("root is required");
+  const payload = {
+    command: "casefile:addInboxSource",
+    casefileRoot,
+    name,
+    root,
+  };
+  if (typeof args.sourceId === "string" && args.sourceId.trim()) {
+    payload.sourceId = args.sourceId;
+  }
+  const response = await runPythonBridge(payload);
+  return response.source;
+});
+
+ipcMain.handle("casefile:updateInboxSource", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
+  if (!sourceId.trim()) throw new Error("sourceId is required");
+  const payload = {
+    command: "casefile:updateInboxSource",
+    casefileRoot,
+    sourceId,
+  };
+  if (typeof args.name === "string") payload.name = args.name;
+  if (typeof args.root === "string") payload.root = args.root;
+  const response = await runPythonBridge(payload);
+  return response.source;
+});
+
+ipcMain.handle("casefile:removeInboxSource", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
+  if (!sourceId.trim()) throw new Error("sourceId is required");
+  await runPythonBridge({
+    command: "casefile:removeInboxSource",
+    casefileRoot,
+    sourceId,
+  });
+  return true;
+});
+
+ipcMain.handle("casefile:listInboxItems", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
+  if (!sourceId.trim()) throw new Error("sourceId is required");
+  const payload = { command: "casefile:listInboxItems", casefileRoot, sourceId };
+  if (Number.isInteger(args.maxDepth) && args.maxDepth > 0) {
+    payload.maxDepth = args.maxDepth;
+  }
+  const response = await runPythonBridge(payload);
+  return Array.isArray(response.items) ? response.items : [];
+});
+
+ipcMain.handle("casefile:readInboxItem", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
+  const path = typeof args.path === "string" ? args.path : "";
+  if (!sourceId.trim()) throw new Error("sourceId is required");
+  if (!path.trim()) throw new Error("path is required");
+  const payload = {
+    command: "casefile:readInboxItem",
+    casefileRoot,
+    sourceId,
+    path,
+  };
+  if (Number.isInteger(args.maxChars) && args.maxChars > 0) {
+    payload.maxChars = args.maxChars;
+  }
+  const response = await runPythonBridge(payload);
+  return {
+    content: response.content || "",
+    truncated: Boolean(response.truncated),
+    absolutePath: response.absolutePath || "",
+  };
+});
+
+ipcMain.handle("casefile:chooseInboxRoot", async () => {
+  // Reuse the same dialog as the lane-root picker so users get a
+  // consistent "pick a directory" experience for any external mount.
+  const result = await dialog.showOpenDialog({
+    properties: ["openDirectory"],
+    title: "Choose inbox folder",
+  });
+  if (result.canceled || !result.filePaths[0]) return null;
+  return result.filePaths[0];
+});
+
 // ----- M3.5c: comparison-chat sessions -----
 
 function normalizeLaneIds(raw) {

@@ -9,6 +9,8 @@ import type {
   FindingDraft,
   FindingDto,
   FileTreeNode,
+  InboxSourceDto,
+  InboxSourceInput,
   LaneAttachmentInput,
   LaneComparisonDto,
   OverlayTreeDto,
@@ -17,6 +19,9 @@ import type {
   PromptSummaryDto,
   Provider,
   RegisterLaneInput,
+  RunCommandPayload,
+  RunRecordDto,
+  RunSummaryDto,
   ToolCall,
 } from "./types";
 import { api } from "./lib/api";
@@ -298,6 +303,109 @@ export function App(): JSX.Element {
     ? prompts.find((p) => p.id === selectedPromptId)?.name ?? null
     : null;
 
+  // ----- M4.2: command runs (casefile-scoped) -----
+
+  const [runs, setRuns] = useState<RunSummaryDto[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsError, setRunsError] = useState<string | null>(null);
+
+  const reloadRuns = useCallback(async () => {
+    if (!casefile) {
+      setRuns([]);
+      return;
+    }
+    setRunsLoading(true);
+    try {
+      const list = await api().listRuns();
+      setRuns(list);
+      setRunsError(null);
+    } catch (error) {
+      setRunsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRunsLoading(false);
+    }
+  }, [casefile]);
+
+  const handleRunCommand = useCallback(
+    async (payload: RunCommandPayload): Promise<RunRecordDto> => {
+      const created = await api().runCommand(payload);
+      await reloadRuns();
+      return created;
+    },
+    [reloadRuns]
+  );
+
+  const handleLoadRun = useCallback(
+    async (runId: string) => api().getRun(runId),
+    []
+  );
+
+  const handleDeleteRun = useCallback(
+    async (runId: string) => {
+      await api().deleteRun(runId);
+      await reloadRuns();
+    },
+    [reloadRuns]
+  );
+
+  // ----- M4.3: external inbox sources (casefile-scoped) -----
+  // Source list lives at the App level so the badge / future cross-tab
+  // surfaces can read it without wiring a context. Items + content are
+  // fetched on-demand inside `InboxTab` itself.
+
+  const [inboxSources, setInboxSources] = useState<InboxSourceDto[]>([]);
+  const [inboxLoading, setInboxLoading] = useState(false);
+  const [inboxError, setInboxError] = useState<string | null>(null);
+
+  const reloadInboxSources = useCallback(async () => {
+    if (!casefile) {
+      setInboxSources([]);
+      return;
+    }
+    setInboxLoading(true);
+    try {
+      const list = await api().listInboxSources();
+      setInboxSources(list);
+      setInboxError(null);
+    } catch (error) {
+      setInboxError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setInboxLoading(false);
+    }
+  }, [casefile]);
+
+  const handleAddInboxSource = useCallback(
+    async (input: InboxSourceInput): Promise<InboxSourceDto> => {
+      const created = await api().addInboxSource(input);
+      await reloadInboxSources();
+      return created;
+    },
+    [reloadInboxSources]
+  );
+
+  const handleRemoveInboxSource = useCallback(
+    async (sourceId: string) => {
+      await api().removeInboxSource(sourceId);
+      await reloadInboxSources();
+    },
+    [reloadInboxSources]
+  );
+
+  const handleChooseInboxRoot = useCallback(
+    async () => api().chooseInboxRoot(),
+    []
+  );
+
+  const handleListInboxItems = useCallback(
+    async (sourceId: string) => api().listInboxItems(sourceId),
+    []
+  );
+
+  const handleReadInboxItem = useCallback(
+    async (sourceId: string, path: string) => api().readInboxItem(sourceId, path),
+    []
+  );
+
   // ----- Lane comparison -----
 
   const [comparison, setComparison] = useState<LaneComparisonDto | null>(null);
@@ -545,6 +653,21 @@ export function App(): JSX.Element {
   useEffect(() => {
     void reloadPrompts();
   }, [reloadPrompts]);
+
+  // Reload runs whenever the casefile changes. (Per-lane filtering happens
+  // client-side: the list is small, and refetching on every lane switch
+  // is unnecessary churn.)
+  useEffect(() => {
+    void reloadRuns();
+  }, [reloadRuns]);
+
+  // Reload inbox sources whenever the casefile changes.
+  useEffect(() => {
+    void reloadInboxSources();
+    // reloadInboxSources is declared below; the dependency array picks it
+    // up from the lexical scope at render time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [casefile]);
 
   // Reload overlay trees whenever the active lane changes (or the toggle
   // flips on); refresh is also implicit after registerLane / setParent /
@@ -1241,6 +1364,33 @@ export function App(): JSX.Element {
               onSave: handleSavePrompt,
               onDelete: handleDeletePrompt,
               onLoad: handleLoadPrompt,
+            }}
+            runs={{
+              hasCasefile: Boolean(casefile),
+              hasActiveLane: Boolean(activeLane),
+              activeLaneId,
+              lanes: casefile?.lanes ?? [],
+              runs,
+              loading: runsLoading,
+              error: runsError,
+              onRun: handleRunCommand,
+              onLoadRun: handleLoadRun,
+              onDelete: handleDeleteRun,
+            }}
+            inbox={{
+              hasCasefile: Boolean(casefile),
+              hasActiveLane: Boolean(activeLane),
+              activeLaneId,
+              activeLaneName: activeLane?.name ?? null,
+              sources: inboxSources,
+              loading: inboxLoading,
+              error: inboxError,
+              onAddSource: handleAddInboxSource,
+              onRemoveSource: handleRemoveInboxSource,
+              onChooseRoot: handleChooseInboxRoot,
+              onListItems: handleListInboxItems,
+              onReadItem: handleReadInboxItem,
+              onCreateFinding: handleCreateFinding,
             }}
           />
         </section>
