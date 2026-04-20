@@ -1,11 +1,11 @@
-import type { ApiKeyStatus, Provider } from "../types";
+import type { ApiKeyStatus, CasefileSnapshot, Provider } from "../types";
 
 interface ToolbarProps {
-  workspaceRoot: string | null;
+  casefile: CasefileSnapshot | null;
   provider: Provider;
   onProviderChange: (provider: Provider) => void;
   keyStatus: ApiKeyStatus;
-  onChooseWorkspace: () => void;
+  onChooseCasefile: () => void;
   onOpenKeys: () => void;
 }
 
@@ -20,16 +20,24 @@ function describeKeys(status: ApiKeyStatus): string {
     : `No keys configured (${backend})`;
 }
 
+function describeCasefile(casefile: CasefileSnapshot | null): string {
+  if (!casefile) {
+    return "No casefile open";
+  }
+  const lane = casefile.lanes.find((l) => l.id === casefile.activeLaneId);
+  const laneLabel = lane ? `${lane.name} (${lane.kind})` : "no active lane";
+  return `${casefile.root} — ${laneLabel}`;
+}
+
 export function Toolbar(props: ToolbarProps): JSX.Element {
-  const { workspaceRoot, provider, onProviderChange, keyStatus, onChooseWorkspace, onOpenKeys } =
-    props;
+  const { casefile, provider, onProviderChange, keyStatus, onChooseCasefile, onOpenKeys } = props;
   return (
     <div className="toolbar">
-      <button type="button" onClick={onChooseWorkspace}>
-        Choose Workspace
+      <button type="button" onClick={onChooseCasefile}>
+        Open Casefile
       </button>
-      <span className="workspace-label" title={workspaceRoot ?? ""}>
-        {workspaceRoot ?? "No workspace selected"}
+      <span className="workspace-label" title={casefile?.root ?? ""}>
+        {describeCasefile(casefile)}
       </span>
       <label htmlFor="providerSelect">Provider</label>
       <select

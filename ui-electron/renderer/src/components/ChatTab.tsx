@@ -7,6 +7,7 @@ interface ChatTabProps {
   messages: ChatMessage[];
   pendingApprovals: ToolCall[];
   busy: boolean;
+  hasActiveLane: boolean;
   onSend: (text: string) => void;
   onApproveTools: () => void;
   onDenyTools: () => void;
@@ -56,6 +57,7 @@ export function ChatTab({
   messages,
   pendingApprovals,
   busy,
+  hasActiveLane,
   onSend,
   onApproveTools,
   onDenyTools,
@@ -84,11 +86,16 @@ export function ChatTab({
   };
 
   const keyMissing = !providerHasKey(provider, keyStatus);
+  const inputDisabled = busy || !hasActiveLane;
 
   return (
     <div className="chat">
       <div className="chat-controls">
-        {keyMissing ? (
+        {!hasActiveLane ? (
+          <span style={{ color: "#fbbf24" }}>
+            Open a casefile and select a lane to start a chat.
+          </span>
+        ) : keyMissing ? (
           <span style={{ color: "#fbbf24" }}>
             No API key configured for {provider}. Open API Keys to add one.
           </span>
@@ -99,7 +106,9 @@ export function ChatTab({
       <div className="chat-messages" ref={messagesRef}>
         {messages.length === 0 && (
           <div style={{ color: "#6b7280", fontStyle: "italic" }}>
-            No messages yet. Ask about your workspace.
+            {hasActiveLane
+              ? "No messages yet for this lane. Ask about your workspace."
+              : "No active lane."}
           </div>
         )}
         {messages.map((msg, idx) => {
@@ -148,11 +157,13 @@ export function ChatTab({
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Ask about your workspace..."
-          disabled={busy}
+          placeholder={
+            hasActiveLane ? "Ask about your workspace..." : "Open a casefile to enable chat..."
+          }
+          disabled={inputDisabled}
         />
         <div className="row">
-          <button type="submit" disabled={busy || !input.trim()}>
+          <button type="submit" disabled={inputDisabled || !input.trim()}>
             {busy ? "Sending..." : "Send"}
           </button>
         </div>

@@ -4,7 +4,16 @@ const fs = require("fs/promises");
 const { spawn } = require("child_process");
 const { TextDecoder } = require("util");
 
-let workspaceRoot = null;
+// `activeLaneRoot` is the directory that the file-tree IPC and editor IO are
+// currently scoped to. Before M2 it was set by "Choose Workspace" and pointed
+// at a bare directory. After M2 it is set by `casefile:open`/`casefile:switchLane`
+// and points at the active lane's root (which may be the casefile root itself
+// if no extra lane has been registered, or any sibling directory the user
+// has registered as a lane). The file-tree IPC handlers below treat this as
+// the "workspace" for path-escape checks.
+let activeCasefileRoot = null;
+let activeLaneId = null;
+let activeLaneRoot = null;
 let apiKeysCache = {
   openai: "",
   anthropic: "",
@@ -214,16 +223,16 @@ function createWindow() {
 }
 
 function ensureInWorkspace(targetPath) {
-  if (!workspaceRoot) {
-    throw new Error("Workspace is not selected");
+  if (!activeLaneRoot) {
+    throw new Error("No active lane (open a casefile first)");
   }
-  const resolvedWorkspace = path.resolve(workspaceRoot);
+  const resolvedWorkspace = path.resolve(activeLaneRoot);
   const resolvedTarget = path.resolve(targetPath);
   if (
     resolvedTarget !== resolvedWorkspace &&
     !resolvedTarget.startsWith(`${resolvedWorkspace}${path.sep}`)
   ) {
-    throw new Error("Path escapes workspace");
+    throw new Error("Path escapes lane root");
   }
   return resolvedTarget;
 }
@@ -259,20 +268,20 @@ async function buildTree(directoryPath, depth = 0, maxDepth = 4) {
   return node;
 }
 
-async function runPythonBridge(payload) {
+async function runPythonBridge(payload, { attachApiKeys = false } = {}) {
   const repoRoot = path.resolve(__dirname, "..");
   const pythonPath = process.env.PYTHONPATH
     ? `${path.join(repoRoot, "src")}:${process.env.PYTHONPATH}`
     : path.join(repoRoot, "src");
   const env = { ...process.env, PYTHONPATH: pythonPath };
-  const bridgePayload = {
-    ...payload,
-    apiKeys: {
+  const bridgePayload = { ...payload };
+  if (attachApiKeys) {
+    bridgePayload.apiKeys = {
       openai: apiKeysCache.openai || null,
       anthropic: apiKeysCache.anthropic || null,
       deepseek: apiKeysCache.deepseek || null,
-    },
-  };
+    };
+  }
 
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -393,23 +402,107 @@ async function readUtf8Bounded(filePath, maxChars) {
   }
 }
 
-ipcMain.handle("workspace:choose", async () => {
+function adoptCasefileSnapshot(snapshot) {
+  // Apply a snapshot returned by the Python bridge to the main-process state
+  // so the next file-tree IPC call is rooted at the active lane.
+  if (!snapshot || typeof snapshot.root !== "string") {
+    throw new Error("Bridge returned an invalid casefile snapshot");
+  }
+  activeCasefileRoot = snapshot.root;
+  activeLaneId = snapshot.activeLaneId || null;
+  const lanes = Array.isArray(snapshot.lanes) ? snapshot.lanes : [];
+  const activeLane = lanes.find((lane) => lane && lane.id === activeLaneId);
+  activeLaneRoot = activeLane && typeof activeLane.root === "string" ? activeLane.root : null;
+  return snapshot;
+}
+
+ipcMain.handle("casefile:choose", async () => {
   const result = await dialog.showOpenDialog({
-    properties: ["openDirectory"],
+    properties: ["openDirectory", "createDirectory"],
+    title: "Open Casefile",
   });
   if (result.canceled || result.filePaths.length === 0) {
     return null;
   }
-  workspaceRoot = result.filePaths[0];
-  return workspaceRoot;
+  const chosen = result.filePaths[0];
+  const response = await runPythonBridge({ command: "casefile:open", root: chosen });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:open", async (_, args = {}) => {
+  const root = typeof args.root === "string" ? args.root : "";
+  if (!root) {
+    throw new Error("root is required");
+  }
+  const response = await runPythonBridge({ command: "casefile:open", root });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:chooseLaneRoot", async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ["openDirectory", "createDirectory"],
+    title: "Choose Lane Directory",
+  });
+  if (result.canceled || result.filePaths.length === 0) {
+    return null;
+  }
+  return result.filePaths[0];
+});
+
+ipcMain.handle("casefile:registerLane", async (_, args = {}) => {
+  if (!activeCasefileRoot) {
+    throw new Error("No casefile is open");
+  }
+  const lane = args.lane && typeof args.lane === "object" ? args.lane : null;
+  if (!lane) {
+    throw new Error("lane is required");
+  }
+  const response = await runPythonBridge({
+    command: "casefile:registerLane",
+    casefileRoot: activeCasefileRoot,
+    lane,
+  });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:switchLane", async (_, args = {}) => {
+  if (!activeCasefileRoot) {
+    throw new Error("No casefile is open");
+  }
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  if (!laneId) {
+    throw new Error("laneId is required");
+  }
+  const response = await runPythonBridge({
+    command: "casefile:switchLane",
+    casefileRoot: activeCasefileRoot,
+    laneId,
+  });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:listChat", async (_, args = {}) => {
+  if (!activeCasefileRoot) {
+    throw new Error("No casefile is open");
+  }
+  const laneId = typeof args.laneId === "string" ? args.laneId : activeLaneId;
+  if (!laneId) {
+    throw new Error("laneId is required");
+  }
+  const response = await runPythonBridge({
+    command: "casefile:listChat",
+    casefileRoot: activeCasefileRoot,
+    laneId,
+  });
+  return Array.isArray(response.messages) ? response.messages : [];
 });
 
 ipcMain.handle("workspace:list", async (_, args = {}) => {
   const maxDepth = Number.isInteger(args.maxDepth) ? args.maxDepth : 4;
-  if (!workspaceRoot) {
-    throw new Error("Workspace is not selected");
+  if (!activeLaneRoot) {
+    throw new Error("No active lane (open a casefile first)");
   }
-  return buildTree(workspaceRoot, 0, Math.max(1, Math.min(maxDepth, 8)));
+  return buildTree(activeLaneRoot, 0, Math.max(1, Math.min(maxDepth, 8)));
 });
 
 ipcMain.handle("file:read", async (_, args = {}) => {
@@ -440,18 +533,23 @@ ipcMain.handle("file:save", async (_, args = {}) => {
 });
 
 ipcMain.handle("chat:send", async (_, payload = {}) => {
-  if (!workspaceRoot) {
-    throw new Error("Workspace is not selected");
+  if (!activeCasefileRoot || !activeLaneId) {
+    throw new Error("Open a casefile before sending a chat");
   }
-  return runPythonBridge({
-    workspaceRoot,
-    provider: payload.provider || "openai",
-    model: payload.model || null,
-    messages: Array.isArray(payload.messages) ? payload.messages : [],
-    userMessage: payload.userMessage || "",
-    allowWriteTools: Boolean(payload.allowWriteTools),
-    resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
-  });
+  return runPythonBridge(
+    {
+      command: "chat:send",
+      casefileRoot: activeCasefileRoot,
+      laneId: activeLaneId,
+      provider: payload.provider || "openai",
+      model: payload.model || null,
+      messages: Array.isArray(payload.messages) ? payload.messages : [],
+      userMessage: payload.userMessage || "",
+      allowWriteTools: Boolean(payload.allowWriteTools),
+      resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
+    },
+    { attachApiKeys: true }
+  );
 });
 
 ipcMain.handle("keys:getStatus", async () => {

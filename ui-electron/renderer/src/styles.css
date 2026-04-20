@@ -490,3 +490,137 @@ a {
 .dialog .status.error {
   color: #f87171;
 }
+
+/* ----- Lanes tab ----- */
+
+.lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  height: 100%;
+  overflow: auto;
+}
+
+.lanes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lanes-title {
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.lane-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.lane-row {
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  background: #0b1220;
+}
+
+.lane-row:hover {
+  background: #111827;
+}
+
+.lane-row.active {
+  border-color: #2563eb;
+  background: #111c33;
+}
+
+.lane-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lane-name {
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.lane-kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  color: #9ca3af;
+  border: 1px solid #374151;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.lane-active-badge {
+  margin-left: auto;
+  font-size: 11px;
+  color: #93c5fd;
+}
+
+.lane-root {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+  word-break: break-all;
+}
+
+.lane-form {
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #0b1220;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lane-form h4 {
+  margin: 0;
+  font-size: 13px;
+  color: #e5e7eb;
+}
+
+.lane-form-row {
+  display: grid;
+  grid-template-columns: 70px 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.lane-form-row span {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.lane-form-row input,
+.lane-form-row select {
+  background: #111827;
+  color: #e5e7eb;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+.lane-form-hint {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.lane-form-error {
+  font-size: 12px;
+  color: #f87171;
+}
+
+.lane-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}

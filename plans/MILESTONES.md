@@ -144,7 +144,7 @@ These four milestones cover the path from the current inherited backend foundati
 ## Status
 
 - M1: in progress. Vite + React + TypeScript renderer scaffolded with three-pane layout (file tree / Monaco editor / four-tab right panel: Chat / Notes / Findings / Lanes). Chat behavior, tool-approval flow, and API-keys dialog ported. Exit criterion 1 (open workbench, browse, edit/save, run a chat against a configured provider end-to-end) requires manual verification with a running Electron + provider key.
-- M2: not started.
+- M2: in progress. New `assistant_app/casefile/` module (`models`, `store`, `service`) owns the on-disk shape — `.casefile/lanes.json` is the source of truth for lanes, `.casefile/chats/<lane_id>.jsonl` is the per-lane chat journal. `electron_bridge.py` factored into a dispatch table with `chat:send`, `casefile:open`, `casefile:registerLane`, `casefile:switchLane`, `casefile:listChat`; `chat:send` resolves the active lane root and uses it as the `WorkspaceFilesystem` root, so tool calls in lane A cannot read or write into lane B. Renderer replaces the single-workspace concept with `casefile + activeLaneId`, keeps per-lane editor tabs and per-lane in-memory chat, hydrates a lane's history from the persisted journal on first switch, and ships an interactive Lanes tab that lists registered lanes, switches between them, and registers new ones (directory picker + name + kind). Backend tests cover lanes.json round-trip, lane scoping, bridge dispatch, and lane chat persistence (95 passing). Exit criteria 1–3 (register two lanes; switching switches file tree + chat history; tools cannot escape lane root) require manual verification with a running Electron.
 - M3: not started.
 - M4: not started.
 

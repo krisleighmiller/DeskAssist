@@ -58,12 +58,48 @@ export interface FileSaveResult {
   saved: boolean;
 }
 
+export type LaneKind = "repo" | "doc" | "rubric" | "review" | "other";
+
+export const LANE_KINDS: readonly LaneKind[] = ["repo", "doc", "rubric", "review", "other"];
+
+export interface Lane {
+  id: string;
+  name: string;
+  kind: LaneKind;
+  root: string;
+}
+
+export interface CasefileSnapshot {
+  root: string;
+  lanes: Lane[];
+  activeLaneId: string | null;
+}
+
+export interface RegisterLaneInput {
+  name: string;
+  kind: LaneKind;
+  root: string;
+  id?: string;
+}
+
 export interface AssistantApi {
-  chooseWorkspace: () => Promise<string | null>;
+  // Casefile + lanes
+  chooseCasefile: () => Promise<CasefileSnapshot | null>;
+  openCasefile: (root: string) => Promise<CasefileSnapshot>;
+  chooseLaneRoot: () => Promise<string | null>;
+  registerLane: (lane: RegisterLaneInput) => Promise<CasefileSnapshot>;
+  switchLane: (laneId: string) => Promise<CasefileSnapshot>;
+  listChat: (laneId: string) => Promise<ChatMessage[]>;
+
+  // Lane-scoped filesystem
   listWorkspace: (maxDepth?: number) => Promise<FileTreeNode>;
   readFile: (path: string, maxChars?: number) => Promise<FileReadResult>;
   saveFile: (path: string, content: string) => Promise<FileSaveResult>;
+
+  // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;
+
+  // API keys
   getApiKeyStatus: () => Promise<ApiKeyStatus>;
   saveApiKeys: (payload: {
     openai?: string;

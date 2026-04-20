@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ApiKeyStatus,
+  CasefileSnapshot,
   ChatMessage,
   FileTreeNode,
   Provider,
+  RegisterLaneInput,
   ToolCall,
 } from "./types";
 import { api } from "./lib/api";
@@ -23,29 +25,66 @@ const DEFAULT_KEY_STATUS: ApiKeyStatus = {
   storageBackend: "file",
 };
 
+interface LaneSessionState {
+  messages: ChatMessage[];
+  pendingApprovals: ToolCall[];
+  tabs: OpenTab[];
+  activeTabPath: string | null;
+}
+
+const EMPTY_LANE_SESSION: LaneSessionState = {
+  messages: [],
+  pendingApprovals: [],
+  tabs: [],
+  activeTabPath: null,
+};
+
 export function App(): JSX.Element {
-  // Workspace + file tree
-  const [workspaceRoot, setWorkspaceRoot] = useState<string | null>(null);
+  // Casefile + active lane
+  const [casefile, setCasefile] = useState<CasefileSnapshot | null>(null);
+  const activeLaneId = casefile?.activeLaneId ?? null;
+  const activeLane = activeLaneId
+    ? casefile?.lanes.find((lane) => lane.id === activeLaneId) ?? null
+    : null;
+
+  // File tree (re-fetched whenever the active lane changes)
   const [tree, setTree] = useState<FileTreeNode | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
 
-  // Editor tabs
-  const [tabs, setTabs] = useState<OpenTab[]>([]);
-  const [activeTabPath, setActiveTabPath] = useState<string | null>(null);
+  // Per-lane session state. Keyed by `${casefileRoot}::${laneId}` so multiple
+  // casefiles opened in the same session don't bleed into each other.
+  const [laneSessions, setLaneSessions] = useState<Map<string, LaneSessionState>>(
+    () => new Map()
+  );
+
+  const sessionKey = casefile && activeLaneId ? `${casefile.root}::${activeLaneId}` : null;
+  const session: LaneSessionState =
+    (sessionKey ? laneSessions.get(sessionKey) : null) ?? EMPTY_LANE_SESSION;
+
+  const updateSession = useCallback(
+    (updater: (prev: LaneSessionState) => LaneSessionState) => {
+      if (!sessionKey) return;
+      setLaneSessions((prev) => {
+        const next = new Map(prev);
+        const current = next.get(sessionKey) ?? EMPTY_LANE_SESSION;
+        next.set(sessionKey, updater(current));
+        return next;
+      });
+    },
+    [sessionKey]
+  );
 
   // Right panel
   const [rightTab, setRightTab] = useState<RightTabKey>("chat");
 
-  // Chat state
+  // Provider selection
   const [provider, setProvider] = useState<Provider>(() => {
     const saved = localStorage.getItem(PROVIDER_STORAGE_KEY) as Provider | null;
     return saved ?? "openai";
   });
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [pendingApprovals, setPendingApprovals] = useState<ToolCall[]>([]);
   const [chatBusy, setChatBusy] = useState(false);
 
-  // Notes state (persisted to localStorage; durable per-lane storage comes in M2/M3)
+  // Notes (local-device only until M3 promotes them to the casefile)
   const [notes, setNotes] = useState<string>(() => localStorage.getItem(NOTES_STORAGE_KEY) ?? "");
   useEffect(() => {
     localStorage.setItem(NOTES_STORAGE_KEY, notes);
@@ -55,17 +94,16 @@ export function App(): JSX.Element {
   const [keyStatus, setKeyStatus] = useState<ApiKeyStatus>(DEFAULT_KEY_STATUS);
   const [keysOpen, setKeysOpen] = useState(false);
 
-  // Persist provider selection.
   useEffect(() => {
     localStorage.setItem(PROVIDER_STORAGE_KEY, provider);
   }, [provider]);
+
+  // ----- API key bootstrap -----
 
   const refreshKeyStatus = useCallback(async () => {
     try {
       const status = await api().getApiKeyStatus();
       setKeyStatus(status);
-      // If the saved provider no longer has a key but exactly one provider is
-      // configured, auto-switch to it. Mirrors the previous behavior.
       const configured: Provider[] = [];
       if (status.openaiConfigured) configured.push("openai");
       if (status.anthropicConfigured) configured.push("anthropic");
@@ -74,7 +112,6 @@ export function App(): JSX.Element {
         setProvider(configured[0]);
       }
     } catch (error) {
-      // Non-fatal: leave status as default.
       console.warn("getApiKeyStatus failed", error);
     }
   }, [provider]);
@@ -85,12 +122,13 @@ export function App(): JSX.Element {
     return () => {
       remove();
     };
-    // refreshKeyStatus has its own deps; the effect should run once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ----- File tree -----
+
   const refreshTree = useCallback(async () => {
-    if (!workspaceRoot) {
+    if (!activeLane) {
       setTree(null);
       return;
     }
@@ -101,92 +139,174 @@ export function App(): JSX.Element {
     } catch (error) {
       setTreeError(error instanceof Error ? error.message : String(error));
     }
-  }, [workspaceRoot]);
+  }, [activeLane]);
 
+  // ----- Lane chat history loader -----
+
+  const loadLaneChatHistory = useCallback(
+    async (laneId: string, key: string) => {
+      try {
+        const persisted = await api().listChat(laneId);
+        // Only seed the in-memory history for a lane the *first* time we see it
+        // in this session; otherwise the user's optimistic state would clobber.
+        setLaneSessions((prev) => {
+          if (prev.has(key)) return prev;
+          const next = new Map(prev);
+          next.set(key, {
+            ...EMPTY_LANE_SESSION,
+            messages: persisted,
+          });
+          return next;
+        });
+      } catch (error) {
+        console.warn("listChat failed", error);
+      }
+    },
+    []
+  );
+
+  // Whenever the active lane changes, refresh the tree and seed its chat
+  // history from disk if we haven't seen it before.
   useEffect(() => {
+    if (!casefile || !activeLaneId) {
+      setTree(null);
+      return;
+    }
     void refreshTree();
-  }, [refreshTree]);
+    const key = `${casefile.root}::${activeLaneId}`;
+    void loadLaneChatHistory(activeLaneId, key);
+  }, [casefile, activeLaneId, refreshTree, loadLaneChatHistory]);
 
-  const handleChooseWorkspace = useCallback(async () => {
+  // ----- Casefile ops -----
+
+  const handleChooseCasefile = useCallback(async () => {
     try {
-      const chosen = await api().chooseWorkspace();
-      if (chosen) {
-        setWorkspaceRoot(chosen);
-        setTabs([]);
-        setActiveTabPath(null);
+      const snapshot = await api().chooseCasefile();
+      if (snapshot) {
+        setCasefile(snapshot);
       }
     } catch (error) {
       setTreeError(error instanceof Error ? error.message : String(error));
     }
   }, []);
 
-  const handleOpenFile = useCallback(
-    async (filePath: string) => {
-      // Already open: just focus the existing tab.
-      if (tabs.some((t) => t.path === filePath)) {
-        setActiveTabPath(filePath);
-        return;
-      }
+  const handleSwitchLane = useCallback(
+    async (laneId: string) => {
+      if (!casefile || laneId === casefile.activeLaneId) return;
       try {
-        const result = await api().readFile(filePath);
-        setTabs((prev) => [
-          ...prev,
-          {
-            path: result.path,
-            content: result.content,
-            savedContent: result.content,
-            truncated: result.truncated,
-          },
-        ]);
-        setActiveTabPath(result.path);
+        const snapshot = await api().switchLane(laneId);
+        setCasefile(snapshot);
       } catch (error) {
         setTreeError(error instanceof Error ? error.message : String(error));
       }
     },
-    [tabs]
+    [casefile]
+  );
+
+  const handleRegisterLane = useCallback(
+    async (input: RegisterLaneInput) => {
+      try {
+        const snapshot = await api().registerLane(input);
+        setCasefile(snapshot);
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const handleChooseLaneRoot = useCallback(async () => {
+    return api().chooseLaneRoot();
+  }, []);
+
+  // ----- Editor tabs (per-lane) -----
+
+  const handleOpenFile = useCallback(
+    async (filePath: string) => {
+      if (session.tabs.some((t) => t.path === filePath)) {
+        updateSession((prev) => ({ ...prev, activeTabPath: filePath }));
+        return;
+      }
+      try {
+        const result = await api().readFile(filePath);
+        updateSession((prev) => ({
+          ...prev,
+          tabs: [
+            ...prev.tabs,
+            {
+              path: result.path,
+              content: result.content,
+              savedContent: result.content,
+              truncated: result.truncated,
+            },
+          ],
+          activeTabPath: result.path,
+        }));
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [session.tabs, updateSession]
+  );
+
+  const handleSelectTab = useCallback(
+    (filePath: string) => {
+      updateSession((prev) => ({ ...prev, activeTabPath: filePath }));
+    },
+    [updateSession]
   );
 
   const handleCloseTab = useCallback(
     (filePath: string) => {
-      setTabs((prev) => {
-        const next = prev.filter((t) => t.path !== filePath);
-        if (activeTabPath === filePath) {
-          setActiveTabPath(next.length > 0 ? next[next.length - 1].path : null);
-        }
-        return next;
+      updateSession((prev) => {
+        const remainingTabs = prev.tabs.filter((t) => t.path !== filePath);
+        const nextActive =
+          prev.activeTabPath === filePath
+            ? remainingTabs.length > 0
+              ? remainingTabs[remainingTabs.length - 1].path
+              : null
+            : prev.activeTabPath;
+        return { ...prev, tabs: remainingTabs, activeTabPath: nextActive };
       });
     },
-    [activeTabPath]
+    [updateSession]
   );
 
-  const handleEditTab = useCallback((filePath: string, content: string) => {
-    setTabs((prev) => prev.map((t) => (t.path === filePath ? { ...t, content } : t)));
-  }, []);
+  const handleEditTab = useCallback(
+    (filePath: string, content: string) => {
+      updateSession((prev) => ({
+        ...prev,
+        tabs: prev.tabs.map((t) => (t.path === filePath ? { ...t, content } : t)),
+      }));
+    },
+    [updateSession]
+  );
 
   const handleSaveTab = useCallback(
     async (filePath: string) => {
-      const tab = tabs.find((t) => t.path === filePath);
+      const tab = session.tabs.find((t) => t.path === filePath);
       if (!tab) return;
       try {
         await api().saveFile(filePath, tab.content);
-        setTabs((prev) =>
-          prev.map((t) =>
+        updateSession((prev) => ({
+          ...prev,
+          tabs: prev.tabs.map((t) =>
             t.path === filePath ? { ...t, savedContent: t.content, truncated: false } : t
-          )
-        );
-        // The save may have changed which files the tree should display.
+          ),
+        }));
         void refreshTree();
       } catch (error) {
         setTreeError(error instanceof Error ? error.message : String(error));
       }
     },
-    [tabs, refreshTree]
+    [session.tabs, updateSession, refreshTree]
   );
 
   const refreshOpenTabsFromDisk = useCallback(async () => {
-    // Re-read every non-dirty, non-truncated tab. Dirty tabs keep user edits.
+    if (session.tabs.length === 0) return;
     const fresh = await Promise.all(
-      tabs.map(async (t) => {
+      session.tabs.map(async (t) => {
         if (t.content !== t.savedContent || t.truncated) {
           return t;
         }
@@ -203,23 +323,29 @@ export function App(): JSX.Element {
         }
       })
     );
-    setTabs(fresh);
-  }, [tabs]);
+    updateSession((prev) => ({ ...prev, tabs: fresh }));
+  }, [session.tabs, updateSession]);
 
   // ----- Chat -----
 
+  // We keep the latest user-typed text outside of state to make sendMessage
+  // stable across renders without being re-bound when messages change.
   const lastSentRef = useRef<string>("");
 
   const sendMessage = useCallback(
     async (text: string) => {
       const value = text.trim();
       if (!value || chatBusy) return;
+      if (!casefile || !activeLaneId) return;
       lastSentRef.current = value;
       setChatBusy(true);
-      setPendingApprovals([]);
-      const historyBeforeTurn = messages;
-      // Optimistically render the user message.
-      setMessages([...historyBeforeTurn, { role: "user", content: value }]);
+      const historyBeforeTurn = session.messages;
+      // Optimistic user message.
+      updateSession((prev) => ({
+        ...prev,
+        messages: [...prev.messages, { role: "user", content: value }],
+        pendingApprovals: [],
+      }));
       try {
         const response = await api().sendChat({
           provider,
@@ -228,110 +354,139 @@ export function App(): JSX.Element {
           allowWriteTools: false,
           resumePendingToolCalls: false,
         });
-        if (Array.isArray(response.messages) && response.messages.length > 0) {
-          setMessages([...historyBeforeTurn, ...response.messages]);
-        } else if (response.message) {
-          setMessages([
-            ...historyBeforeTurn,
-            { role: "user", content: value },
-            response.message,
-          ]);
-        } else {
-          setMessages([
-            ...historyBeforeTurn,
-            { role: "user", content: value },
-            { role: "assistant", content: "Error: empty bridge response" },
-          ]);
-        }
-        if (Array.isArray(response.pendingApprovals) && response.pendingApprovals.length > 0) {
-          setPendingApprovals(response.pendingApprovals);
-        }
+        const delta = Array.isArray(response.messages) ? response.messages : [];
+        const nextMessages =
+          delta.length > 0
+            ? [...historyBeforeTurn, ...delta]
+            : response.message
+              ? [...historyBeforeTurn, { role: "user" as const, content: value }, response.message]
+              : [
+                  ...historyBeforeTurn,
+                  { role: "user" as const, content: value },
+                  { role: "assistant" as const, content: "Error: empty bridge response" },
+                ];
+        const nextPending = Array.isArray(response.pendingApprovals)
+          ? response.pendingApprovals
+          : [];
+        updateSession((prev) => ({
+          ...prev,
+          messages: nextMessages,
+          pendingApprovals: nextPending,
+        }));
         await refreshTree();
         await refreshOpenTabsFromDisk();
       } catch (error) {
-        setMessages([
-          ...historyBeforeTurn,
-          { role: "user", content: value },
-          {
-            role: "assistant",
-            content: `Error: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ]);
+        const errMsg = error instanceof Error ? error.message : String(error);
+        updateSession((prev) => ({
+          ...prev,
+          messages: [
+            ...historyBeforeTurn,
+            { role: "user", content: value },
+            { role: "assistant", content: `Error: ${errMsg}` },
+          ],
+        }));
       } finally {
         setChatBusy(false);
       }
     },
-    [chatBusy, messages, provider, refreshTree, refreshOpenTabsFromDisk]
+    [
+      chatBusy,
+      casefile,
+      activeLaneId,
+      session.messages,
+      updateSession,
+      provider,
+      refreshTree,
+      refreshOpenTabsFromDisk,
+    ]
   );
 
   const approveTools = useCallback(async () => {
-    if (pendingApprovals.length === 0) return;
+    if (session.pendingApprovals.length === 0 || !casefile || !activeLaneId) return;
     setChatBusy(true);
+    const historyBeforeTurn = session.messages;
     try {
       const response = await api().sendChat({
         provider,
-        messages,
+        messages: historyBeforeTurn,
         userMessage: "",
         allowWriteTools: true,
         resumePendingToolCalls: true,
       });
-      if (Array.isArray(response.messages) && response.messages.length > 0) {
-        setMessages((prev) => [...prev, ...response.messages!]);
-      }
-      setPendingApprovals([]);
+      const delta = Array.isArray(response.messages) ? response.messages : [];
+      updateSession((prev) => ({
+        ...prev,
+        messages: [...historyBeforeTurn, ...delta],
+        pendingApprovals: [],
+      }));
       await refreshTree();
       await refreshOpenTabsFromDisk();
     } catch (error) {
-      setMessages((prev) => [
+      const errMsg = error instanceof Error ? error.message : String(error);
+      updateSession((prev) => ({
         ...prev,
-        {
-          role: "assistant",
-          content: `Error: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      ]);
-      setPendingApprovals([]);
+        messages: [
+          ...prev.messages,
+          { role: "assistant", content: `Error: ${errMsg}` },
+        ],
+        pendingApprovals: [],
+      }));
     } finally {
       setChatBusy(false);
     }
-  }, [pendingApprovals, provider, messages, refreshTree, refreshOpenTabsFromDisk]);
+  }, [
+    session.pendingApprovals,
+    session.messages,
+    casefile,
+    activeLaneId,
+    provider,
+    updateSession,
+    refreshTree,
+    refreshOpenTabsFromDisk,
+  ]);
 
   const denyTools = useCallback(() => {
-    if (pendingApprovals.length === 0) return;
-    setMessages((prev) => [
+    if (session.pendingApprovals.length === 0) return;
+    updateSession((prev) => ({
       ...prev,
-      { role: "assistant", content: "Write operation request denied." },
-    ]);
-    setPendingApprovals([]);
-  }, [pendingApprovals]);
+      messages: [
+        ...prev.messages,
+        { role: "assistant", content: "Write operation request denied." },
+      ],
+      pendingApprovals: [],
+    }));
+  }, [session.pendingApprovals, updateSession]);
 
   return (
     <div className="app">
       <Toolbar
-        workspaceRoot={workspaceRoot}
+        casefile={casefile}
         provider={provider}
         onProviderChange={setProvider}
         keyStatus={keyStatus}
-        onChooseWorkspace={handleChooseWorkspace}
+        onChooseCasefile={handleChooseCasefile}
         onOpenKeys={() => setKeysOpen(true)}
       />
       <div className="workbench">
         <section className="pane">
-          <header className="pane-header">Workspace</header>
+          <header className="pane-header">
+            {activeLane ? activeLane.name : "Workspace"}
+          </header>
           <div className="pane-body">
             <FileTree
               root={tree}
-              activePath={activeTabPath}
+              activePath={session.activeTabPath}
               onOpenFile={handleOpenFile}
               error={treeError}
-              hasWorkspace={Boolean(workspaceRoot)}
+              hasWorkspace={Boolean(activeLane)}
             />
           </div>
         </section>
         <section className="pane editor-pane">
           <EditorPane
-            tabs={tabs}
-            activePath={activeTabPath}
-            onSelectTab={setActiveTabPath}
+            tabs={session.tabs}
+            activePath={session.activeTabPath}
+            onSelectTab={handleSelectTab}
             onCloseTab={handleCloseTab}
             onEdit={handleEditTab}
             onSave={handleSaveTab}
@@ -344,9 +499,10 @@ export function App(): JSX.Element {
             chat={{
               provider,
               keyStatus,
-              messages,
-              pendingApprovals,
+              messages: session.messages,
+              pendingApprovals: session.pendingApprovals,
               busy: chatBusy,
+              hasActiveLane: Boolean(activeLane),
               onSend: sendMessage,
               onApproveTools: approveTools,
               onDenyTools: denyTools,
@@ -354,6 +510,12 @@ export function App(): JSX.Element {
             notes={{
               value: notes,
               onChange: setNotes,
+            }}
+            lanes={{
+              casefile,
+              onSwitchLane: handleSwitchLane,
+              onRegisterLane: handleRegisterLane,
+              onChooseLaneRoot: handleChooseLaneRoot,
             }}
           />
         </section>

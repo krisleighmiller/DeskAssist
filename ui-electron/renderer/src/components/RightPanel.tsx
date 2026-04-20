@@ -1,4 +1,11 @@
-import type { ApiKeyStatus, ChatMessage, Provider, ToolCall } from "../types";
+import type {
+  ApiKeyStatus,
+  CasefileSnapshot,
+  ChatMessage,
+  Provider,
+  RegisterLaneInput,
+  ToolCall,
+} from "../types";
 import { ChatTab } from "./ChatTab";
 import { NotesTab } from "./NotesTab";
 import { FindingsTab } from "./FindingsTab";
@@ -15,6 +22,7 @@ interface RightPanelProps {
     messages: ChatMessage[];
     pendingApprovals: ToolCall[];
     busy: boolean;
+    hasActiveLane: boolean;
     onSend: (text: string) => void;
     onApproveTools: () => void;
     onDenyTools: () => void;
@@ -22,6 +30,12 @@ interface RightPanelProps {
   notes: {
     value: string;
     onChange: (value: string) => void;
+  };
+  lanes: {
+    casefile: CasefileSnapshot | null;
+    onSwitchLane: (laneId: string) => void;
+    onRegisterLane: (lane: RegisterLaneInput) => Promise<void>;
+    onChooseLaneRoot: () => Promise<string | null>;
   };
 }
 
@@ -32,7 +46,13 @@ const TABS: { key: RightTabKey; label: string }[] = [
   { key: "lanes", label: "Lanes" },
 ];
 
-export function RightPanel({ activeTab, onTabChange, chat, notes }: RightPanelProps): JSX.Element {
+export function RightPanel({
+  activeTab,
+  onTabChange,
+  chat,
+  notes,
+  lanes,
+}: RightPanelProps): JSX.Element {
   return (
     <>
       <div className="right-tabs">
@@ -55,6 +75,7 @@ export function RightPanel({ activeTab, onTabChange, chat, notes }: RightPanelPr
             messages={chat.messages}
             pendingApprovals={chat.pendingApprovals}
             busy={chat.busy}
+            hasActiveLane={chat.hasActiveLane}
             onSend={chat.onSend}
             onApproveTools={chat.onApproveTools}
             onDenyTools={chat.onDenyTools}
@@ -62,7 +83,14 @@ export function RightPanel({ activeTab, onTabChange, chat, notes }: RightPanelPr
         )}
         {activeTab === "notes" && <NotesTab value={notes.value} onChange={notes.onChange} />}
         {activeTab === "findings" && <FindingsTab />}
-        {activeTab === "lanes" && <LanesTab />}
+        {activeTab === "lanes" && (
+          <LanesTab
+            casefile={lanes.casefile}
+            onSwitchLane={lanes.onSwitchLane}
+            onRegisterLane={lanes.onRegisterLane}
+            onChooseLaneRoot={lanes.onChooseLaneRoot}
+          />
+        )}
       </div>
     </>
   );
