@@ -14,6 +14,21 @@ contextBridge.exposeInMainWorld("assistantApi", {
   readFile: (path, maxChars = 200000) => ipcRenderer.invoke("file:read", { path, maxChars }),
   saveFile: (path, content) => ipcRenderer.invoke("file:save", { path, content }),
 
+  // Findings, notes, comparison, export (M3).
+  listFindings: (laneId) => ipcRenderer.invoke("casefile:listFindings", { laneId }),
+  getFinding: (findingId) => ipcRenderer.invoke("casefile:getFinding", { findingId }),
+  createFinding: (finding) => ipcRenderer.invoke("casefile:createFinding", { finding }),
+  updateFinding: (findingId, finding) =>
+    ipcRenderer.invoke("casefile:updateFinding", { findingId, finding }),
+  deleteFinding: (findingId) => ipcRenderer.invoke("casefile:deleteFinding", { findingId }),
+  getNote: (laneId) => ipcRenderer.invoke("casefile:getNote", { laneId }),
+  saveNote: (laneId, content) => ipcRenderer.invoke("casefile:saveNote", { laneId, content }),
+  compareLanes: (leftLaneId, rightLaneId) =>
+    ipcRenderer.invoke("casefile:compareLanes", { leftLaneId, rightLaneId }),
+  exportFindings: (laneIds) => ipcRenderer.invoke("casefile:exportFindings", { laneIds }),
+  readLaneFile: (laneId, path, maxChars) =>
+    ipcRenderer.invoke("lane:readFile", { laneId, path, maxChars }),
+
   // Chat (against the currently active casefile + lane).
   sendChat: (payload) => ipcRenderer.invoke("chat:send", payload),
 

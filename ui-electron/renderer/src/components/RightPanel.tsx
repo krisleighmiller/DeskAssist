@@ -2,6 +2,10 @@ import type {
   ApiKeyStatus,
   CasefileSnapshot,
   ChatMessage,
+  ExportResult,
+  FindingDraft,
+  FindingDto,
+  LaneComparisonDto,
   Provider,
   RegisterLaneInput,
   ToolCall,
@@ -29,13 +33,33 @@ interface RightPanelProps {
   };
   notes: {
     value: string;
+    hasActiveLane: boolean;
+    loading: boolean;
+    saving: boolean;
+    error: string | null;
     onChange: (value: string) => void;
+  };
+  findings: {
+    casefile: CasefileSnapshot | null;
+    findings: FindingDto[];
+    busy: boolean;
+    lastExport: ExportResult | null;
+    onCreate: (draft: FindingDraft) => Promise<void>;
+    onUpdate: (id: string, draft: Partial<FindingDraft>) => Promise<void>;
+    onDelete: (id: string) => Promise<void>;
+    onExport: (laneIds: string[]) => Promise<void>;
   };
   lanes: {
     casefile: CasefileSnapshot | null;
     onSwitchLane: (laneId: string) => void;
     onRegisterLane: (lane: RegisterLaneInput) => Promise<void>;
     onChooseLaneRoot: () => Promise<string | null>;
+    comparison: LaneComparisonDto | null;
+    comparisonBusy: boolean;
+    onCompare: (leftLaneId: string, rightLaneId: string) => Promise<void>;
+    onClearComparison: () => void;
+    onOpenDiff: (path: string) => void;
+    onOpenLaneFile: (laneId: string, path: string) => void;
   };
 }
 
@@ -51,6 +75,7 @@ export function RightPanel({
   onTabChange,
   chat,
   notes,
+  findings,
   lanes,
 }: RightPanelProps): JSX.Element {
   return (
@@ -81,14 +106,40 @@ export function RightPanel({
             onDenyTools={chat.onDenyTools}
           />
         )}
-        {activeTab === "notes" && <NotesTab value={notes.value} onChange={notes.onChange} />}
-        {activeTab === "findings" && <FindingsTab />}
+        {activeTab === "notes" && (
+          <NotesTab
+            value={notes.value}
+            hasActiveLane={notes.hasActiveLane}
+            loading={notes.loading}
+            saving={notes.saving}
+            error={notes.error}
+            onChange={notes.onChange}
+          />
+        )}
+        {activeTab === "findings" && (
+          <FindingsTab
+            casefile={findings.casefile}
+            findings={findings.findings}
+            busy={findings.busy}
+            lastExport={findings.lastExport}
+            onCreate={findings.onCreate}
+            onUpdate={findings.onUpdate}
+            onDelete={findings.onDelete}
+            onExport={findings.onExport}
+          />
+        )}
         {activeTab === "lanes" && (
           <LanesTab
             casefile={lanes.casefile}
             onSwitchLane={lanes.onSwitchLane}
             onRegisterLane={lanes.onRegisterLane}
             onChooseLaneRoot={lanes.onChooseLaneRoot}
+            comparison={lanes.comparison}
+            comparisonBusy={lanes.comparisonBusy}
+            onCompare={lanes.onCompare}
+            onClearComparison={lanes.onClearComparison}
+            onOpenDiff={lanes.onOpenDiff}
+            onOpenLaneFile={lanes.onOpenLaneFile}
           />
         )}
       </div>

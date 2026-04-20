@@ -1,5 +1,13 @@
-import { useState } from "react";
-import type { CasefileSnapshot, Lane, LaneKind, RegisterLaneInput } from "../types";
+import type React from "react";
+import { useMemo, useState } from "react";
+import type {
+  CasefileSnapshot,
+  ChangedFileDto,
+  Lane,
+  LaneComparisonDto,
+  LaneKind,
+  RegisterLaneInput,
+} from "../types";
 import { LANE_KINDS } from "../types";
 
 interface LanesTabProps {
@@ -7,6 +15,12 @@ interface LanesTabProps {
   onSwitchLane: (laneId: string) => void;
   onRegisterLane: (input: RegisterLaneInput) => Promise<void>;
   onChooseLaneRoot: () => Promise<string | null>;
+  comparison: LaneComparisonDto | null;
+  comparisonBusy: boolean;
+  onCompare: (leftLaneId: string, rightLaneId: string) => Promise<void>;
+  onClearComparison: () => void;
+  onOpenDiff: (path: string) => void;
+  onOpenLaneFile: (laneId: string, path: string) => void;
 }
 
 export function LanesTab({
@@ -14,8 +28,25 @@ export function LanesTab({
   onSwitchLane,
   onRegisterLane,
   onChooseLaneRoot,
+  comparison,
+  comparisonBusy,
+  onCompare,
+  onClearComparison,
+  onOpenDiff,
+  onOpenLaneFile,
 }: LanesTabProps): JSX.Element {
   const [showForm, setShowForm] = useState(false);
+  const [compareTarget, setCompareTarget] = useState<string>("");
+
+  // Pick a sensible default compare target when the user opens the dropdown
+  // for the first time: the first lane that isn't the active one.
+  const defaultTarget = useMemo(() => {
+    if (!casefile) return "";
+    const other = casefile.lanes.find((l) => l.id !== casefile.activeLaneId);
+    return other ? other.id : "";
+  }, [casefile]);
+
+  const effectiveTarget = compareTarget || defaultTarget;
 
   if (!casefile) {
     return (
@@ -50,6 +81,50 @@ export function LanesTab({
           />
         ))}
       </ul>
+      {casefile.lanes.length >= 2 && (
+        <div className="compare-controls">
+          <span className="lanes-title">Compare</span>
+          <span className="muted">{lanesById(casefile, casefile.activeLaneId)?.name ?? "active"} ↔</span>
+          <select
+            value={effectiveTarget}
+            onChange={(event) => setCompareTarget(event.target.value)}
+          >
+            {casefile.lanes
+              .filter((l) => l.id !== casefile.activeLaneId)
+              .map((lane) => (
+                <option key={lane.id} value={lane.id}>
+                  {lane.name}
+                </option>
+              ))}
+          </select>
+          <button
+            type="button"
+            disabled={
+              comparisonBusy || !casefile.activeLaneId || !effectiveTarget
+            }
+            onClick={() => {
+              if (casefile.activeLaneId && effectiveTarget) {
+                void onCompare(casefile.activeLaneId, effectiveTarget);
+              }
+            }}
+          >
+            {comparisonBusy ? "Comparing..." : "Compare"}
+          </button>
+          {comparison && (
+            <button type="button" onClick={onClearComparison} className="link-button">
+              Clear
+            </button>
+          )}
+        </div>
+      )}
+      {comparison && (
+        <ComparisonResults
+          comparison={comparison}
+          casefile={casefile}
+          onOpenDiff={onOpenDiff}
+          onOpenLaneFile={onOpenLaneFile}
+        />
+      )}
       {showForm && (
         <RegisterLaneForm
           onChooseLaneRoot={onChooseLaneRoot}
@@ -61,6 +136,127 @@ export function LanesTab({
         />
       )}
     </div>
+  );
+}
+
+function lanesById(snapshot: CasefileSnapshot, laneId: string | null): Lane | null {
+  if (!laneId) return null;
+  return snapshot.lanes.find((l) => l.id === laneId) ?? null;
+}
+
+interface ComparisonResultsProps {
+  comparison: LaneComparisonDto;
+  casefile: CasefileSnapshot;
+  onOpenDiff: (path: string) => void;
+  onOpenLaneFile: (laneId: string, path: string) => void;
+}
+
+function ComparisonResults({
+  comparison,
+  casefile,
+  onOpenDiff,
+  onOpenLaneFile,
+}: ComparisonResultsProps): JSX.Element {
+  const left = lanesById(casefile, comparison.leftLaneId);
+  const right = lanesById(casefile, comparison.rightLaneId);
+  const summary = `${comparison.added.length} added · ${comparison.removed.length} removed · ${comparison.changed.length} changed`;
+  return (
+    <div className="comparison">
+      <div className="comparison-header">
+        <strong>
+          {left?.name ?? comparison.leftLaneId} ↔ {right?.name ?? comparison.rightLaneId}
+        </strong>
+        <span className="muted">{summary}</span>
+      </div>
+      <ComparisonSection title="Changed">
+        {comparison.changed.length === 0 ? (
+          <EmptyHint>No changed files.</EmptyHint>
+        ) : (
+          comparison.changed.map((change) => (
+            <ChangedFileRow
+              key={change.path}
+              change={change}
+              onOpenDiff={() => onOpenDiff(change.path)}
+            />
+          ))
+        )}
+      </ComparisonSection>
+      <ComparisonSection title="Added">
+        {comparison.added.length === 0 ? (
+          <EmptyHint>None.</EmptyHint>
+        ) : (
+          comparison.added.map((path) => (
+            <li key={path} className="comparison-row">
+              <code>{path}</code>
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => onOpenLaneFile(comparison.rightLaneId, path)}
+              >
+                open in {right?.name ?? comparison.rightLaneId}
+              </button>
+            </li>
+          ))
+        )}
+      </ComparisonSection>
+      <ComparisonSection title="Removed">
+        {comparison.removed.length === 0 ? (
+          <EmptyHint>None.</EmptyHint>
+        ) : (
+          comparison.removed.map((path) => (
+            <li key={path} className="comparison-row">
+              <code>{path}</code>
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => onOpenLaneFile(comparison.leftLaneId, path)}
+              >
+                open in {left?.name ?? comparison.leftLaneId}
+              </button>
+            </li>
+          ))
+        )}
+      </ComparisonSection>
+    </div>
+  );
+}
+
+function ComparisonSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <div className="comparison-section">
+      <div className="comparison-section-title">{title}</div>
+      <ul className="comparison-list">{children}</ul>
+    </div>
+  );
+}
+
+function EmptyHint({ children }: { children: React.ReactNode }): JSX.Element {
+  return <li className="comparison-empty">{children}</li>;
+}
+
+function ChangedFileRow({
+  change,
+  onOpenDiff,
+}: {
+  change: ChangedFileDto;
+  onOpenDiff: () => void;
+}): JSX.Element {
+  return (
+    <li className="comparison-row">
+      <code>{change.path}</code>
+      <span className="muted">
+        {change.leftSize} → {change.rightSize} bytes
+      </span>
+      <button type="button" className="link-button" onClick={onOpenDiff}>
+        diff
+      </button>
+    </li>
   );
 }
 

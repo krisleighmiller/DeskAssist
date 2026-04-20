@@ -3,7 +3,11 @@ import type {
   ApiKeyStatus,
   CasefileSnapshot,
   ChatMessage,
+  ExportResult,
+  FindingDraft,
+  FindingDto,
   FileTreeNode,
+  LaneComparisonDto,
   Provider,
   RegisterLaneInput,
   ToolCall,
@@ -14,9 +18,10 @@ import { FileTree } from "./components/FileTree";
 import { EditorPane, type OpenTab } from "./components/EditorPane";
 import { RightPanel, type RightTabKey } from "./components/RightPanel";
 import { ApiKeysDialog } from "./components/ApiKeysDialog";
+import { languageFromPath } from "./lib/language";
 
 const PROVIDER_STORAGE_KEY = "deskassist.selectedProvider";
-const NOTES_STORAGE_KEY = "deskassist.notes";
+const NOTES_DEBOUNCE_MS = 600;
 
 const DEFAULT_KEY_STATUS: ApiKeyStatus = {
   openaiConfigured: false,
@@ -29,30 +34,55 @@ interface LaneSessionState {
   messages: ChatMessage[];
   pendingApprovals: ToolCall[];
   tabs: OpenTab[];
-  activeTabPath: string | null;
+  activeTabKey: string | null;
 }
 
 const EMPTY_LANE_SESSION: LaneSessionState = {
   messages: [],
   pendingApprovals: [],
   tabs: [],
-  activeTabPath: null,
+  activeTabKey: null,
 };
 
+interface NoteState {
+  content: string;
+  loading: boolean;
+  saving: boolean;
+  error: string | null;
+  // Original fetched value, used to skip empty saves and to detect dirty.
+  baseline: string;
+}
+
+const EMPTY_NOTE_STATE: NoteState = {
+  content: "",
+  loading: false,
+  saving: false,
+  error: null,
+  baseline: "",
+};
+
+function diffTabKey(leftId: string, rightId: string, path: string): string {
+  return `diff:${leftId}\u21D4${rightId}:${path}`;
+}
+
 export function App(): JSX.Element {
-  // Casefile + active lane
+  // ----- Casefile + active lane -----
+
   const [casefile, setCasefile] = useState<CasefileSnapshot | null>(null);
   const activeLaneId = casefile?.activeLaneId ?? null;
   const activeLane = activeLaneId
     ? casefile?.lanes.find((lane) => lane.id === activeLaneId) ?? null
     : null;
 
-  // File tree (re-fetched whenever the active lane changes)
+  // ----- File tree -----
+
   const [tree, setTree] = useState<FileTreeNode | null>(null);
   const [treeError, setTreeError] = useState<string | null>(null);
 
-  // Per-lane session state. Keyed by `${casefileRoot}::${laneId}` so multiple
-  // casefiles opened in the same session don't bleed into each other.
+  // ----- Per-lane in-memory session state -----
+  // Keyed by `${casefileRoot}::${laneId}` so multiple casefiles opened in the
+  // same session don't bleed into each other.
+
   const [laneSessions, setLaneSessions] = useState<Map<string, LaneSessionState>>(
     () => new Map()
   );
@@ -74,31 +104,114 @@ export function App(): JSX.Element {
     [sessionKey]
   );
 
-  // Right panel
-  const [rightTab, setRightTab] = useState<RightTabKey>("chat");
+  // ----- Right panel + chat busy + provider selection -----
 
-  // Provider selection
+  const [rightTab, setRightTab] = useState<RightTabKey>("chat");
+  const [chatBusy, setChatBusy] = useState(false);
+
   const [provider, setProvider] = useState<Provider>(() => {
     const saved = localStorage.getItem(PROVIDER_STORAGE_KEY) as Provider | null;
     return saved ?? "openai";
   });
-  const [chatBusy, setChatBusy] = useState(false);
-
-  // Notes (local-device only until M3 promotes them to the casefile)
-  const [notes, setNotes] = useState<string>(() => localStorage.getItem(NOTES_STORAGE_KEY) ?? "");
-  useEffect(() => {
-    localStorage.setItem(NOTES_STORAGE_KEY, notes);
-  }, [notes]);
-
-  // API keys
-  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus>(DEFAULT_KEY_STATUS);
-  const [keysOpen, setKeysOpen] = useState(false);
-
   useEffect(() => {
     localStorage.setItem(PROVIDER_STORAGE_KEY, provider);
   }, [provider]);
 
-  // ----- API key bootstrap -----
+  // ----- Notes (per-lane, disk-backed) -----
+
+  const [notesByLane, setNotesByLane] = useState<Map<string, NoteState>>(() => new Map());
+  const noteState = sessionKey ? notesByLane.get(sessionKey) ?? EMPTY_NOTE_STATE : EMPTY_NOTE_STATE;
+  const updateNote = useCallback(
+    (key: string, updater: (prev: NoteState) => NoteState) => {
+      setNotesByLane((prev) => {
+        const next = new Map(prev);
+        const current = next.get(key) ?? EMPTY_NOTE_STATE;
+        next.set(key, updater(current));
+        return next;
+      });
+    },
+    []
+  );
+
+  // Debounced save: each keystroke schedules a save NOTES_DEBOUNCE_MS in the
+  // future; if another keystroke lands first, the prior timer is cancelled.
+  // This avoids hammering the disk on every character without losing data
+  // because (a) the timer is short and (b) we also save on lane switch.
+  const noteSaveTimers = useRef<Map<string, number>>(new Map());
+
+  const flushNoteSave = useCallback(
+    async (key: string, laneId: string, content: string) => {
+      updateNote(key, (prev) => ({ ...prev, saving: true, error: null }));
+      try {
+        await api().saveNote(laneId, content);
+        updateNote(key, (prev) => ({
+          ...prev,
+          saving: false,
+          baseline: content,
+        }));
+      } catch (error) {
+        updateNote(key, (prev) => ({
+          ...prev,
+          saving: false,
+          error: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    },
+    [updateNote]
+  );
+
+  const scheduleNoteSave = useCallback(
+    (key: string, laneId: string, content: string) => {
+      const timers = noteSaveTimers.current;
+      const existing = timers.get(key);
+      if (existing) window.clearTimeout(existing);
+      const handle = window.setTimeout(() => {
+        timers.delete(key);
+        void flushNoteSave(key, laneId, content);
+      }, NOTES_DEBOUNCE_MS);
+      timers.set(key, handle);
+    },
+    [flushNoteSave]
+  );
+
+  const handleNoteChange = useCallback(
+    (next: string) => {
+      if (!sessionKey || !activeLaneId) return;
+      updateNote(sessionKey, (prev) => ({ ...prev, content: next }));
+      scheduleNoteSave(sessionKey, activeLaneId, next);
+    },
+    [activeLaneId, sessionKey, scheduleNoteSave, updateNote]
+  );
+
+  // ----- Findings (per-casefile) -----
+
+  const [findings, setFindings] = useState<FindingDto[]>([]);
+  const [findingsBusy, setFindingsBusy] = useState(false);
+  const [lastExport, setLastExport] = useState<ExportResult | null>(null);
+
+  const reloadFindings = useCallback(async () => {
+    if (!casefile) {
+      setFindings([]);
+      return;
+    }
+    try {
+      // Pull all findings; the FindingsTab does its own client-side filter.
+      const list = await api().listFindings();
+      setFindings(list);
+    } catch (error) {
+      console.warn("listFindings failed", error);
+    }
+  }, [casefile]);
+
+  // ----- Lane comparison -----
+
+  const [comparison, setComparison] = useState<LaneComparisonDto | null>(null);
+  const [comparisonBusy, setComparisonBusy] = useState(false);
+
+  // ----- API keys -----
+
+  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus>(DEFAULT_KEY_STATUS);
+  const [keysOpen, setKeysOpen] = useState(false);
 
   const refreshKeyStatus = useCallback(async () => {
     try {
@@ -143,30 +256,56 @@ export function App(): JSX.Element {
 
   // ----- Lane chat history loader -----
 
-  const loadLaneChatHistory = useCallback(
-    async (laneId: string, key: string) => {
-      try {
-        const persisted = await api().listChat(laneId);
-        // Only seed the in-memory history for a lane the *first* time we see it
-        // in this session; otherwise the user's optimistic state would clobber.
-        setLaneSessions((prev) => {
-          if (prev.has(key)) return prev;
-          const next = new Map(prev);
-          next.set(key, {
-            ...EMPTY_LANE_SESSION,
-            messages: persisted,
-          });
-          return next;
-        });
-      } catch (error) {
-        console.warn("listChat failed", error);
-      }
-    },
-    []
-  );
+  const loadLaneChatHistory = useCallback(async (laneId: string, key: string) => {
+    try {
+      const persisted = await api().listChat(laneId);
+      // Only seed the in-memory history for a lane the *first* time we see it
+      // in this session; otherwise the user's optimistic state would clobber.
+      setLaneSessions((prev) => {
+        if (prev.has(key)) return prev;
+        const next = new Map(prev);
+        next.set(key, { ...EMPTY_LANE_SESSION, messages: persisted });
+        return next;
+      });
+    } catch (error) {
+      console.warn("listChat failed", error);
+    }
+  }, []);
 
-  // Whenever the active lane changes, refresh the tree and seed its chat
-  // history from disk if we haven't seen it before.
+  // ----- Notes loader -----
+
+  const loadLaneNotes = useCallback(async (laneId: string, key: string) => {
+    setNotesByLane((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Map(prev);
+      next.set(key, { ...EMPTY_NOTE_STATE, loading: true });
+      return next;
+    });
+    try {
+      const content = await api().getNote(laneId);
+      setNotesByLane((prev) => {
+        const next = new Map(prev);
+        next.set(key, {
+          content,
+          baseline: content,
+          loading: false,
+          saving: false,
+          error: null,
+        });
+        return next;
+      });
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      setNotesByLane((prev) => {
+        const next = new Map(prev);
+        const current = next.get(key) ?? EMPTY_NOTE_STATE;
+        next.set(key, { ...current, loading: false, error: errMsg });
+        return next;
+      });
+    }
+  }, []);
+
+  // Whenever the active lane changes, refresh tree, seed chat history, load notes.
   useEffect(() => {
     if (!casefile || !activeLaneId) {
       setTree(null);
@@ -175,7 +314,13 @@ export function App(): JSX.Element {
     void refreshTree();
     const key = `${casefile.root}::${activeLaneId}`;
     void loadLaneChatHistory(activeLaneId, key);
-  }, [casefile, activeLaneId, refreshTree, loadLaneChatHistory]);
+    void loadLaneNotes(activeLaneId, key);
+  }, [casefile, activeLaneId, refreshTree, loadLaneChatHistory, loadLaneNotes]);
+
+  // Reload findings whenever the casefile changes.
+  useEffect(() => {
+    void reloadFindings();
+  }, [reloadFindings]);
 
   // ----- Casefile ops -----
 
@@ -184,6 +329,8 @@ export function App(): JSX.Element {
       const snapshot = await api().chooseCasefile();
       if (snapshot) {
         setCasefile(snapshot);
+        // Switching casefile invalidates any prior comparison.
+        setComparison(null);
       }
     } catch (error) {
       setTreeError(error instanceof Error ? error.message : String(error));
@@ -203,18 +350,15 @@ export function App(): JSX.Element {
     [casefile]
   );
 
-  const handleRegisterLane = useCallback(
-    async (input: RegisterLaneInput) => {
-      try {
-        const snapshot = await api().registerLane(input);
-        setCasefile(snapshot);
-      } catch (error) {
-        setTreeError(error instanceof Error ? error.message : String(error));
-        throw error;
-      }
-    },
-    []
-  );
+  const handleRegisterLane = useCallback(async (input: RegisterLaneInput) => {
+    try {
+      const snapshot = await api().registerLane(input);
+      setCasefile(snapshot);
+    } catch (error) {
+      setTreeError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }, []);
 
   const handleChooseLaneRoot = useCallback(async () => {
     return api().chooseLaneRoot();
@@ -224,8 +368,9 @@ export function App(): JSX.Element {
 
   const handleOpenFile = useCallback(
     async (filePath: string) => {
-      if (session.tabs.some((t) => t.path === filePath)) {
-        updateSession((prev) => ({ ...prev, activeTabPath: filePath }));
+      // For the active lane, file tabs use `path` as the key.
+      if (session.tabs.some((t) => t.kind === "file" && t.path === filePath)) {
+        updateSession((prev) => ({ ...prev, activeTabKey: filePath }));
         return;
       }
       try {
@@ -235,13 +380,15 @@ export function App(): JSX.Element {
           tabs: [
             ...prev.tabs,
             {
+              kind: "file",
+              key: result.path,
               path: result.path,
               content: result.content,
               savedContent: result.content,
               truncated: result.truncated,
             },
           ],
-          activeTabPath: result.path,
+          activeTabKey: result.path,
         }));
       } catch (error) {
         setTreeError(error instanceof Error ? error.message : String(error));
@@ -251,48 +398,52 @@ export function App(): JSX.Element {
   );
 
   const handleSelectTab = useCallback(
-    (filePath: string) => {
-      updateSession((prev) => ({ ...prev, activeTabPath: filePath }));
+    (key: string) => {
+      updateSession((prev) => ({ ...prev, activeTabKey: key }));
     },
     [updateSession]
   );
 
   const handleCloseTab = useCallback(
-    (filePath: string) => {
+    (key: string) => {
       updateSession((prev) => {
-        const remainingTabs = prev.tabs.filter((t) => t.path !== filePath);
+        const remainingTabs = prev.tabs.filter((t) => t.key !== key);
         const nextActive =
-          prev.activeTabPath === filePath
+          prev.activeTabKey === key
             ? remainingTabs.length > 0
-              ? remainingTabs[remainingTabs.length - 1].path
+              ? remainingTabs[remainingTabs.length - 1].key
               : null
-            : prev.activeTabPath;
-        return { ...prev, tabs: remainingTabs, activeTabPath: nextActive };
+            : prev.activeTabKey;
+        return { ...prev, tabs: remainingTabs, activeTabKey: nextActive };
       });
     },
     [updateSession]
   );
 
   const handleEditTab = useCallback(
-    (filePath: string, content: string) => {
+    (key: string, content: string) => {
       updateSession((prev) => ({
         ...prev,
-        tabs: prev.tabs.map((t) => (t.path === filePath ? { ...t, content } : t)),
+        tabs: prev.tabs.map((t) =>
+          t.kind === "file" && t.key === key ? { ...t, content } : t
+        ),
       }));
     },
     [updateSession]
   );
 
   const handleSaveTab = useCallback(
-    async (filePath: string) => {
-      const tab = session.tabs.find((t) => t.path === filePath);
-      if (!tab) return;
+    async (key: string) => {
+      const tab = session.tabs.find((t) => t.key === key);
+      if (!tab || tab.kind !== "file") return;
       try {
-        await api().saveFile(filePath, tab.content);
+        await api().saveFile(tab.path, tab.content);
         updateSession((prev) => ({
           ...prev,
           tabs: prev.tabs.map((t) =>
-            t.path === filePath ? { ...t, savedContent: t.content, truncated: false } : t
+            t.kind === "file" && t.key === key
+              ? { ...t, savedContent: t.content, truncated: false }
+              : t
           ),
         }));
         void refreshTree();
@@ -307,9 +458,8 @@ export function App(): JSX.Element {
     if (session.tabs.length === 0) return;
     const fresh = await Promise.all(
       session.tabs.map(async (t) => {
-        if (t.content !== t.savedContent || t.truncated) {
-          return t;
-        }
+        if (t.kind !== "file") return t;
+        if (t.content !== t.savedContent || t.truncated) return t;
         try {
           const result = await api().readFile(t.path);
           return {
@@ -326,6 +476,161 @@ export function App(): JSX.Element {
     updateSession((prev) => ({ ...prev, tabs: fresh }));
   }, [session.tabs, updateSession]);
 
+  // ----- Compare flow -----
+
+  const handleCompareLanes = useCallback(
+    async (leftLaneId: string, rightLaneId: string) => {
+      if (!casefile) return;
+      setComparisonBusy(true);
+      try {
+        const result = await api().compareLanes(leftLaneId, rightLaneId);
+        setComparison(result);
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setComparisonBusy(false);
+      }
+    },
+    [casefile]
+  );
+
+  const handleClearComparison = useCallback(() => setComparison(null), []);
+
+  const handleOpenDiff = useCallback(
+    async (path: string) => {
+      if (!comparison || !casefile) return;
+      const left = casefile.lanes.find((l) => l.id === comparison.leftLaneId);
+      const right = casefile.lanes.find((l) => l.id === comparison.rightLaneId);
+      if (!left || !right) return;
+      const key = diffTabKey(comparison.leftLaneId, comparison.rightLaneId, path);
+      // Already open? Just focus it.
+      if (session.tabs.some((t) => t.key === key)) {
+        updateSession((prev) => ({ ...prev, activeTabKey: key }));
+        return;
+      }
+      try {
+        const [leftRead, rightRead] = await Promise.all([
+          api().readLaneFile(comparison.leftLaneId, path),
+          api().readLaneFile(comparison.rightLaneId, path),
+        ]);
+        updateSession((prev) => ({
+          ...prev,
+          tabs: [
+            ...prev.tabs,
+            {
+              kind: "diff",
+              key,
+              path,
+              leftLaneId: comparison.leftLaneId,
+              rightLaneId: comparison.rightLaneId,
+              leftLaneName: left.name,
+              rightLaneName: right.name,
+              leftContent: leftRead.content,
+              rightContent: rightRead.content,
+              language: languageFromPath(path),
+            },
+          ],
+          activeTabKey: key,
+        }));
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [casefile, comparison, session.tabs, updateSession]
+  );
+
+  const handleOpenLaneFile = useCallback(
+    async (laneId: string, path: string) => {
+      // For files in lanes other than the active one, we open as a read-only
+      // file tab keyed by `lane:<id>:<path>`. Switching lanes is a richer UX
+      // step; this just lets the user inspect the file in place.
+      if (!casefile) return;
+      const lane = casefile.lanes.find((l) => l.id === laneId);
+      if (!lane) return;
+      const key = `lane:${laneId}:${path}`;
+      if (session.tabs.some((t) => t.key === key)) {
+        updateSession((prev) => ({ ...prev, activeTabKey: key }));
+        return;
+      }
+      try {
+        const result = await api().readLaneFile(laneId, path);
+        updateSession((prev) => ({
+          ...prev,
+          tabs: [
+            ...prev.tabs,
+            {
+              kind: "file",
+              key,
+              path: result.path,
+              content: result.content,
+              // savedContent === content keeps it "clean"; this view is for
+              // inspection, not editing (saves go through the active lane).
+              savedContent: result.content,
+              truncated: result.truncated,
+            },
+          ],
+          activeTabKey: key,
+        }));
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [casefile, session.tabs, updateSession]
+  );
+
+  // ----- Findings ops -----
+
+  const handleCreateFinding = useCallback(
+    async (draft: FindingDraft) => {
+      setFindingsBusy(true);
+      try {
+        await api().createFinding(draft);
+        await reloadFindings();
+      } finally {
+        setFindingsBusy(false);
+      }
+    },
+    [reloadFindings]
+  );
+
+  const handleUpdateFinding = useCallback(
+    async (id: string, draft: Partial<FindingDraft>) => {
+      setFindingsBusy(true);
+      try {
+        await api().updateFinding(id, draft);
+        await reloadFindings();
+      } finally {
+        setFindingsBusy(false);
+      }
+    },
+    [reloadFindings]
+  );
+
+  const handleDeleteFinding = useCallback(
+    async (id: string) => {
+      setFindingsBusy(true);
+      try {
+        await api().deleteFinding(id);
+        await reloadFindings();
+      } finally {
+        setFindingsBusy(false);
+      }
+    },
+    [reloadFindings]
+  );
+
+  const handleExportFindings = useCallback(async (laneIds: string[]) => {
+    setFindingsBusy(true);
+    try {
+      const result = await api().exportFindings(laneIds);
+      setLastExport(result);
+    } catch (error) {
+      setTreeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setFindingsBusy(false);
+    }
+  }, []);
+
   // ----- Chat -----
 
   // We keep the latest user-typed text outside of state to make sendMessage
@@ -340,7 +645,6 @@ export function App(): JSX.Element {
       lastSentRef.current = value;
       setChatBusy(true);
       const historyBeforeTurn = session.messages;
-      // Optimistic user message.
       updateSession((prev) => ({
         ...prev,
         messages: [...prev.messages, { role: "user", content: value }],
@@ -375,6 +679,11 @@ export function App(): JSX.Element {
         }));
         await refreshTree();
         await refreshOpenTabsFromDisk();
+        // The model may have created findings via a write tool we don't
+        // expose yet, but findings_list/_read are read-only — refresh to
+        // catch any out-of-band changes (e.g. user editing a JSON file
+        // directly under .casefile/findings/).
+        await reloadFindings();
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         updateSession((prev) => ({
@@ -398,6 +707,7 @@ export function App(): JSX.Element {
       provider,
       refreshTree,
       refreshOpenTabsFromDisk,
+      reloadFindings,
     ]
   );
 
@@ -421,6 +731,7 @@ export function App(): JSX.Element {
       }));
       await refreshTree();
       await refreshOpenTabsFromDisk();
+      await reloadFindings();
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       updateSession((prev) => ({
@@ -443,6 +754,7 @@ export function App(): JSX.Element {
     updateSession,
     refreshTree,
     refreshOpenTabsFromDisk,
+    reloadFindings,
   ]);
 
   const denyTools = useCallback(() => {
@@ -457,6 +769,10 @@ export function App(): JSX.Element {
     }));
   }, [session.pendingApprovals, updateSession]);
 
+  // FileTree highlighting only makes sense for file tabs (not diff tabs).
+  const activeFilePath =
+    session.tabs.find((t) => t.key === session.activeTabKey && t.kind === "file")?.path ?? null;
+
   return (
     <div className="app">
       <Toolbar
@@ -469,13 +785,11 @@ export function App(): JSX.Element {
       />
       <div className="workbench">
         <section className="pane">
-          <header className="pane-header">
-            {activeLane ? activeLane.name : "Workspace"}
-          </header>
+          <header className="pane-header">{activeLane ? activeLane.name : "Workspace"}</header>
           <div className="pane-body">
             <FileTree
               root={tree}
-              activePath={session.activeTabPath}
+              activePath={activeFilePath}
               onOpenFile={handleOpenFile}
               error={treeError}
               hasWorkspace={Boolean(activeLane)}
@@ -485,7 +799,7 @@ export function App(): JSX.Element {
         <section className="pane editor-pane">
           <EditorPane
             tabs={session.tabs}
-            activePath={session.activeTabPath}
+            activeKey={session.activeTabKey}
             onSelectTab={handleSelectTab}
             onCloseTab={handleCloseTab}
             onEdit={handleEditTab}
@@ -508,14 +822,34 @@ export function App(): JSX.Element {
               onDenyTools: denyTools,
             }}
             notes={{
-              value: notes,
-              onChange: setNotes,
+              value: noteState.content,
+              hasActiveLane: Boolean(activeLane),
+              loading: noteState.loading,
+              saving: noteState.saving,
+              error: noteState.error,
+              onChange: handleNoteChange,
+            }}
+            findings={{
+              casefile,
+              findings,
+              busy: findingsBusy,
+              lastExport,
+              onCreate: handleCreateFinding,
+              onUpdate: handleUpdateFinding,
+              onDelete: handleDeleteFinding,
+              onExport: handleExportFindings,
             }}
             lanes={{
               casefile,
               onSwitchLane: handleSwitchLane,
               onRegisterLane: handleRegisterLane,
               onChooseLaneRoot: handleChooseLaneRoot,
+              comparison,
+              comparisonBusy,
+              onCompare: handleCompareLanes,
+              onClearComparison: handleClearComparison,
+              onOpenDiff: handleOpenDiff,
+              onOpenLaneFile: handleOpenLaneFile,
             }}
           />
         </section>

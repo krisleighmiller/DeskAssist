@@ -82,6 +82,57 @@ export interface RegisterLaneInput {
   id?: string;
 }
 
+export type Severity = "info" | "low" | "medium" | "high" | "critical";
+
+export const SEVERITIES: readonly Severity[] = ["info", "low", "medium", "high", "critical"];
+
+export interface SourceRefDto {
+  laneId: string;
+  path: string;
+  lineStart: number | null;
+  lineEnd: number | null;
+}
+
+export interface FindingDto {
+  id: string;
+  title: string;
+  body: string;
+  severity: Severity;
+  createdAt: string;
+  updatedAt: string;
+  laneIds: string[];
+  sourceRefs: SourceRefDto[];
+}
+
+export interface FindingDraft {
+  title: string;
+  body: string;
+  severity: Severity;
+  laneIds: string[];
+  sourceRefs?: { laneId: string; path: string; lineStart?: number; lineEnd?: number }[];
+}
+
+export interface ChangedFileDto {
+  path: string;
+  leftSha256: string;
+  rightSha256: string;
+  leftSize: number;
+  rightSize: number;
+}
+
+export interface LaneComparisonDto {
+  leftLaneId: string;
+  rightLaneId: string;
+  added: string[];
+  removed: string[];
+  changed: ChangedFileDto[];
+}
+
+export interface ExportResult {
+  path: string;
+  markdown: string;
+}
+
 export interface AssistantApi {
   // Casefile + lanes
   chooseCasefile: () => Promise<CasefileSnapshot | null>;
@@ -91,10 +142,30 @@ export interface AssistantApi {
   switchLane: (laneId: string) => Promise<CasefileSnapshot>;
   listChat: (laneId: string) => Promise<ChatMessage[]>;
 
-  // Lane-scoped filesystem
+  // Lane-scoped filesystem (active lane).
   listWorkspace: (maxDepth?: number) => Promise<FileTreeNode>;
   readFile: (path: string, maxChars?: number) => Promise<FileReadResult>;
   saveFile: (path: string, content: string) => Promise<FileSaveResult>;
+
+  // Findings (M3).
+  listFindings: (laneId?: string) => Promise<FindingDto[]>;
+  getFinding: (findingId: string) => Promise<FindingDto>;
+  createFinding: (finding: FindingDraft) => Promise<FindingDto>;
+  updateFinding: (findingId: string, finding: Partial<FindingDraft>) => Promise<FindingDto>;
+  deleteFinding: (findingId: string) => Promise<true>;
+
+  // Notes (M3).
+  getNote: (laneId: string) => Promise<string>;
+  saveNote: (laneId: string, content: string) => Promise<true>;
+
+  // Compare + export + lane-scoped read (M3).
+  compareLanes: (leftLaneId: string, rightLaneId: string) => Promise<LaneComparisonDto>;
+  exportFindings: (laneIds: string[]) => Promise<ExportResult>;
+  readLaneFile: (
+    laneId: string,
+    path: string,
+    maxChars?: number
+  ) => Promise<FileReadResult>;
 
   // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;

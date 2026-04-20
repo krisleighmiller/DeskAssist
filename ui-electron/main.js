@@ -497,6 +497,132 @@ ipcMain.handle("casefile:listChat", async (_, args = {}) => {
   return Array.isArray(response.messages) ? response.messages : [];
 });
 
+// ----- M3: findings, notes, compare, export, lane-scoped read -----
+
+function requireCasefile() {
+  if (!activeCasefileRoot) {
+    throw new Error("No casefile is open");
+  }
+  return activeCasefileRoot;
+}
+
+ipcMain.handle("casefile:listFindings", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" && args.laneId ? args.laneId : null;
+  const payload = { command: "casefile:listFindings", casefileRoot };
+  if (laneId) payload.laneId = laneId;
+  const response = await runPythonBridge(payload);
+  return Array.isArray(response.findings) ? response.findings : [];
+});
+
+ipcMain.handle("casefile:getFinding", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const findingId = typeof args.findingId === "string" ? args.findingId : "";
+  if (!findingId) throw new Error("findingId is required");
+  const response = await runPythonBridge({
+    command: "casefile:getFinding",
+    casefileRoot,
+    findingId,
+  });
+  return response.finding;
+});
+
+ipcMain.handle("casefile:createFinding", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const finding = args.finding && typeof args.finding === "object" ? args.finding : null;
+  if (!finding) throw new Error("finding is required");
+  const response = await runPythonBridge({
+    command: "casefile:createFinding",
+    casefileRoot,
+    finding,
+  });
+  return response.finding;
+});
+
+ipcMain.handle("casefile:updateFinding", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const findingId = typeof args.findingId === "string" ? args.findingId : "";
+  const finding = args.finding && typeof args.finding === "object" ? args.finding : null;
+  if (!findingId) throw new Error("findingId is required");
+  if (!finding) throw new Error("finding is required");
+  const response = await runPythonBridge({
+    command: "casefile:updateFinding",
+    casefileRoot,
+    findingId,
+    finding,
+  });
+  return response.finding;
+});
+
+ipcMain.handle("casefile:deleteFinding", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const findingId = typeof args.findingId === "string" ? args.findingId : "";
+  if (!findingId) throw new Error("findingId is required");
+  await runPythonBridge({ command: "casefile:deleteFinding", casefileRoot, findingId });
+  return true;
+});
+
+ipcMain.handle("casefile:getNote", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  if (!laneId) throw new Error("laneId is required");
+  const response = await runPythonBridge({ command: "casefile:getNote", casefileRoot, laneId });
+  return typeof response.content === "string" ? response.content : "";
+});
+
+ipcMain.handle("casefile:saveNote", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  const content = typeof args.content === "string" ? args.content : "";
+  if (!laneId) throw new Error("laneId is required");
+  await runPythonBridge({ command: "casefile:saveNote", casefileRoot, laneId, content });
+  return true;
+});
+
+ipcMain.handle("casefile:compareLanes", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const leftLaneId = typeof args.leftLaneId === "string" ? args.leftLaneId : "";
+  const rightLaneId = typeof args.rightLaneId === "string" ? args.rightLaneId : "";
+  if (!leftLaneId || !rightLaneId) {
+    throw new Error("leftLaneId and rightLaneId are required");
+  }
+  const response = await runPythonBridge({
+    command: "casefile:compareLanes",
+    casefileRoot,
+    leftLaneId,
+    rightLaneId,
+  });
+  return response.comparison;
+});
+
+ipcMain.handle("casefile:exportFindings", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneIds = Array.isArray(args.laneIds) ? args.laneIds.filter((x) => typeof x === "string") : [];
+  if (laneIds.length === 0) throw new Error("laneIds is required");
+  const response = await runPythonBridge({
+    command: "casefile:exportFindings",
+    casefileRoot,
+    laneIds,
+  });
+  return { path: response.path, markdown: response.markdown };
+});
+
+ipcMain.handle("lane:readFile", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  const filePath = typeof args.path === "string" ? args.path : "";
+  if (!laneId) throw new Error("laneId is required");
+  if (!filePath) throw new Error("path is required");
+  const payload = { command: "lane:readFile", casefileRoot, laneId, path: filePath };
+  if (Number.isInteger(args.maxChars)) payload.maxChars = args.maxChars;
+  const response = await runPythonBridge(payload);
+  return {
+    path: response.path,
+    content: response.content,
+    truncated: Boolean(response.truncated),
+  };
+});
+
 ipcMain.handle("workspace:list", async (_, args = {}) => {
   const maxDepth = Number.isInteger(args.maxDepth) ? args.maxDepth : 4;
   if (!activeLaneRoot) {

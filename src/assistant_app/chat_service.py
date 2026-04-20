@@ -19,6 +19,7 @@ class ChatService:
         workspace_root: Path | None = None,
         tool_registry: ToolRegistry | None = None,
         model_defaults: dict[str, str] | None = None,
+        casefile_root: Path | None = None,
     ) -> None:
         provided = providers or [
             OpenAIProvider(),
@@ -38,7 +39,10 @@ class ChatService:
         self._active_provider_name = default_provider_name
         self._history: list[ChatMessage] = []
         resolved_workspace_root = (workspace_root or Path.cwd()).resolve()
-        self._tool_registry = tool_registry or build_default_tool_registry(resolved_workspace_root)
+        resolved_casefile_root = casefile_root.resolve() if casefile_root is not None else None
+        self._tool_registry = tool_registry or build_default_tool_registry(
+            resolved_workspace_root, casefile_root=resolved_casefile_root
+        )
         self._default_models = {
             "openai": "gpt-4o-mini",
             "anthropic": "claude-3-5-haiku-latest",
@@ -188,6 +192,11 @@ class ChatService:
                 "Delete a workspace file or directory. Set recursive=true for directories. "
                 "Requires user write approval."
             ),
+            "findings_list": (
+                "List findings recorded in the casefile. Optional 'lane_id' filters to one lane. "
+                "Read-only."
+            ),
+            "findings_read": "Read a single finding by id. Read-only.",
         }
         definitions: list[dict[str, object]] = []
         for spec in self.list_tool_specs():
