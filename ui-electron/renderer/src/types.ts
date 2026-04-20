@@ -62,11 +62,23 @@ export type LaneKind = "repo" | "doc" | "rubric" | "review" | "other";
 
 export const LANE_KINDS: readonly LaneKind[] = ["repo", "doc", "rubric", "review", "other"];
 
+export type AttachmentMode = "read";
+
+export interface LaneAttachmentDto {
+  name: string;
+  root: string;
+  mode: AttachmentMode;
+}
+
 export interface Lane {
   id: string;
   name: string;
   kind: LaneKind;
   root: string;
+  /** M3.5: parent lane id; null/undefined means top-level. */
+  parentId?: string | null;
+  /** M3.5: read-only sibling directories travelling with this lane. */
+  attachments?: LaneAttachmentDto[];
 }
 
 export interface CasefileSnapshot {

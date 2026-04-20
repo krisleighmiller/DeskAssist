@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Mapping
 
 from assistant_app.tools.file_tools import (
     make_append_file_tool,
@@ -20,6 +21,7 @@ def build_default_tool_registry(
     workspace_root: Path,
     *,
     casefile_root: Path | None = None,
+    read_overlays: Mapping[str, Path] | None = None,
 ) -> ToolRegistry:
     """Build the standard tool registry rooted at `workspace_root`.
 
@@ -27,6 +29,12 @@ def build_default_tool_registry(
     tools (`findings_list`, `findings_read`) are registered and enabled so
     the chat model can cite findings that exist in the casefile. The tools
     only ever read; they cannot create or delete findings.
+
+    `read_overlays` (M3.5) layers additional read-only roots on top of the
+    write root, addressed by virtual path prefix. Writes still go only to
+    `workspace_root`. The overlays are propagated to the file tools so
+    `read_file("_ancestors/foo/bar.md")` resolves into the right ancestor
+    without exposing absolute paths to the model.
     """
     enabled = {"append_file", "delete_file", "delete_path", "list_dir", "read_file", "save_file"}
     if casefile_root is not None:
@@ -37,42 +45,42 @@ def build_default_tool_registry(
     )
     registry.register(
         "list_dir",
-        make_list_dir_tool(workspace_root),
+        make_list_dir_tool(workspace_root, read_overlays=read_overlays),
         input_schema={"path": str},
         required_params=set(),
         permission="workspace_read",
     )
     registry.register(
         "read_file",
-        make_read_file_tool(workspace_root),
+        make_read_file_tool(workspace_root, read_overlays=read_overlays),
         input_schema={"path": str, "max_chars": int},
         required_params={"path"},
         permission="workspace_read",
     )
     registry.register(
         "save_file",
-        make_save_file_tool(workspace_root),
+        make_save_file_tool(workspace_root, read_overlays=read_overlays),
         input_schema={"path": str, "content": str, "overwrite": bool},
         required_params={"path", "content"},
         permission="workspace_write",
     )
     registry.register(
         "append_file",
-        make_append_file_tool(workspace_root),
+        make_append_file_tool(workspace_root, read_overlays=read_overlays),
         input_schema={"path": str, "content": str},
         required_params={"path", "content"},
         permission="workspace_write",
     )
     registry.register(
         "delete_file",
-        make_delete_file_tool(workspace_root),
+        make_delete_file_tool(workspace_root, read_overlays=read_overlays),
         input_schema={"path": str},
         required_params={"path"},
         permission="workspace_write",
     )
     registry.register(
         "delete_path",
-        make_delete_path_tool(workspace_root),
+        make_delete_path_tool(workspace_root, read_overlays=read_overlays),
         input_schema={"path": str, "recursive": bool},
         required_params={"path"},
         permission="workspace_write",

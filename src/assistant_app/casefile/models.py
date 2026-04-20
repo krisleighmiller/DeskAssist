@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -27,6 +27,31 @@ def coerce_lane_kind(value: object) -> LaneKind:
     return "other"
 
 
+# An attachment is a sibling read-only directory that travels with a lane.
+# Typical use: pairing analyst notes (`ash_notes/`) with the code being
+# discussed (`ash/`). Attachments are exposed to chats as virtual roots
+# (`_attachments/<name>/...`) and can never be written to.
+AttachmentMode = Literal["read"]
+DEFAULT_ATTACHMENT_MODE: AttachmentMode = "read"
+
+
+@dataclass(slots=True, frozen=True)
+class LaneAttachment:
+    """A read-only sibling directory associated with a lane.
+
+    `name` is the user-facing label and the virtual path segment the model
+    sees (`_attachments/<name>/...`). It is normalized by the store to be
+    filesystem-safe.
+    `root` is an absolute directory path. It may live anywhere on disk;
+    attachments are explicitly allowed to point outside the casefile.
+    `mode` is reserved for future write-attachments; M3.5a only ships "read".
+    """
+
+    name: str
+    root: Path
+    mode: AttachmentMode = DEFAULT_ATTACHMENT_MODE
+
+
 @dataclass(slots=True, frozen=True)
 class Lane:
     """A registered lane inside a casefile.
@@ -38,12 +63,19 @@ class Lane:
     `root` is the *resolved absolute* directory that scoping/IO operates on.
     A lane root may be inside or outside the casefile root; lanes are
     deliberately allowed to be sibling directories (see ARCHITECTURE.md).
+    `parent_id` is None for top-level lanes; otherwise the id of the
+    enclosing scope. Children inherit read-only access to ancestor roots
+    and ancestor attachments. Cycles are forbidden by the store.
+    `attachments` is the list of sibling read-only directories that travel
+    with this lane (see `LaneAttachment`).
     """
 
     id: str
     name: str
     kind: LaneKind
     root: Path
+    parent_id: str | None = None
+    attachments: tuple[LaneAttachment, ...] = field(default_factory=tuple)
 
 
 @dataclass(slots=True, frozen=True)
@@ -64,10 +96,21 @@ class Casefile:
     def chats_dir(self) -> Path:
         return self.metadata_dir / "chats"
 
+    @property
+    def context_file(self) -> Path:
+        # M3.5: workspace-level "always-on" file manifest.
+        return self.metadata_dir / "context.json"
+
 
 @dataclass(slots=True, frozen=True)
 class CasefileSnapshot:
-    """An IPC-friendly point-in-time view of a casefile + its lanes."""
+    """An IPC-friendly point-in-time view of a casefile + its lanes.
+
+    Lanes are stored as a flat tuple here even though they form a tree
+    (via `Lane.parent_id`). Tree shape is something callers and the
+    renderer can compute on demand from the parent links; storing the
+    flat list keeps lookups O(1) by id and round-trips cleanly to JSON.
+    """
 
     casefile: Casefile
     lanes: tuple[Lane, ...]
@@ -87,3 +130,25 @@ class CasefileSnapshot:
             return self.lane_by_id(self.active_lane_id)
         except KeyError:
             return None
+
+    def ancestors_of(self, lane_id: str) -> tuple[Lane, ...]:
+        """Return ancestors of `lane_id` in nearest-first order.
+
+        Stops if the parent chain references a missing lane (broken parent
+        link) or detects a cycle, returning what it has so far. The store
+        rejects cycles on write, so a cycle here means tampering.
+        """
+        out: list[Lane] = []
+        seen: set[str] = {lane_id}
+        current = self.lane_by_id(lane_id).parent_id
+        while current is not None:
+            if current in seen:
+                break
+            seen.add(current)
+            try:
+                parent = self.lane_by_id(current)
+            except KeyError:
+                break
+            out.append(parent)
+            current = parent.parent_id
+        return tuple(out)

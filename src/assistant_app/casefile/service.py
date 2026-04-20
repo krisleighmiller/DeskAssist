@@ -3,8 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from assistant_app.casefile.context import (
+    ContextManifest,
+    ContextManifestStore,
+    ResolvedContextFile,
+)
 from assistant_app.casefile.findings import Finding, SourceRef
-from assistant_app.casefile.models import CasefileSnapshot, Lane
+from assistant_app.casefile.models import CasefileSnapshot, Lane, LaneAttachment
+from assistant_app.casefile.scope import ScopeContext, resolve_scope
 from assistant_app.casefile.store import CasefileStore
 
 
@@ -29,12 +35,51 @@ class CasefileService:
         return self.store.load_snapshot()
 
     def register_lane(
-        self, *, name: str, kind: str, root: Path, lane_id: str | None = None
+        self,
+        *,
+        name: str,
+        kind: str,
+        root: Path,
+        lane_id: str | None = None,
+        parent_id: str | None = None,
+        attachments: list[LaneAttachment] | None = None,
     ) -> CasefileSnapshot:
-        return self.store.register_lane(name=name, kind=kind, root=root, lane_id=lane_id)
+        return self.store.register_lane(
+            name=name,
+            kind=kind,
+            root=root,
+            lane_id=lane_id,
+            parent_id=parent_id,
+            attachments=attachments,
+        )
 
     def set_active_lane(self, lane_id: str) -> CasefileSnapshot:
         return self.store.set_active_lane(lane_id)
+
+    def update_lane_attachments(
+        self, lane_id: str, attachments: list[LaneAttachment]
+    ) -> CasefileSnapshot:
+        return self.store.update_lane_attachments(lane_id, attachments)
+
+    def set_lane_parent(self, lane_id: str, parent_id: str | None) -> CasefileSnapshot:
+        return self.store.set_lane_parent(lane_id, parent_id)
+
+    # ----- context manifest -----
+
+    def context_store(self) -> ContextManifestStore:
+        return ContextManifestStore(self.store.casefile.root)
+
+    def load_context_manifest(self) -> ContextManifest:
+        return self.context_store().load()
+
+    def save_context_manifest(self, manifest: ContextManifest) -> ContextManifest:
+        store = self.context_store()
+        store.save(manifest)
+        return store.load()
+
+    def resolve_scope(self, lane_id: str) -> ScopeContext:
+        snapshot = self.store.load_snapshot()
+        return resolve_scope(snapshot, lane_id)
 
     # ----- lookups used by the chat bridge -----
 
@@ -72,6 +117,72 @@ def serialize_lane(lane: Lane) -> dict[str, Any]:
         "name": lane.name,
         "kind": lane.kind,
         "root": str(lane.root),
+        "parentId": lane.parent_id,
+        "attachments": [serialize_attachment(att) for att in lane.attachments],
+    }
+
+
+def serialize_attachment(attachment: LaneAttachment) -> dict[str, Any]:
+    return {
+        "name": attachment.name,
+        "root": str(attachment.root),
+        "mode": attachment.mode,
+    }
+
+
+def parse_attachments(raw: Any) -> list[LaneAttachment]:
+    """Parse `[{name, root, mode?}]` entries from IPC into LaneAttachment objects.
+
+    The store re-validates names and resolves roots; this parser only does
+    enough type checking to fail loudly on malformed payloads.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("attachments must be an array")
+    out: list[LaneAttachment] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("attachment entry must be an object")
+        name = item.get("name")
+        root = item.get("root")
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("attachment.name is required")
+        if not isinstance(root, str) or not root.strip():
+            raise ValueError("attachment.root is required")
+        out.append(LaneAttachment(name=name.strip(), root=Path(root)))
+    return out
+
+
+def serialize_context_file(entry: ResolvedContextFile) -> dict[str, Any]:
+    return {
+        "path": entry.relative_path,
+        "absolutePath": str(entry.absolute_path),
+        "sizeBytes": entry.size_bytes,
+    }
+
+
+def serialize_context_manifest(
+    manifest: ContextManifest, files: list[ResolvedContextFile]
+) -> dict[str, Any]:
+    return {
+        "files": list(manifest.files),
+        "autoIncludeMaxBytes": manifest.auto_include_max_bytes,
+        "resolved": [serialize_context_file(entry) for entry in files],
+    }
+
+
+def serialize_scope(scope: ScopeContext) -> dict[str, Any]:
+    return {
+        "laneId": scope.lane_id,
+        "writeRoot": str(scope.write_root),
+        "casefileRoot": str(scope.casefile_root),
+        "readOverlays": [
+            {"prefix": ov.prefix, "root": str(ov.root), "label": ov.label}
+            for ov in scope.read_overlays
+        ],
+        "contextFiles": [serialize_context_file(entry) for entry in scope.context_files],
+        "autoIncludeMaxBytes": scope.auto_include_max_bytes,
     }
 
 

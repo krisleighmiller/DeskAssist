@@ -3,17 +3,22 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from assistant_app.casefile.models import (
     Casefile,
     CasefileSnapshot,
+    DEFAULT_ATTACHMENT_MODE,
     DEFAULT_LANE_KIND,
     Lane,
+    LaneAttachment,
     coerce_lane_kind,
 )
 
-LANES_FILE_VERSION = 1
+# Bumped from 1 to 2 in M3.5 when lanes gained `parent_id` and `attachments`.
+# Version 1 files are still loadable: missing fields default to "no parent,
+# no attachments" and the file is rewritten as version 2 on first mutation.
+LANES_FILE_VERSION = 2
 
 
 class LanesFileError(ValueError):
@@ -53,6 +58,27 @@ def slug_from_name(name: str) -> str:
     return normalize_lane_id(name or "lane")
 
 
+_ATTACHMENT_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+
+
+def normalize_attachment_name(raw: str) -> str:
+    """Normalize an attachment name for use as a virtual path segment.
+
+    Attachment names appear in tool responses as `_attachments/<name>/...`,
+    so they must not contain path separators. We allow mixed case here since
+    the segment is purely informational (lane ids carry the lowercase
+    constraint, attachments do not).
+    """
+    candidate = raw.strip()
+    if not candidate:
+        raise ValueError("Attachment name is empty")
+    if "/" in candidate or "\\" in candidate or "\x00" in candidate or ".." in candidate:
+        raise ValueError(f"Invalid attachment name (path-like): {raw!r}")
+    if not _ATTACHMENT_NAME_RE.match(candidate):
+        raise ValueError(f"Invalid attachment name: {raw!r}")
+    return candidate
+
+
 class CasefileStore:
     """Filesystem-backed CRUD for a single casefile's `.casefile/` directory.
 
@@ -88,7 +114,13 @@ class CasefileStore:
     # ----- lanes.json -----
 
     def load_snapshot(self) -> CasefileSnapshot:
-        """Load lanes + active lane id. Auto-initializes if needed."""
+        """Load lanes + active lane id. Auto-initializes if needed.
+
+        Version 1 (M2/M3) files load without their parent/attachment fields;
+        every lane is treated as a top-level lane with no attachments. The
+        file is *not* rewritten just for being read — the upgrade happens on
+        the next mutation, keeping `load_snapshot` side-effect free.
+        """
         if not self.casefile.lanes_file.exists():
             self.ensure_initialized()
         raw = self._read_lanes_file()
@@ -103,20 +135,37 @@ class CasefileStore:
         lanes: list[Lane] = []
         seen_ids: set[str] = set()
         for entry in lanes_raw:
-            lane = self._lane_from_raw(entry)
+            lane = self._lane_from_raw(entry, file_version=version)
             if lane.id in seen_ids:
                 raise LanesFileError(f"Duplicate lane id in lanes.json: {lane.id!r}")
             seen_ids.add(lane.id)
             lanes.append(lane)
+        # Drop dangling parent_ids rather than hard-failing — a parent could
+        # be deleted out-of-band. The lane still loads, just as a root.
+        cleaned: list[Lane] = []
+        for lane in lanes:
+            if lane.parent_id is not None and lane.parent_id not in seen_ids:
+                cleaned.append(
+                    Lane(
+                        id=lane.id,
+                        name=lane.name,
+                        kind=lane.kind,
+                        root=lane.root,
+                        parent_id=None,
+                        attachments=lane.attachments,
+                    )
+                )
+            else:
+                cleaned.append(lane)
         active = raw.get("active_lane_id")
         active_lane_id: str | None = None
         if isinstance(active, str) and active in seen_ids:
             active_lane_id = active
-        elif lanes:
-            active_lane_id = lanes[0].id
+        elif cleaned:
+            active_lane_id = cleaned[0].id
         return CasefileSnapshot(
             casefile=self.casefile,
-            lanes=tuple(lanes),
+            lanes=tuple(cleaned),
             active_lane_id=active_lane_id,
         )
 
@@ -127,12 +176,23 @@ class CasefileStore:
         kind: str,
         root: Path,
         lane_id: str | None = None,
+        parent_id: str | None = None,
+        attachments: Iterable[LaneAttachment] | None = None,
     ) -> CasefileSnapshot:
         """Add a new lane and return the updated snapshot.
 
         `root` may be absolute or relative to the casefile root. Lane roots
         outside the casefile are explicitly allowed (lanes are sibling
         directories in the documented model).
+
+        `parent_id`, when provided, must refer to an existing lane. Cycles
+        cannot occur at registration (a brand-new lane has no descendants),
+        but the field is validated to exist so a bad UI never leaves an
+        orphan parent reference on disk.
+
+        `attachments` may include directories anywhere on disk. Names must
+        be unique within a single lane; the same directory may legitimately
+        appear as an attachment on multiple lanes.
         """
         snapshot = self.load_snapshot()
         existing_ids = {lane.id for lane in snapshot.lanes}
@@ -143,15 +203,79 @@ class CasefileStore:
             raise FileNotFoundError(f"Lane root does not exist: {resolved_root}")
         if not resolved_root.is_dir():
             raise NotADirectoryError(f"Lane root is not a directory: {resolved_root}")
+        resolved_parent: str | None = None
+        if parent_id is not None and parent_id != "":
+            if parent_id not in existing_ids:
+                raise KeyError(f"Unknown parent_id: {parent_id!r}")
+            resolved_parent = parent_id
+        resolved_attachments = self._normalize_attachments(attachments)
         lane = Lane(
             id=final_id,
             name=name.strip() or final_id,
             kind=coerce_lane_kind(kind),
             root=resolved_root,
+            parent_id=resolved_parent,
+            attachments=resolved_attachments,
         )
         new_lanes = list(snapshot.lanes) + [lane]
         active = snapshot.active_lane_id or lane.id
         self._write_lanes_file(new_lanes, active_lane_id=active)
+        return self.load_snapshot()
+
+    def update_lane_attachments(
+        self,
+        lane_id: str,
+        attachments: Iterable[LaneAttachment],
+    ) -> CasefileSnapshot:
+        """Replace a lane's attachment list. Used by the renderer-side editor."""
+        snapshot = self.load_snapshot()
+        target = snapshot.lane_by_id(lane_id)
+        normalized = self._normalize_attachments(attachments)
+        replaced = Lane(
+            id=target.id,
+            name=target.name,
+            kind=target.kind,
+            root=target.root,
+            parent_id=target.parent_id,
+            attachments=normalized,
+        )
+        new_lanes = [replaced if lane.id == lane_id else lane for lane in snapshot.lanes]
+        self._write_lanes_file(new_lanes, active_lane_id=snapshot.active_lane_id)
+        return self.load_snapshot()
+
+    def set_lane_parent(self, lane_id: str, parent_id: str | None) -> CasefileSnapshot:
+        """Reparent an existing lane, rejecting cycles."""
+        snapshot = self.load_snapshot()
+        target = snapshot.lane_by_id(lane_id)
+        if parent_id is not None:
+            if parent_id == lane_id:
+                raise ValueError("A lane cannot be its own parent")
+            # Walk the proposed parent's ancestor chain; if we see lane_id
+            # in there, we'd be creating a cycle.
+            cursor: str | None = parent_id
+            seen: set[str] = set()
+            while cursor is not None:
+                if cursor == lane_id:
+                    raise ValueError(
+                        f"Cycle detected: cannot make {parent_id!r} the parent of {lane_id!r}"
+                    )
+                if cursor in seen:
+                    break
+                seen.add(cursor)
+                try:
+                    cursor = snapshot.lane_by_id(cursor).parent_id
+                except KeyError:
+                    raise KeyError(f"Unknown parent_id: {parent_id!r}") from None
+        replaced = Lane(
+            id=target.id,
+            name=target.name,
+            kind=target.kind,
+            root=target.root,
+            parent_id=parent_id,
+            attachments=target.attachments,
+        )
+        new_lanes = [replaced if lane.id == lane_id else lane for lane in snapshot.lanes]
+        self._write_lanes_file(new_lanes, active_lane_id=snapshot.active_lane_id)
         return self.load_snapshot()
 
     def set_active_lane(self, lane_id: str) -> CasefileSnapshot:
@@ -167,10 +291,31 @@ class CasefileStore:
         remaining = [lane for lane in snapshot.lanes if lane.id != lane_id]
         if len(remaining) == len(snapshot.lanes):
             raise KeyError(f"Unknown lane id: {lane_id!r}")
+        # Re-parent any direct children to the deleted lane's parent so we
+        # never leave dangling references on disk.
+        deleted_parent = next(
+            (lane.parent_id for lane in snapshot.lanes if lane.id == lane_id),
+            None,
+        )
+        re_parented: list[Lane] = []
+        for lane in remaining:
+            if lane.parent_id == lane_id:
+                re_parented.append(
+                    Lane(
+                        id=lane.id,
+                        name=lane.name,
+                        kind=lane.kind,
+                        root=lane.root,
+                        parent_id=deleted_parent,
+                        attachments=lane.attachments,
+                    )
+                )
+            else:
+                re_parented.append(lane)
         new_active = snapshot.active_lane_id
         if new_active == lane_id:
-            new_active = remaining[0].id if remaining else None
-        self._write_lanes_file(remaining, active_lane_id=new_active)
+            new_active = re_parented[0].id if re_parented else None
+        self._write_lanes_file(re_parented, active_lane_id=new_active)
         return self.load_snapshot()
 
     # ----- chat history per lane -----
@@ -232,6 +377,18 @@ class CasefileStore:
             raise LanesFileError("lanes.json must be a JSON object at the top level")
         return data
 
+    def _serialize_attachment(self, attachment: LaneAttachment) -> dict[str, Any]:
+        try:
+            rel = attachment.root.relative_to(self.casefile.root)
+            root_repr = rel.as_posix() or "."
+        except ValueError:
+            root_repr = str(attachment.root)
+        return {
+            "name": attachment.name,
+            "root": root_repr,
+            "mode": attachment.mode,
+        }
+
     def _write_lanes_file(self, lanes: list[Lane], active_lane_id: str | None) -> None:
         # Lane roots are written *relative to the casefile root* whenever they
         # live inside the casefile, and as absolute paths otherwise. This keeps
@@ -243,14 +400,15 @@ class CasefileStore:
                 root_repr = rel.as_posix() or "."
             except ValueError:
                 root_repr = str(lane.root)
-            serialized_lanes.append(
-                {
-                    "id": lane.id,
-                    "name": lane.name,
-                    "kind": lane.kind,
-                    "root": root_repr,
-                }
-            )
+            entry: dict[str, Any] = {
+                "id": lane.id,
+                "name": lane.name,
+                "kind": lane.kind,
+                "root": root_repr,
+                "parent_id": lane.parent_id,
+                "attachments": [self._serialize_attachment(a) for a in lane.attachments],
+            }
+            serialized_lanes.append(entry)
         payload = {
             "version": LANES_FILE_VERSION,
             "lanes": serialized_lanes,
@@ -263,7 +421,7 @@ class CasefileStore:
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         tmp.replace(self.casefile.lanes_file)
 
-    def _lane_from_raw(self, entry: object) -> Lane:
+    def _lane_from_raw(self, entry: object, *, file_version: int) -> Lane:
         if not isinstance(entry, dict):
             raise LanesFileError(f"Lane entry must be an object, got {type(entry).__name__}")
         raw_id = entry.get("id")
@@ -280,12 +438,80 @@ class CasefileStore:
         if not isinstance(raw_root, str):
             raise LanesFileError(f"Lane {lane_id!r} missing string 'root'")
         resolved_root = self._resolve_lane_root(Path(raw_root))
-        return Lane(id=lane_id, name=name, kind=kind, root=resolved_root)
+        # parent_id and attachments only exist in v2+. Loading a v1 file
+        # silently treats every lane as a root with no attachments.
+        parent_id: str | None = None
+        attachments: tuple[LaneAttachment, ...] = ()
+        if file_version >= 2:
+            raw_parent = entry.get("parent_id")
+            if isinstance(raw_parent, str) and raw_parent.strip():
+                # Re-normalize so a hand-edited file with mixed case still loads.
+                try:
+                    parent_id = normalize_lane_id(raw_parent)
+                except ValueError:
+                    parent_id = None
+            raw_attachments = entry.get("attachments", [])
+            if isinstance(raw_attachments, list):
+                parsed: list[LaneAttachment] = []
+                for raw_att in raw_attachments:
+                    if not isinstance(raw_att, dict):
+                        continue
+                    att_name = raw_att.get("name")
+                    att_root = raw_att.get("root")
+                    if not isinstance(att_name, str) or not isinstance(att_root, str):
+                        continue
+                    try:
+                        normalized_name = normalize_attachment_name(att_name)
+                    except ValueError:
+                        # Skip the bad attachment rather than failing the whole load.
+                        continue
+                    parsed.append(
+                        LaneAttachment(
+                            name=normalized_name,
+                            root=self._resolve_lane_root(Path(att_root)),
+                            mode=DEFAULT_ATTACHMENT_MODE,
+                        )
+                    )
+                attachments = tuple(parsed)
+        return Lane(
+            id=lane_id,
+            name=name,
+            kind=kind,
+            root=resolved_root,
+            parent_id=parent_id,
+            attachments=attachments,
+        )
 
     def _resolve_lane_root(self, root: Path) -> Path:
         if root.is_absolute():
             return root.resolve()
         return (self.casefile.root / root).resolve()
+
+    def _normalize_attachments(
+        self, attachments: Iterable[LaneAttachment] | None
+    ) -> tuple[LaneAttachment, ...]:
+        if attachments is None:
+            return ()
+        seen: set[str] = set()
+        out: list[LaneAttachment] = []
+        for attachment in attachments:
+            normalized_name = normalize_attachment_name(attachment.name)
+            if normalized_name in seen:
+                raise ValueError(f"Duplicate attachment name on lane: {normalized_name!r}")
+            seen.add(normalized_name)
+            resolved = self._resolve_lane_root(attachment.root)
+            if not resolved.exists():
+                raise FileNotFoundError(f"Attachment root does not exist: {resolved}")
+            if not resolved.is_dir():
+                raise NotADirectoryError(f"Attachment root is not a directory: {resolved}")
+            out.append(
+                LaneAttachment(
+                    name=normalized_name,
+                    root=resolved,
+                    mode=DEFAULT_ATTACHMENT_MODE,
+                )
+            )
+        return tuple(out)
 
     @staticmethod
     def _unique_id(candidate: str, existing: set[str]) -> str:

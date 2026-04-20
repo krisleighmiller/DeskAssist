@@ -101,6 +101,67 @@ These four milestones cover the path from the current inherited backend foundati
 
 ---
 
+## M3.5 — Hierarchical Scopes + Inherited Context
+
+**Goal.** Replace the flat-and-isolated lane model with a tree of user-defined scopes, each rooted at a real directory, where chats inherit read access from their ancestors and from a workspace-level "always-on" context manifest. After M3.5, opening an evaluation family, a book, or a code project all use the same primitive — the user nests scopes to whatever depth their material needs.
+
+**Why before M4.** M2 baked "lanes are flat and isolated" into the schema; M3 built findings/notes/compare/export on top of it. M4 (prompts, runs, inboxes) all want to live *inside* a scope and inherit its context. Doing M4 on the flat model means rewriting M4 once we eventually fix the model. M3.5 also unblocks the actual workflow that motivated DeskAssist: discussing one part of a workspace without losing access to the workspace-level rubrics or to paired notes.
+
+**In scope.**
+
+- *Schema.* `Lane` gains `parent_id: string | null` and `attachments: [{ name, root, mode: "read" }]`. New `.casefile/context.json` (separate from `lanes.json`) holds `{ "files": [<paths/globs at casefile root>], "auto_include_max_bytes": 32768 }`. Both files are versioned. `lanes.json` schema bumps to `version: 2`.
+- *Migration.* The store reads version 1 by treating every existing lane as a root with no attachments and writes back as version 2 on first modification. Tests cover the upgrade path; no manual user action required.
+- *Cascade resolver.* New `assistant_app/casefile/scope.py` with `resolve_scope(lane_id) -> ScopeContext`. A `ScopeContext` carries the lane's write root, an ordered list of ancestor read roots (nearest first), the lane's attachment roots, the casefile's always-on file list, and the auto-include byte budget. Pure data — no I/O at construction.
+- *Filesystem.* `WorkspaceFilesystem` learns to accept a list of read roots while keeping write operations bound to the single primary root. Path resolution tries roots in order and reports which root a hit came from so the model sees stable virtual paths (`_ancestors/<lane_name>/...`, `_attachments/<attachment_name>/...`, `_context/...`). Symlink and traversal protection from M2 stays.
+- *Bridge.* `chat:send` resolves the active lane's `ScopeContext`, builds the tool registry with the multi-root reader + single-root writer, and prepends auto-included context files (those under `auto_include_max_bytes`) as a system message. New commands: `casefile:saveContext`, `casefile:getContext`. `casefile:registerLane` accepts optional `parentId` and `attachments`. The casefile snapshot returned by IPC carries the lane tree, not a flat list.
+- *Comparison chat.* New `casefile:openComparison` / `casefile:sendComparisonChat` taking two or more lane ids. Tool registry sees the union of those lanes' `ScopeContext`s (read-only across all of them; writes refused). History persisted to `.casefile/chats/_compare__<sorted-lane-ids>.jsonl`. Findings created in a comparison chat default to `lane_ids = <those ids>` (M3 already supports the shape).
+- *Renderer.*
+  - `LanesTab` becomes a tree view (collapsible). Selecting a node sets it as the active scope. Compare is now "select N+ siblings" via checkbox in the tree.
+  - Toolbar shows a breadcrumb (e.g. `BOXING_CLAUDE › TASK_9 › ash`) instead of just the lane name.
+  - File tree gets a "Show ancestor files" toggle — off by default, on shows a read-only overlay of ancestor + attachment files prefixed by their virtual root name.
+  - Right panel gets a "Comparison" mode active when a comparison session is open; banner indicates which lanes it spans.
+  - Register-lane form gains an optional parent picker (defaults to currently active scope) and an "Add attachment…" affordance.
+  - Small "Workspace context" editor lets the user pick which casefile-root files are auto-included.
+
+**Out of scope.**
+
+- Cross-casefile context (always-on manifest is per-casefile only).
+- Auto-discovery of scopes from heuristics; scopes are still registered explicitly.
+- Multi-write lanes. A chat writes to exactly one root, full stop.
+- Renaming "lane" to "scope" or "section" in the codebase. Pick one term in M4 if we want, not now.
+
+**Defaults (settled, can be tuned later).**
+
+- `auto_include_max_bytes = 32768`. Files under that auto-inject as system context; larger files are read on demand via tool calls.
+- Path display is **virtual** (`_ancestors/...`, `_attachments/...`, `_context/...`), not absolute, both in tool responses and in the file tree's ancestor overlay.
+
+**Backend touch points.** `casefile/models.py`, `casefile/store.py`, `casefile/service.py`, `casefile/scope.py` (new), `filesystem/workspace.py`, `electron_bridge.py`, `tools/__init__.py` (registry now takes a list of read roots).
+
+**Phasing.** Three internal phases, each independently shippable and testable.
+
+- **M3.5a — Schema + cascade + multi-root FS (backend only).** Lanes gain parent/attachments, context.json lands, ScopeContext resolver works, WorkspaceFilesystem reads from multiple roots and writes to one, bridge `chat:send` uses the cascade and auto-injects small context files. Backend tests cover all of this. The renderer is unchanged in this phase, so no visible UI improvement yet — but `chat:send` from a registered child lane will already see ancestors + attachments + context.
+- **M3.5b — Renderer tree view + register form + context editor.** Tree-shaped LanesTab with breadcrumb and ancestor-files toggle, parent picker + attachments in the register form, workspace-context editor. This is when the BOXING_CLAUDE-style workflow becomes pleasant in the UI.
+- **M3.5c — Comparison chat (backend + UI).** Multi-lane sessions, persisted history, comparison-chat right-panel mode. After this, `Comparison_Prompt.txt` becomes a one-shot interaction.
+
+**Exit criteria (whole milestone).**
+
+1. With a casefile open, `Behavior_Issues.md`-style files listed in the context manifest, and a child lane registered with an attachment, a chat in that child lane sees the manifest files in its system context without manual paste, and `read_file` against an attachment-relative path succeeds.
+2. The same chat cannot read or write into a sibling lane (cross-sibling isolation preserved from M2).
+3. Selecting two sibling lanes and starting a comparison chat produces a session whose tool calls can read from both lanes plus their ancestors plus the casefile context, and whose history persists across restarts.
+4. A finding created from a comparison chat has `lane_ids` matching the session, and the M3 export still works against either lane.
+5. An existing M3 casefile (`lanes.json` version 1, no `context.json`) opens without manual migration and is upgraded transparently on first lane modification.
+6. `pytest -q` is green; `tsc --noEmit` and `vite build` are clean.
+
+**Test additions.**
+
+- `tests/test_scope_resolution.py` — cascade order, attachment inclusion, casefile-context inclusion, depth correctness, write-root remains single.
+- `tests/test_workspace_multi_root.py` — read tries roots in order, writes refuse non-primary roots, traversal protection still rejects `../`.
+- `tests/test_lanes_v2_migration.py` — v1 → v2 upgrade is transparent and idempotent; v2 round-trips.
+- `tests/test_comparison_chat.py` — multi-lane registry, history persistence, write rejected, findings get `lane_ids` from the session.
+- Extend `tests/test_electron_bridge_dispatch.py` with new commands.
+
+---
+
 ## M4 — Streamlining
 
 **Goal.** Close the loop from "I have casefiles and lanes" to "I run things and capture results inside the casefile." Add the first non-code source so cross-source analysis becomes real.
@@ -145,7 +206,7 @@ These four milestones cover the path from the current inherited backend foundati
 
 - M1: done. Vite + React + TypeScript renderer with three-pane layout (file tree / Monaco editor / four-tab right panel: Chat / Notes / Findings / Lanes), chat + tool-approval + API-keys dialog ported. Manually verified end-to-end.
 - M2: done. `assistant_app/casefile/` module owns the on-disk shape (`.casefile/lanes.json` + `.casefile/chats/<lane_id>.jsonl`); bridge factored into a dispatch table; `chat:send` resolves the active lane root and uses it as the `WorkspaceFilesystem` root so tool calls in lane A cannot reach lane B; renderer keeps per-lane editor tabs + chat history; Lanes tab is an interactive switcher with a Register Lane flow. Manually verified end-to-end.
-- M3: in progress. New `assistant_app/casefile/` modules: `findings.py` (one JSON per finding under `.casefile/findings/`, atomic writes, version-checked schema), `notes.py` (per-lane markdown under `.casefile/notes/<lane_id>.md`, atomic writes), `compare.py` (sha256-based file-tree diff, skips `.casefile`/VCS dirs and symlinks, file-count and per-file-byte caps), `export.py` (renders findings + notes for selected lanes into `.casefile/exports/<ts>-<slug>.md`). New read-only chat tools `findings_list` / `findings_read` registered when a casefile is in play, so the model can cite findings without being able to mutate them. Bridge dispatch extended with `casefile:listFindings`, `casefile:getFinding`, `casefile:createFinding`, `casefile:updateFinding`, `casefile:deleteFinding`, `casefile:getNote`, `casefile:saveNote`, `casefile:compareLanes`, `casefile:exportFindings`, and a lane-scoped `lane:readFile` (used by the diff editor to fetch the non-active side without leaving the casefile sandbox). Renderer Notes moved off `localStorage` onto disk with debounced autosave; `FindingsTab` is a real CRUD list with severity badges, lane filter, and an export button; `LanesTab` gained a Compare flow that lists added/removed/changed files; clicking a changed file opens a Monaco DiffEditor in a new editor tab kind. Backend tests cover findings store CRUD + schema validation, notes round-trip, comparison semantics (added/removed/changed/identical/skipped), export markdown shape, and bridge dispatch for every new command (135 passing). `tsc --noEmit` and `vite build` both clean. Exit criteria 1–3 (compare two lanes, persist a comparison-scoped finding, export readable markdown) require manual verification with a running Electron.
+- M3.5: in progress (M3.5a = backend cascade + multi-root FS). Pulled in ahead of M4 because the eval/book/project workflows discussed during M3 verification all depend on hierarchical scopes + inherited context, which the M3 flat-lane model can't express. The previous M3 status entry above remains accurate; M3 exit criteria 1–3 still need manual verification with a running Electron, but no further M3 code is planned. New `assistant_app/casefile/` modules: `findings.py` (one JSON per finding under `.casefile/findings/`, atomic writes, version-checked schema), `notes.py` (per-lane markdown under `.casefile/notes/<lane_id>.md`, atomic writes), `compare.py` (sha256-based file-tree diff, skips `.casefile`/VCS dirs and symlinks, file-count and per-file-byte caps), `export.py` (renders findings + notes for selected lanes into `.casefile/exports/<ts>-<slug>.md`). New read-only chat tools `findings_list` / `findings_read` registered when a casefile is in play, so the model can cite findings without being able to mutate them. Bridge dispatch extended with `casefile:listFindings`, `casefile:getFinding`, `casefile:createFinding`, `casefile:updateFinding`, `casefile:deleteFinding`, `casefile:getNote`, `casefile:saveNote`, `casefile:compareLanes`, `casefile:exportFindings`, and a lane-scoped `lane:readFile` (used by the diff editor to fetch the non-active side without leaving the casefile sandbox). Renderer Notes moved off `localStorage` onto disk with debounced autosave; `FindingsTab` is a real CRUD list with severity badges, lane filter, and an export button; `LanesTab` gained a Compare flow that lists added/removed/changed files; clicking a changed file opens a Monaco DiffEditor in a new editor tab kind. Backend tests cover findings store CRUD + schema validation, notes round-trip, comparison semantics (added/removed/changed/identical/skipped), export markdown shape, and bridge dispatch for every new command (135 passing). `tsc --noEmit` and `vite build` both clean. Exit criteria 1–3 (compare two lanes, persist a comparison-scoped finding, export readable markdown) require manual verification with a running Electron.
 - M4: not started.
 
 Update this section as milestones complete. Each milestone's exit criteria are the gate; partial completion is tracked in the milestone's own working notes, not here.

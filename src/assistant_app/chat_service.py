@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Mapping
 import json
 
 from assistant_app.models import ChatMessage, ChatRequest
@@ -20,6 +21,7 @@ class ChatService:
         tool_registry: ToolRegistry | None = None,
         model_defaults: dict[str, str] | None = None,
         casefile_root: Path | None = None,
+        read_overlays: Mapping[str, Path] | None = None,
     ) -> None:
         provided = providers or [
             OpenAIProvider(),
@@ -41,7 +43,9 @@ class ChatService:
         resolved_workspace_root = (workspace_root or Path.cwd()).resolve()
         resolved_casefile_root = casefile_root.resolve() if casefile_root is not None else None
         self._tool_registry = tool_registry or build_default_tool_registry(
-            resolved_workspace_root, casefile_root=resolved_casefile_root
+            resolved_workspace_root,
+            casefile_root=resolved_casefile_root,
+            read_overlays=read_overlays,
         )
         self._default_models = {
             "openai": "gpt-4o-mini",

@@ -398,3 +398,291 @@ def test_chat_send_persists_history_delta_to_lane_log(
     assert [m["role"] for m in persisted] == ["user", "assistant"]
     assert persisted[0]["content"] == "hi"
     assert persisted[1]["content"] == "echo"
+
+
+# ---------------------------------------------------------------------------
+# M3.5a dispatch coverage: hierarchical lanes, context manifest, scope cascade
+# ---------------------------------------------------------------------------
+
+
+def test_register_lane_with_parent_and_attachment(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    parent_dir = tmp_path / "parent"
+    parent_dir.mkdir()
+    child_dir = tmp_path / "child"
+    child_dir.mkdir()
+    notes_dir = tmp_path / "child_notes"
+    notes_dir.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
+        }
+    )
+    response = bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {
+                "name": "Child",
+                "kind": "repo",
+                "root": str(child_dir),
+                "id": "child",
+                "parentId": "parent",
+                "attachments": [{"name": "notes", "root": str(notes_dir)}],
+            },
+        }
+    )
+    child = next(lane for lane in response["casefile"]["lanes"] if lane["id"] == "child")
+    assert child["parentId"] == "parent"
+    assert child["attachments"] == [
+        {"name": "notes", "root": str(notes_dir.resolve()), "mode": "read"}
+    ]
+
+
+def test_save_and_get_context_manifest(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    (casefile_root / "rubric.md").write_text("rubric body", encoding="utf-8")
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    saved = bridge.dispatch(
+        {
+            "command": "casefile:saveContext",
+            "casefileRoot": str(casefile_root),
+            "context": {"files": ["rubric.md"], "autoIncludeMaxBytes": 4096},
+        }
+    )
+    assert saved["context"]["files"] == ["rubric.md"]
+    assert saved["context"]["autoIncludeMaxBytes"] == 4096
+    assert [r["path"] for r in saved["context"]["resolved"]] == ["rubric.md"]
+    fetched = bridge.dispatch(
+        {"command": "casefile:getContext", "casefileRoot": str(casefile_root)}
+    )
+    assert fetched["context"]["files"] == ["rubric.md"]
+
+
+def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    (casefile_root / "rubric.md").write_text("be a good boxer", encoding="utf-8")
+    parent_dir = tmp_path / "parent"
+    parent_dir.mkdir()
+    child_dir = tmp_path / "child"
+    child_dir.mkdir()
+    notes_dir = tmp_path / "child_notes"
+    notes_dir.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {
+                "name": "Child",
+                "kind": "repo",
+                "root": str(child_dir),
+                "id": "child",
+                "parentId": "parent",
+                "attachments": [{"name": "notes", "root": str(notes_dir)}],
+            },
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:saveContext",
+            "casefileRoot": str(casefile_root),
+            "context": {"files": ["rubric.md"], "autoIncludeMaxBytes": 4096},
+        }
+    )
+    response = bridge.dispatch(
+        {
+            "command": "casefile:resolveScope",
+            "casefileRoot": str(casefile_root),
+            "laneId": "child",
+        }
+    )
+    scope = response["scope"]
+    assert scope["writeRoot"] == str(child_dir.resolve())
+    prefixes = [overlay["prefix"] for overlay in scope["readOverlays"]]
+    assert prefixes[0] == "_attachments/notes"
+    assert "_ancestors/parent" in prefixes
+    assert [entry["path"] for entry in scope["contextFiles"]] == ["rubric.md"]
+
+
+def test_chat_send_layers_overlays_into_chat_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`chat:send` must hand `read_overlays` from the resolved scope into ChatService."""
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    (casefile_root / "rubric.md").write_text("rubric body content", encoding="utf-8")
+    parent_dir = tmp_path / "parent"
+    parent_dir.mkdir()
+    child_dir = tmp_path / "child"
+    child_dir.mkdir()
+    notes_dir = tmp_path / "child_notes"
+    notes_dir.mkdir()
+
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {
+                "name": "Child",
+                "kind": "repo",
+                "root": str(child_dir),
+                "id": "child",
+                "parentId": "parent",
+                "attachments": [{"name": "notes", "root": str(notes_dir)}],
+            },
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:saveContext",
+            "casefileRoot": str(casefile_root),
+            "context": {"files": ["rubric.md"], "autoIncludeMaxBytes": 4096},
+        }
+    )
+
+    captured: dict[str, Any] = {}
+
+    class StubChatService:
+        def __init__(
+            self,
+            *,
+            default_provider_name: str,
+            workspace_root: Path,
+            casefile_root: Path | None = None,
+            read_overlays: dict[str, Path] | None = None,
+            **_kw: Any,
+        ) -> None:
+            captured["workspace_root"] = workspace_root
+            captured["casefile_root"] = casefile_root
+            captured["read_overlays"] = (
+                {prefix: Path(root) for prefix, root in read_overlays.items()}
+                if read_overlays
+                else None
+            )
+            self._history: list[Any] = []
+            self._injected: list[Any] = []
+
+        def replace_history(self, messages: list[Any]) -> None:
+            self._injected = list(messages)
+            captured.setdefault("system_prompts", []).extend(
+                m.content for m in messages if getattr(m, "role", None) == "system"
+            )
+
+        @property
+        def history(self) -> list[Any]:
+            return list(self._injected) + list(self._history)
+
+        def send_user_message(self, _text: str, **_kw: Any) -> Any:
+            from assistant_app.models import ChatMessage
+
+            response = ChatMessage(role="assistant", content="ok")
+            self._history.append(response)
+            return response
+
+        def pending_write_tool_calls(self, _msg: Any) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(bridge, "ChatService", StubChatService)
+
+    bridge.dispatch(
+        {
+            "command": "chat:send",
+            "casefileRoot": str(casefile_root),
+            "laneId": "child",
+            "provider": "openai",
+            "userMessage": "hi",
+            "messages": [],
+        }
+    )
+    assert captured["workspace_root"] == child_dir.resolve()
+    assert captured["casefile_root"] == casefile_root
+    overlays = captured["read_overlays"]
+    assert overlays is not None
+    assert "_attachments/notes" in overlays
+    assert "_ancestors/parent" in overlays
+    assert "_context" in overlays
+    # Auto-include: the rubric should appear in a system prompt.
+    system_prompts = captured.get("system_prompts", [])
+    assert any("rubric body" in str(p) for p in system_prompts)
+
+
+def test_set_lane_parent_command(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "A", "kind": "repo", "root": str(tmp_path / "a"), "id": "a"},
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "B", "kind": "repo", "root": str(tmp_path / "b"), "id": "b"},
+        }
+    )
+    response = bridge.dispatch(
+        {
+            "command": "casefile:setLaneParent",
+            "casefileRoot": str(casefile_root),
+            "laneId": "b",
+            "parentId": "a",
+        }
+    )
+    b = next(lane for lane in response["casefile"]["lanes"] if lane["id"] == "b")
+    assert b["parentId"] == "a"
+
+
+def test_update_lane_attachments_command(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane_dir = tmp_path / "a"
+    lane_dir.mkdir()
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "A", "kind": "repo", "root": str(lane_dir), "id": "a"},
+        }
+    )
+    response = bridge.dispatch(
+        {
+            "command": "casefile:updateLaneAttachments",
+            "casefileRoot": str(casefile_root),
+            "laneId": "a",
+            "attachments": [{"name": "notes", "root": str(notes_dir)}],
+        }
+    )
+    lane_a = next(lane for lane in response["casefile"]["lanes"] if lane["id"] == "a")
+    assert lane_a["attachments"][0]["name"] == "notes"
+    assert lane_a["attachments"][0]["root"] == str(notes_dir.resolve())

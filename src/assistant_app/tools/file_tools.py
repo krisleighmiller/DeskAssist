@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Mapping
 
 from assistant_app.filesystem import WorkspaceFilesystem
 
 
-def make_list_dir_tool(workspace_root: Path):
-    fs = WorkspaceFilesystem(workspace_root)
+def _build_fs(
+    workspace_root: Path,
+    read_overlays: Mapping[str, Path] | None,
+) -> WorkspaceFilesystem:
+    return WorkspaceFilesystem(workspace_root, read_overlays=read_overlays)
+
+
+def make_list_dir_tool(
+    workspace_root: Path,
+    *,
+    read_overlays: Mapping[str, Path] | None = None,
+):
+    fs = _build_fs(workspace_root, read_overlays)
 
     def list_dir(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params.get("path", "."))
@@ -19,8 +31,12 @@ def make_list_dir_tool(workspace_root: Path):
     return list_dir
 
 
-def make_read_file_tool(workspace_root: Path):
-    fs = WorkspaceFilesystem(workspace_root)
+def make_read_file_tool(
+    workspace_root: Path,
+    *,
+    read_overlays: Mapping[str, Path] | None = None,
+):
+    fs = _build_fs(workspace_root, read_overlays)
 
     def read_file(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params.get("path", ""))
@@ -37,8 +53,12 @@ def make_read_file_tool(workspace_root: Path):
     return read_file
 
 
-def make_save_file_tool(workspace_root: Path):
-    fs = WorkspaceFilesystem(workspace_root)
+def make_save_file_tool(
+    workspace_root: Path,
+    *,
+    read_overlays: Mapping[str, Path] | None = None,
+):
+    fs = _build_fs(workspace_root, read_overlays)
 
     def save_file(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params["path"])
@@ -53,8 +73,12 @@ def make_save_file_tool(workspace_root: Path):
     return save_file
 
 
-def make_append_file_tool(workspace_root: Path):
-    fs = WorkspaceFilesystem(workspace_root)
+def make_append_file_tool(
+    workspace_root: Path,
+    *,
+    read_overlays: Mapping[str, Path] | None = None,
+):
+    fs = _build_fs(workspace_root, read_overlays)
 
     def append_file(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params["path"])
@@ -68,8 +92,12 @@ def make_append_file_tool(workspace_root: Path):
     return append_file
 
 
-def make_delete_file_tool(workspace_root: Path):
-    fs = WorkspaceFilesystem(workspace_root)
+def make_delete_file_tool(
+    workspace_root: Path,
+    *,
+    read_overlays: Mapping[str, Path] | None = None,
+):
+    fs = _build_fs(workspace_root, read_overlays)
 
     def delete_file(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params["path"])
@@ -82,8 +110,12 @@ def make_delete_file_tool(workspace_root: Path):
     return delete_file
 
 
-def make_delete_path_tool(workspace_root: Path):
-    fs = WorkspaceFilesystem(workspace_root)
+def make_delete_path_tool(
+    workspace_root: Path,
+    *,
+    read_overlays: Mapping[str, Path] | None = None,
+):
+    fs = _build_fs(workspace_root, read_overlays)
 
     def delete_path(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params["path"])

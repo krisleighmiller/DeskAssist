@@ -8,12 +8,21 @@ from typing import Any
 
 from assistant_app.casefile import (
     CasefileService,
+    ContextManifest,
     FindingsStore,
     NotesStore,
+    ResolvedContextFile,
+    ScopeContext,
     compare_lanes,
     export_review,
 )
-from assistant_app.casefile.service import parse_source_refs, serialize_finding
+from assistant_app.casefile.service import (
+    parse_attachments,
+    parse_source_refs,
+    serialize_context_manifest,
+    serialize_finding,
+    serialize_scope,
+)
 from assistant_app.chat_service import ChatService
 from assistant_app.filesystem import WorkspaceFilesystem
 from assistant_app.models import ChatMessage
@@ -45,6 +54,24 @@ def _parse_messages(raw_messages: list[dict[str, Any]]) -> list[ChatMessage]:
             )
         )
     return parsed
+
+
+_CONTEXT_MARKER = "You are operating inside a DeskAssist casefile scope."
+
+
+def _history_has_context_marker(history: list[ChatMessage]) -> bool:
+    """True if the history already starts with the auto-injected system message.
+
+    Auto-include is recomputed on every chat:send (cheaper than tracking
+    state in the renderer), so we need a stable marker to avoid stacking
+    duplicates when a turn is resumed.
+    """
+    if not history:
+        return False
+    first = history[0]
+    if first.role != "system":
+        return False
+    return isinstance(first.content, str) and first.content.startswith(_CONTEXT_MARKER)
 
 
 def _serialize_message(message: ChatMessage) -> dict[str, Any]:
@@ -83,26 +110,72 @@ def _apply_api_keys(api_keys: object) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_lane_root(request: dict[str, Any]) -> Path:
-    """Resolve the workspace root for a chat turn.
+def _resolve_chat_context(
+    request: dict[str, Any],
+) -> tuple[Path, Path | None, ScopeContext | None]:
+    """Resolve write root + casefile root + (optional) full ScopeContext.
 
-    The renderer is expected to pass `casefileRoot` + optional `laneId`. If a
-    casefile is provided we look the lane up via CasefileService so that
-    file-tools are scoped to the lane root, not the bare casefile root. The
-    `workspaceRoot` field is kept as a back-compat fallback so any caller that
-    has not migrated yet (or any test) still works.
+    Returns a triple `(write_root, casefile_root, scope)`.
+    - When a `casefileRoot` + `laneId` is provided, `scope` is the full
+      cascade (ancestors + attachments + casefile context files) and
+      `write_root` is the lane's own directory.
+    - When only `casefileRoot` is provided, the casefile's active lane is
+      used, with the same cascade semantics.
+    - When neither is provided, falls back to `workspaceRoot` or cwd. This
+      is the back-compat path for any caller that has not migrated to
+      casefiles (notably the bare `python -m assistant_app.electron_bridge`
+      smoke test).
     """
     casefile_root_raw = request.get("casefileRoot")
     if isinstance(casefile_root_raw, str) and casefile_root_raw.strip():
-        service = CasefileService(Path(casefile_root_raw))
+        casefile_root = Path(casefile_root_raw).resolve()
+        service = CasefileService(casefile_root)
         lane_id_raw = request.get("laneId")
-        lane_id = lane_id_raw.strip() if isinstance(lane_id_raw, str) and lane_id_raw.strip() else None
+        lane_id = (
+            lane_id_raw.strip()
+            if isinstance(lane_id_raw, str) and lane_id_raw.strip()
+            else None
+        )
         lane = service.resolve_lane(lane_id)
-        return lane.root
+        scope = service.resolve_scope(lane.id)
+        return scope.write_root, casefile_root, scope
     workspace_root_raw = request.get("workspaceRoot")
     if isinstance(workspace_root_raw, str) and workspace_root_raw.strip():
-        return Path(workspace_root_raw).resolve()
-    return Path.cwd().resolve()
+        return Path(workspace_root_raw).resolve(), None, None
+    return Path.cwd().resolve(), None, None
+
+
+def _build_context_system_prompt(scope: ScopeContext) -> str | None:
+    """Format the auto-injected casefile-context system message.
+
+    Returns None when there is nothing to inject (no overlays and no
+    auto-include candidates), so callers can skip prepending an empty
+    message to the chat history.
+    """
+    candidates = scope.auto_include_candidates()
+    overlays = scope.read_overlays
+    if not candidates and not overlays:
+        return None
+    parts: list[str] = ["You are operating inside a DeskAssist casefile scope."]
+    if overlays:
+        parts.append(
+            "You have read-only access to the following overlay roots in addition to "
+            "your write root. Reference them via the listed virtual prefix:"
+        )
+        for overlay in overlays:
+            parts.append(f"  - {overlay.prefix}/  ({overlay.label})")
+    if candidates:
+        parts.append(
+            "Casefile-wide context files (auto-included verbatim below; treat as "
+            "authoritative shared instructions):"
+        )
+        for entry in candidates:
+            try:
+                content = entry.absolute_path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            parts.append(f"\n--- BEGIN _context/{entry.relative_path} ---\n{content}\n--- END _context/{entry.relative_path} ---")
+    return "\n".join(parts)
 
 
 def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
@@ -120,22 +193,29 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(history_raw, list):
         raise ValueError("messages must be an array")
 
-    workspace_root = _resolve_lane_root(request)
-    # When a casefile is in play, register the read-only findings tools so the
-    # model can cite findings without being able to modify them.
-    casefile_root_raw = request.get("casefileRoot")
-    casefile_root = (
-        Path(casefile_root_raw)
-        if isinstance(casefile_root_raw, str) and casefile_root_raw.strip()
-        else None
-    )
+    workspace_root, casefile_root, scope = _resolve_chat_context(request)
+    # When a scope is active we layer ancestor + attachment + casefile-context
+    # roots into the tool registry as read-only overlays. The write root stays
+    # the lane's own directory, so the M2 isolation guarantee (writes can't
+    # cross sibling lanes) is preserved.
+    read_overlays = scope.overlay_map() if scope is not None else None
 
     service = ChatService(
         default_provider_name=provider,
         workspace_root=workspace_root,
         casefile_root=casefile_root,
+        read_overlays=read_overlays,
     )
-    service.replace_history(_parse_messages(history_raw))
+    parsed_history = _parse_messages(history_raw)
+    if scope is not None:
+        context_prompt = _build_context_system_prompt(scope)
+        # Only inject when (a) there's actually context to inject and (b) the
+        # caller hasn't already placed one (idempotent for resumed turns).
+        if context_prompt and not _history_has_context_marker(parsed_history):
+            parsed_history.insert(
+                0, ChatMessage(role="system", content=context_prompt)
+            )
+    service.replace_history(parsed_history)
     history_before_count = len(service.history)
     if resume_pending:
         response = service.resume_pending_tool_calls(
@@ -204,11 +284,96 @@ def handle_casefile_register_lane(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("lane.root is required")
     lane_id_raw = lane_raw.get("id")
     lane_id = lane_id_raw if isinstance(lane_id_raw, str) and lane_id_raw.strip() else None
+    parent_id_raw = lane_raw.get("parentId") if "parentId" in lane_raw else lane_raw.get("parent_id")
+    parent_id = (
+        parent_id_raw.strip()
+        if isinstance(parent_id_raw, str) and parent_id_raw.strip()
+        else None
+    )
+    attachments = parse_attachments(lane_raw.get("attachments"))
     service = CasefileService(Path(root))
     snapshot = service.register_lane(
-        name=name, kind=kind, root=Path(lane_root_raw), lane_id=lane_id
+        name=name,
+        kind=kind,
+        root=Path(lane_root_raw),
+        lane_id=lane_id,
+        parent_id=parent_id,
+        attachments=attachments,
     )
     return {"ok": True, "casefile": service.serialize(snapshot)}
+
+
+def handle_casefile_update_lane_attachments(request: dict[str, Any]) -> dict[str, Any]:
+    root = request.get("casefileRoot")
+    if not isinstance(root, str) or not root.strip():
+        raise ValueError("casefileRoot is required")
+    lane_id = request.get("laneId")
+    if not isinstance(lane_id, str) or not lane_id.strip():
+        raise ValueError("laneId is required")
+    attachments = parse_attachments(request.get("attachments"))
+    service = CasefileService(Path(root))
+    snapshot = service.update_lane_attachments(lane_id, attachments)
+    return {"ok": True, "casefile": service.serialize(snapshot)}
+
+
+def handle_casefile_set_lane_parent(request: dict[str, Any]) -> dict[str, Any]:
+    root = request.get("casefileRoot")
+    if not isinstance(root, str) or not root.strip():
+        raise ValueError("casefileRoot is required")
+    lane_id = request.get("laneId")
+    if not isinstance(lane_id, str) or not lane_id.strip():
+        raise ValueError("laneId is required")
+    raw_parent = request.get("parentId")
+    parent_id: str | None
+    if raw_parent is None:
+        parent_id = None
+    elif isinstance(raw_parent, str):
+        parent_id = raw_parent.strip() or None
+    else:
+        raise ValueError("parentId must be a string or null")
+    service = CasefileService(Path(root))
+    snapshot = service.set_lane_parent(lane_id, parent_id)
+    return {"ok": True, "casefile": service.serialize(snapshot)}
+
+
+def handle_casefile_get_context(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    service = CasefileService(root)
+    manifest = service.load_context_manifest()
+    files = service.context_store().resolve_files(manifest)
+    return {"ok": True, "context": serialize_context_manifest(manifest, files)}
+
+
+def handle_casefile_save_context(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    raw = request.get("context")
+    if not isinstance(raw, dict):
+        raise ValueError("context object is required")
+    raw_files = raw.get("files", [])
+    if not isinstance(raw_files, list):
+        raise ValueError("context.files must be an array")
+    files: list[str] = []
+    for entry in raw_files:
+        if isinstance(entry, str) and entry.strip():
+            files.append(entry.strip())
+    raw_max = raw.get("autoIncludeMaxBytes") if "autoIncludeMaxBytes" in raw else raw.get("auto_include_max_bytes")
+    manifest_kwargs: dict[str, Any] = {"files": tuple(files)}
+    if isinstance(raw_max, int) and not isinstance(raw_max, bool) and raw_max >= 0:
+        manifest_kwargs["auto_include_max_bytes"] = raw_max
+    service = CasefileService(root)
+    saved = service.save_context_manifest(ContextManifest(**manifest_kwargs))
+    files_resolved = service.context_store().resolve_files(saved)
+    return {"ok": True, "context": serialize_context_manifest(saved, files_resolved)}
+
+
+def handle_casefile_resolve_scope(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    lane_id = request.get("laneId")
+    if not isinstance(lane_id, str) or not lane_id.strip():
+        raise ValueError("laneId is required")
+    service = CasefileService(root)
+    scope = service.resolve_scope(lane_id)
+    return {"ok": True, "scope": serialize_scope(scope)}
 
 
 def handle_casefile_switch_lane(request: dict[str, Any]) -> dict[str, Any]:
@@ -415,7 +580,12 @@ _HANDLERS = {
     "chat:send": handle_chat_send,
     "casefile:open": handle_casefile_open,
     "casefile:registerLane": handle_casefile_register_lane,
+    "casefile:updateLaneAttachments": handle_casefile_update_lane_attachments,
+    "casefile:setLaneParent": handle_casefile_set_lane_parent,
     "casefile:switchLane": handle_casefile_switch_lane,
+    "casefile:getContext": handle_casefile_get_context,
+    "casefile:saveContext": handle_casefile_save_context,
+    "casefile:resolveScope": handle_casefile_resolve_scope,
     "casefile:listChat": handle_casefile_list_chat,
     "casefile:listFindings": handle_casefile_list_findings,
     "casefile:getFinding": handle_casefile_get_finding,

@@ -4,6 +4,14 @@ from assistant_app.casefile.compare import (
     LaneComparison,
     compare_lanes,
 )
+from assistant_app.casefile.context import (
+    CONTEXT_FILE_VERSION,
+    DEFAULT_AUTO_INCLUDE_MAX_BYTES,
+    ContextManifest,
+    ContextManifestError,
+    ContextManifestStore,
+    ResolvedContextFile,
+)
 from assistant_app.casefile.export import export_review, render_review_markdown
 from assistant_app.casefile.findings import (
     DEFAULT_SEVERITY,
@@ -18,21 +26,40 @@ from assistant_app.casefile.findings import (
 from assistant_app.casefile.models import (
     Casefile,
     CasefileSnapshot,
+    DEFAULT_ATTACHMENT_MODE,
+    DEFAULT_LANE_KIND,
     Lane,
+    LaneAttachment,
     LaneKind,
     LANE_KINDS,
-    DEFAULT_LANE_KIND,
 )
 from assistant_app.casefile.notes import NotesStore
+from assistant_app.casefile.scope import (
+    ANCESTOR_PREFIX,
+    ATTACHMENT_PREFIX,
+    CONTEXT_PREFIX,
+    ReadOverlay,
+    ScopeContext,
+    resolve_scope,
+)
 from assistant_app.casefile.service import CasefileService, serialize_lane
-from assistant_app.casefile.store import CasefileStore, LanesFileError
+from assistant_app.casefile.store import CasefileStore, LanesFileError, normalize_attachment_name
 
 __all__ = [
+    "ANCESTOR_PREFIX",
+    "ATTACHMENT_PREFIX",
+    "CONTEXT_FILE_VERSION",
+    "CONTEXT_PREFIX",
     "Casefile",
     "CasefileService",
     "CasefileSnapshot",
     "CasefileStore",
     "ChangedFile",
+    "ContextManifest",
+    "ContextManifestError",
+    "ContextManifestStore",
+    "DEFAULT_ATTACHMENT_MODE",
+    "DEFAULT_AUTO_INCLUDE_MAX_BYTES",
     "DEFAULT_LANE_KIND",
     "DEFAULT_SEVERITY",
     "DEFAULT_SKIP_DIR_NAMES",
@@ -41,16 +68,22 @@ __all__ = [
     "FindingsStore",
     "LANE_KINDS",
     "Lane",
+    "LaneAttachment",
     "LaneComparison",
     "LaneKind",
     "LanesFileError",
     "NotesStore",
+    "ReadOverlay",
+    "ResolvedContextFile",
     "SEVERITIES",
+    "ScopeContext",
     "Severity",
     "SourceRef",
     "compare_lanes",
     "export_review",
     "generate_finding_id",
+    "normalize_attachment_name",
     "render_review_markdown",
+    "resolve_scope",
     "serialize_lane",
 ]
