@@ -239,32 +239,47 @@ function ensureInWorkspace(targetPath) {
 
 async function buildTree(directoryPath, depth = 0, maxDepth = 4) {
   const directory = ensureInWorkspace(directoryPath);
+  return buildTreeAt(directory, depth, maxDepth);
+}
+
+async function buildTreeAt(directory, depth = 0, maxDepth = 4, virtualPath = null) {
+  // Like buildTree, but does NOT enforce activeLaneRoot containment. Used by
+  // overlay-tree listings (ancestor + attachment + casefile-context roots,
+  // which legitimately live outside the active lane). Each node's `path` is
+  // either its real absolute path (default) or a caller-supplied virtual
+  // path (e.g. `_ancestors/<lane>/foo.md`) so the renderer can route opens
+  // back through the scoped overlay reader.
+  const nodePath = virtualPath ?? directory;
   const node = {
-    name: path.basename(directory),
-    path: directory,
+    name: path.basename(virtualPath ?? directory),
+    path: nodePath,
     type: "dir",
     children: [],
   };
-
-  if (depth >= maxDepth) {
+  if (depth >= maxDepth) return node;
+  let entries;
+  try {
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch {
     return node;
   }
-
-  const entries = await fs.readdir(directory, { withFileTypes: true });
   entries.sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
+    if (entry.name === ".casefile") continue;
     const entryPath = path.join(directory, entry.name);
+    const childVirtual = virtualPath ? `${virtualPath}/${entry.name}` : null;
     if (entry.isDirectory()) {
-      node.children.push(await buildTree(entryPath, depth + 1, maxDepth));
+      node.children.push(
+        await buildTreeAt(entryPath, depth + 1, maxDepth, childVirtual)
+      );
     } else if (entry.isFile()) {
       node.children.push({
         name: entry.name,
-        path: entryPath,
+        path: childVirtual ?? entryPath,
         type: "file",
       });
     }
   }
-
   return node;
 }
 
@@ -614,6 +629,153 @@ ipcMain.handle("lane:readFile", async (_, args = {}) => {
   if (!laneId) throw new Error("laneId is required");
   if (!filePath) throw new Error("path is required");
   const payload = { command: "lane:readFile", casefileRoot, laneId, path: filePath };
+  if (Number.isInteger(args.maxChars)) payload.maxChars = args.maxChars;
+  const response = await runPythonBridge(payload);
+  return {
+    path: response.path,
+    content: response.content,
+    truncated: Boolean(response.truncated),
+  };
+});
+
+// ----- M3.5: hierarchical scope, attachments, context, overlays -----
+
+ipcMain.handle("casefile:setLaneParent", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  if (!laneId) throw new Error("laneId is required");
+  const parentId =
+    args.parentId === null || args.parentId === undefined
+      ? null
+      : String(args.parentId);
+  const response = await runPythonBridge({
+    command: "casefile:setLaneParent",
+    casefileRoot,
+    laneId,
+    parentId,
+  });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:updateLaneAttachments", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  if (!laneId) throw new Error("laneId is required");
+  const attachments = Array.isArray(args.attachments) ? args.attachments : [];
+  const response = await runPythonBridge({
+    command: "casefile:updateLaneAttachments",
+    casefileRoot,
+    laneId,
+    attachments,
+  });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:getContext", async () => {
+  const casefileRoot = requireCasefile();
+  const response = await runPythonBridge({
+    command: "casefile:getContext",
+    casefileRoot,
+  });
+  return response.context;
+});
+
+ipcMain.handle("casefile:saveContext", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const manifest = args.manifest && typeof args.manifest === "object" ? args.manifest : null;
+  if (!manifest) throw new Error("manifest is required");
+  const response = await runPythonBridge({
+    command: "casefile:saveContext",
+    casefileRoot,
+    context: manifest,
+  });
+  return response.context;
+});
+
+ipcMain.handle("casefile:resolveScope", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  if (!laneId) throw new Error("laneId is required");
+  const response = await runPythonBridge({
+    command: "casefile:resolveScope",
+    casefileRoot,
+    laneId,
+  });
+  return response.scope;
+});
+
+ipcMain.handle("casefile:listOverlayTrees", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  if (!laneId) throw new Error("laneId is required");
+  const maxDepthRaw = Number.isInteger(args.maxDepth) ? args.maxDepth : 3;
+  const maxDepth = Math.max(1, Math.min(maxDepthRaw, 8));
+  const response = await runPythonBridge({
+    command: "casefile:resolveScope",
+    casefileRoot,
+    laneId,
+  });
+  const scope = response.scope || {};
+  const overlays = Array.isArray(scope.readOverlays) ? scope.readOverlays : [];
+  const out = [];
+  for (const overlay of overlays) {
+    if (!overlay || typeof overlay.root !== "string") continue;
+    try {
+      const tree = await buildTreeAt(overlay.root, 0, maxDepth, overlay.prefix);
+      out.push({
+        prefix: overlay.prefix,
+        label: overlay.label,
+        root: overlay.root,
+        tree,
+      });
+    } catch (error) {
+      out.push({
+        prefix: overlay.prefix,
+        label: overlay.label,
+        root: overlay.root,
+        tree: null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  // Casefile-wide context bucket is also surfaced as an overlay (if any
+  // resolved files exist) so the renderer can show "_context/...".
+  const ctxFiles = Array.isArray(scope.contextFiles) ? scope.contextFiles : [];
+  if (ctxFiles.length > 0) {
+    const children = ctxFiles
+      .filter((f) => f && typeof f.path === "string")
+      .map((f) => ({
+        name: f.path.split("/").pop() || f.path,
+        path: `_context/${f.path}`,
+        type: "file",
+      }));
+    out.push({
+      prefix: "_context",
+      label: "casefile context",
+      root: scope.casefileRoot || "",
+      tree: {
+        name: "_context",
+        path: "_context",
+        type: "dir",
+        children,
+      },
+    });
+  }
+  return out;
+});
+
+ipcMain.handle("casefile:readOverlayFile", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  const filePath = typeof args.path === "string" ? args.path : "";
+  if (!laneId) throw new Error("laneId is required");
+  if (!filePath) throw new Error("path is required");
+  const payload = {
+    command: "casefile:readOverlayFile",
+    casefileRoot,
+    laneId,
+    path: filePath,
+  };
   if (Number.isInteger(args.maxChars)) payload.maxChars = args.maxChars;
   const response = await runPythonBridge(payload);
   return {

@@ -29,6 +29,19 @@ contextBridge.exposeInMainWorld("assistantApi", {
   readLaneFile: (laneId, path, maxChars) =>
     ipcRenderer.invoke("lane:readFile", { laneId, path, maxChars }),
 
+  // M3.5: hierarchical scope, attachments, context manifest, overlay reads.
+  setLaneParent: (laneId, parentId) =>
+    ipcRenderer.invoke("casefile:setLaneParent", { laneId, parentId }),
+  updateLaneAttachments: (laneId, attachments) =>
+    ipcRenderer.invoke("casefile:updateLaneAttachments", { laneId, attachments }),
+  getContext: () => ipcRenderer.invoke("casefile:getContext"),
+  saveContext: (manifest) => ipcRenderer.invoke("casefile:saveContext", { manifest }),
+  resolveScope: (laneId) => ipcRenderer.invoke("casefile:resolveScope", { laneId }),
+  listOverlayTrees: (laneId, maxDepth) =>
+    ipcRenderer.invoke("casefile:listOverlayTrees", { laneId, maxDepth }),
+  readOverlayFile: (laneId, path, maxChars) =>
+    ipcRenderer.invoke("casefile:readOverlayFile", { laneId, path, maxChars }),
+
   // Chat (against the currently active casefile + lane).
   sendChat: (payload) => ipcRenderer.invoke("chat:send", payload),
 

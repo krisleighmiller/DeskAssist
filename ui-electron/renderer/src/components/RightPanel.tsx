@@ -2,9 +2,11 @@ import type {
   ApiKeyStatus,
   CasefileSnapshot,
   ChatMessage,
+  ContextManifestDto,
   ExportResult,
   FindingDraft,
   FindingDto,
+  LaneAttachmentInput,
   LaneComparisonDto,
   Provider,
   RegisterLaneInput,
@@ -60,6 +62,15 @@ interface RightPanelProps {
     onClearComparison: () => void;
     onOpenDiff: (path: string) => void;
     onOpenLaneFile: (laneId: string, path: string) => void;
+    context: ContextManifestDto | null;
+    contextBusy: boolean;
+    contextError: string | null;
+    onSaveContext: (manifest: { files: string[]; autoIncludeMaxBytes: number }) => Promise<void>;
+    onSetLaneParent: (laneId: string, parentId: string | null) => Promise<void>;
+    onUpdateLaneAttachments: (
+      laneId: string,
+      attachments: LaneAttachmentInput[]
+    ) => Promise<void>;
   };
 }
 
@@ -140,6 +151,12 @@ export function RightPanel({
             onClearComparison={lanes.onClearComparison}
             onOpenDiff={lanes.onOpenDiff}
             onOpenLaneFile={lanes.onOpenLaneFile}
+            context={lanes.context}
+            contextBusy={lanes.contextBusy}
+            contextError={lanes.contextError}
+            onSaveContext={lanes.onSaveContext}
+            onSetLaneParent={lanes.onSetLaneParent}
+            onUpdateLaneAttachments={lanes.onUpdateLaneAttachments}
           />
         )}
       </div>

@@ -3,12 +3,15 @@ import { useMemo, useState } from "react";
 import type {
   CasefileSnapshot,
   ChangedFileDto,
+  ContextManifestDto,
   Lane,
+  LaneAttachmentInput,
   LaneComparisonDto,
   LaneKind,
   RegisterLaneInput,
 } from "../types";
 import { LANE_KINDS } from "../types";
+import { ContextEditor } from "./ContextEditor";
 
 interface LanesTabProps {
   casefile: CasefileSnapshot | null;
@@ -21,32 +24,85 @@ interface LanesTabProps {
   onClearComparison: () => void;
   onOpenDiff: (path: string) => void;
   onOpenLaneFile: (laneId: string, path: string) => void;
+  // M3.5
+  context: ContextManifestDto | null;
+  contextBusy: boolean;
+  contextError: string | null;
+  onSaveContext: (manifest: { files: string[]; autoIncludeMaxBytes: number }) => Promise<void>;
+  onSetLaneParent: (laneId: string, parentId: string | null) => Promise<void>;
+  onUpdateLaneAttachments: (
+    laneId: string,
+    attachments: LaneAttachmentInput[]
+  ) => Promise<void>;
 }
 
-export function LanesTab({
-  casefile,
-  onSwitchLane,
-  onRegisterLane,
-  onChooseLaneRoot,
-  comparison,
-  comparisonBusy,
-  onCompare,
-  onClearComparison,
-  onOpenDiff,
-  onOpenLaneFile,
-}: LanesTabProps): JSX.Element {
-  const [showForm, setShowForm] = useState(false);
-  const [compareTarget, setCompareTarget] = useState<string>("");
+interface LaneNode {
+  lane: Lane;
+  children: LaneNode[];
+}
 
-  // Pick a sensible default compare target when the user opens the dropdown
-  // for the first time: the first lane that isn't the active one.
-  const defaultTarget = useMemo(() => {
-    if (!casefile) return "";
-    const other = casefile.lanes.find((l) => l.id !== casefile.activeLaneId);
-    return other ? other.id : "";
+function buildLaneForest(lanes: Lane[]): LaneNode[] {
+  const byId = new Map<string, LaneNode>(
+    lanes.map((lane) => [lane.id, { lane, children: [] }])
+  );
+  const roots: LaneNode[] = [];
+  for (const lane of lanes) {
+    const node = byId.get(lane.id)!;
+    const parentId = lane.parentId ?? null;
+    if (parentId && byId.has(parentId)) {
+      byId.get(parentId)!.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  const sortNodes = (nodes: LaneNode[]) => {
+    nodes.sort((a, b) => a.lane.name.localeCompare(b.lane.name));
+    for (const n of nodes) sortNodes(n.children);
+  };
+  sortNodes(roots);
+  return roots;
+}
+
+export function LanesTab(props: LanesTabProps): JSX.Element {
+  const {
+    casefile,
+    onSwitchLane,
+    onRegisterLane,
+    onChooseLaneRoot,
+    comparison,
+    comparisonBusy,
+    onCompare,
+    onClearComparison,
+    onOpenDiff,
+    onOpenLaneFile,
+    context,
+    contextBusy,
+    contextError,
+    onSaveContext,
+    onSetLaneParent,
+    onUpdateLaneAttachments,
+  } = props;
+
+  const [showForm, setShowForm] = useState(false);
+  const [showContext, setShowContext] = useState(false);
+  const [editLaneId, setEditLaneId] = useState<string | null>(null);
+  const [compareLeft, setCompareLeft] = useState<string>("");
+  const [compareRight, setCompareRight] = useState<string>("");
+
+  const forest = useMemo(
+    () => (casefile ? buildLaneForest(casefile.lanes) : []),
+    [casefile]
+  );
+
+  const compareDefaults = useMemo(() => {
+    if (!casefile || casefile.lanes.length < 2) return { left: "", right: "" };
+    const active = casefile.activeLaneId ?? casefile.lanes[0].id;
+    const other = casefile.lanes.find((l) => l.id !== active);
+    return { left: active, right: other ? other.id : "" };
   }, [casefile]);
 
-  const effectiveTarget = compareTarget || defaultTarget;
+  const effectiveLeft = compareLeft || compareDefaults.left;
+  const effectiveRight = compareRight || compareDefaults.right;
 
   if (!casefile) {
     return (
@@ -63,34 +119,75 @@ export function LanesTab({
     );
   }
 
+  const editingLane = editLaneId
+    ? casefile.lanes.find((l) => l.id === editLaneId) ?? null
+    : null;
+
   return (
     <div className="lanes">
       <div className="lanes-header">
-        <span className="lanes-title">Lanes in this casefile</span>
+        <span className="lanes-title">Lanes</span>
         <button type="button" onClick={() => setShowForm((v) => !v)}>
           {showForm ? "Cancel" : "Register lane"}
         </button>
+        <button type="button" onClick={() => setShowContext((v) => !v)}>
+          {showContext ? "Hide context" : "Edit casefile context"}
+        </button>
       </div>
-      <ul className="lane-list">
-        {casefile.lanes.map((lane) => (
-          <LaneRow
-            key={lane.id}
-            lane={lane}
-            isActive={lane.id === casefile.activeLaneId}
-            onSelect={() => onSwitchLane(lane.id)}
+
+      {showContext && (
+        <ContextEditor
+          context={context}
+          busy={contextBusy}
+          error={contextError}
+          onSave={onSaveContext}
+        />
+      )}
+
+      <ul className="lane-tree">
+        {forest.map((node) => (
+          <LaneTreeNode
+            key={node.lane.id}
+            node={node}
+            depth={0}
+            activeLaneId={casefile.activeLaneId}
+            onSelect={onSwitchLane}
+            onEdit={(id) => setEditLaneId(id === editLaneId ? null : id)}
           />
         ))}
       </ul>
+
+      {editingLane && (
+        <LaneEditPanel
+          lane={editingLane}
+          allLanes={casefile.lanes}
+          onClose={() => setEditLaneId(null)}
+          onSetParent={onSetLaneParent}
+          onUpdateAttachments={onUpdateLaneAttachments}
+          onChooseDir={onChooseLaneRoot}
+        />
+      )}
+
       {casefile.lanes.length >= 2 && (
         <div className="compare-controls">
           <span className="lanes-title">Compare</span>
-          <span className="muted">{lanesById(casefile, casefile.activeLaneId)?.name ?? "active"} ↔</span>
           <select
-            value={effectiveTarget}
-            onChange={(event) => setCompareTarget(event.target.value)}
+            value={effectiveLeft}
+            onChange={(event) => setCompareLeft(event.target.value)}
+          >
+            {casefile.lanes.map((lane) => (
+              <option key={lane.id} value={lane.id}>
+                {lane.name}
+              </option>
+            ))}
+          </select>
+          <span className="muted">↔</span>
+          <select
+            value={effectiveRight}
+            onChange={(event) => setCompareRight(event.target.value)}
           >
             {casefile.lanes
-              .filter((l) => l.id !== casefile.activeLaneId)
+              .filter((l) => l.id !== effectiveLeft)
               .map((lane) => (
                 <option key={lane.id} value={lane.id}>
                   {lane.name}
@@ -100,11 +197,14 @@ export function LanesTab({
           <button
             type="button"
             disabled={
-              comparisonBusy || !casefile.activeLaneId || !effectiveTarget
+              comparisonBusy ||
+              !effectiveLeft ||
+              !effectiveRight ||
+              effectiveLeft === effectiveRight
             }
             onClick={() => {
-              if (casefile.activeLaneId && effectiveTarget) {
-                void onCompare(casefile.activeLaneId, effectiveTarget);
+              if (effectiveLeft && effectiveRight && effectiveLeft !== effectiveRight) {
+                void onCompare(effectiveLeft, effectiveRight);
               }
             }}
           >
@@ -127,15 +227,81 @@ export function LanesTab({
       )}
       {showForm && (
         <RegisterLaneForm
+          casefile={casefile}
           onChooseLaneRoot={onChooseLaneRoot}
           onSubmit={async (input) => {
             await onRegisterLane(input);
             setShowForm(false);
           }}
-          existingIds={new Set(casefile.lanes.map((l) => l.id))}
         />
       )}
     </div>
+  );
+}
+
+interface LaneTreeNodeProps {
+  node: LaneNode;
+  depth: number;
+  activeLaneId: string | null;
+  onSelect: (laneId: string) => void;
+  onEdit: (laneId: string) => void;
+}
+
+function LaneTreeNode({
+  node,
+  depth,
+  activeLaneId,
+  onSelect,
+  onEdit,
+}: LaneTreeNodeProps): JSX.Element {
+  const { lane, children } = node;
+  const isActive = lane.id === activeLaneId;
+  const attachmentCount = lane.attachments?.length ?? 0;
+  return (
+    <li className="lane-tree-node">
+      <div
+        className={`lane-row${isActive ? " active" : ""}`}
+        style={{ paddingLeft: depth * 14 + 6 }}
+        onClick={() => onSelect(lane.id)}
+        title={lane.root}
+      >
+        <div className="lane-row-main">
+          <span className="lane-name">{lane.name}</span>
+          <span className="lane-kind">{lane.kind}</span>
+          {attachmentCount > 0 && (
+            <span className="lane-attachments-badge" title="attachments">
+              +{attachmentCount}
+            </span>
+          )}
+          {isActive && <span className="lane-active-badge">active</span>}
+          <button
+            type="button"
+            className="link-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onEdit(lane.id);
+            }}
+          >
+            edit
+          </button>
+        </div>
+        <div className="lane-root">{lane.root}</div>
+      </div>
+      {children.length > 0 && (
+        <ul className="lane-tree">
+          {children.map((child) => (
+            <LaneTreeNode
+              key={child.lane.id}
+              node={child}
+              depth={depth + 1}
+              activeLaneId={activeLaneId}
+              onSelect={onSelect}
+              onEdit={onEdit}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
   );
 }
 
@@ -260,39 +426,193 @@ function ChangedFileRow({
   );
 }
 
-interface LaneRowProps {
+interface LaneEditPanelProps {
   lane: Lane;
-  isActive: boolean;
-  onSelect: () => void;
+  allLanes: Lane[];
+  onClose: () => void;
+  onSetParent: (laneId: string, parentId: string | null) => Promise<void>;
+  onUpdateAttachments: (
+    laneId: string,
+    attachments: LaneAttachmentInput[]
+  ) => Promise<void>;
+  onChooseDir: () => Promise<string | null>;
 }
 
-function LaneRow({ lane, isActive, onSelect }: LaneRowProps): JSX.Element {
+// Lanes that would create a cycle if chosen as `lane`'s parent. We compute
+// the set of `lane` plus all of its descendants and disallow them as parents.
+function descendantsOf(laneId: string, all: Lane[]): Set<string> {
+  const out = new Set<string>([laneId]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const l of all) {
+      if (l.parentId && out.has(l.parentId) && !out.has(l.id)) {
+        out.add(l.id);
+        added = true;
+      }
+    }
+  }
+  return out;
+}
+
+function LaneEditPanel({
+  lane,
+  allLanes,
+  onClose,
+  onSetParent,
+  onUpdateAttachments,
+  onChooseDir,
+}: LaneEditPanelProps): JSX.Element {
+  const [parentId, setParentId] = useState<string>(lane.parentId ?? "");
+  const [attachments, setAttachments] = useState<LaneAttachmentInput[]>(
+    (lane.attachments ?? []).map((a) => ({ name: a.name, root: a.root }))
+  );
+  const [newName, setNewName] = useState("");
+  const [newRoot, setNewRoot] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const forbiddenParents = useMemo(
+    () => descendantsOf(lane.id, allLanes),
+    [lane.id, allLanes]
+  );
+
+  const save = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const wantParent = parentId.trim() ? parentId.trim() : null;
+      if ((lane.parentId ?? null) !== wantParent) {
+        await onSetParent(lane.id, wantParent);
+      }
+      const before = JSON.stringify(lane.attachments ?? []);
+      const after = JSON.stringify(attachments);
+      if (before !== after) {
+        await onUpdateAttachments(lane.id, attachments);
+      }
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addAttachment = () => {
+    const name = newName.trim();
+    const root = newRoot.trim();
+    if (!name || !root) {
+      setError("Attachment name and root are required");
+      return;
+    }
+    if (attachments.some((a) => a.name === name)) {
+      setError(`Attachment "${name}" already exists`);
+      return;
+    }
+    setAttachments([...attachments, { name, root }]);
+    setNewName("");
+    setNewRoot("");
+    setError(null);
+  };
+
   return (
-    <li className={`lane-row${isActive ? " active" : ""}`} onClick={onSelect} title={lane.root}>
-      <div className="lane-row-main">
-        <span className="lane-name">{lane.name}</span>
-        <span className="lane-kind">{lane.kind}</span>
-        {isActive && <span className="lane-active-badge">active</span>}
+    <div className="lane-edit-panel">
+      <div className="lane-edit-header">
+        <strong>Edit lane: {lane.name}</strong>
+        <button type="button" className="link-button" onClick={onClose}>
+          close
+        </button>
       </div>
-      <div className="lane-root">{lane.root}</div>
-    </li>
+      <label className="lane-form-row">
+        <span>Parent</span>
+        <select value={parentId} onChange={(event) => setParentId(event.target.value)}>
+          <option value="">(top level)</option>
+          {allLanes
+            .filter((l) => !forbiddenParents.has(l.id))
+            .map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
+        </select>
+      </label>
+      <div className="lane-form-row">
+        <span>Attachments</span>
+        <ul className="attachment-list">
+          {attachments.length === 0 && (
+            <li className="muted">None — paired notes/log directories live here.</li>
+          )}
+          {attachments.map((att) => (
+            <li key={att.name} className="attachment-row">
+              <code>{att.name}</code>
+              <span className="muted" title={att.root}>{att.root}</span>
+              <button
+                type="button"
+                className="link-button"
+                onClick={() =>
+                  setAttachments(attachments.filter((a) => a.name !== att.name))
+                }
+              >
+                remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="lane-form-row attachment-add">
+        <input
+          type="text"
+          placeholder="name (e.g. notes)"
+          value={newName}
+          onChange={(event) => setNewName(event.target.value)}
+        />
+        <input
+          type="text"
+          placeholder="absolute or casefile-relative path"
+          value={newRoot}
+          onChange={(event) => setNewRoot(event.target.value)}
+        />
+        <button
+          type="button"
+          onClick={async () => {
+            const chosen = await onChooseDir();
+            if (chosen) setNewRoot(chosen);
+          }}
+        >
+          Browse
+        </button>
+        <button type="button" onClick={addAttachment}>
+          Add
+        </button>
+      </div>
+      {error && <div className="lane-form-error">Error: {error}</div>}
+      <div className="lane-form-actions">
+        <button type="button" onClick={save} disabled={busy}>
+          {busy ? "Saving..." : "Save"}
+        </button>
+      </div>
+    </div>
   );
 }
 
 interface RegisterLaneFormProps {
-  existingIds: Set<string>;
+  casefile: CasefileSnapshot;
   onChooseLaneRoot: () => Promise<string | null>;
   onSubmit: (input: RegisterLaneInput) => Promise<void>;
 }
 
 function RegisterLaneForm({
-  existingIds,
+  casefile,
   onChooseLaneRoot,
   onSubmit,
 }: RegisterLaneFormProps): JSX.Element {
   const [name, setName] = useState("");
   const [kind, setKind] = useState<LaneKind>("repo");
   const [root, setRoot] = useState("");
+  const [parentId, setParentId] = useState<string>(casefile.activeLaneId ?? "");
+  const [attachments, setAttachments] = useState<LaneAttachmentInput[]>([]);
+  const [newName, setNewName] = useState("");
+  const [newRoot, setNewRoot] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -308,12 +628,35 @@ function RegisterLaneForm({
     }
     setBusy(true);
     try {
-      await onSubmit({ name: name.trim(), kind, root: root.trim() });
+      await onSubmit({
+        name: name.trim(),
+        kind,
+        root: root.trim(),
+        parentId: parentId.trim() ? parentId.trim() : null,
+        attachments,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
+  };
+
+  const addAttachment = () => {
+    const an = newName.trim();
+    const ar = newRoot.trim();
+    if (!an || !ar) {
+      setError("Attachment name and root are required");
+      return;
+    }
+    if (attachments.some((a) => a.name === an)) {
+      setError(`Attachment "${an}" already exists`);
+      return;
+    }
+    setAttachments([...attachments, { name: an, root: ar }]);
+    setNewName("");
+    setNewRoot("");
+    setError(null);
   };
 
   return (
@@ -339,6 +682,17 @@ function RegisterLaneForm({
         </select>
       </label>
       <label className="lane-form-row">
+        <span>Parent</span>
+        <select value={parentId} onChange={(event) => setParentId(event.target.value)}>
+          <option value="">(top level)</option>
+          {casefile.lanes.map((lane) => (
+            <option key={lane.id} value={lane.id}>
+              {lane.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="lane-form-row">
         <span>Root</span>
         <input
           type="text"
@@ -350,20 +704,62 @@ function RegisterLaneForm({
           type="button"
           onClick={async () => {
             const chosen = await onChooseLaneRoot();
-            if (chosen) {
-              setRoot(chosen);
-            }
+            if (chosen) setRoot(chosen);
           }}
           disabled={busy}
         >
           Browse
         </button>
       </label>
-      {existingIds.size > 0 && (
-        <div className="lane-form-hint">
-          Existing ids: {Array.from(existingIds).sort().join(", ")}
-        </div>
-      )}
+      <div className="lane-form-row">
+        <span>Attachments</span>
+        <ul className="attachment-list">
+          {attachments.length === 0 && (
+            <li className="muted">None — add paired note dirs (e.g. ash_notes for ash).</li>
+          )}
+          {attachments.map((att) => (
+            <li key={att.name} className="attachment-row">
+              <code>{att.name}</code>
+              <span className="muted" title={att.root}>{att.root}</span>
+              <button
+                type="button"
+                className="link-button"
+                onClick={() =>
+                  setAttachments(attachments.filter((a) => a.name !== att.name))
+                }
+              >
+                remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="lane-form-row attachment-add">
+        <input
+          type="text"
+          placeholder="name"
+          value={newName}
+          onChange={(event) => setNewName(event.target.value)}
+        />
+        <input
+          type="text"
+          placeholder="absolute or casefile-relative path"
+          value={newRoot}
+          onChange={(event) => setNewRoot(event.target.value)}
+        />
+        <button
+          type="button"
+          onClick={async () => {
+            const chosen = await onChooseLaneRoot();
+            if (chosen) setNewRoot(chosen);
+          }}
+        >
+          Browse
+        </button>
+        <button type="button" onClick={addAttachment}>
+          Add
+        </button>
+      </div>
       {error && <div className="lane-form-error">Error: {error}</div>}
       <div className="lane-form-actions">
         <button type="button" onClick={submit} disabled={busy}>

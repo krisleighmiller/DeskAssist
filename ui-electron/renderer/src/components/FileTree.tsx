@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { FileTreeNode } from "../types";
+import type { FileTreeNode, OverlayTreeDto } from "../types";
 
 interface FileTreeProps {
   root: FileTreeNode | null;
@@ -7,6 +7,17 @@ interface FileTreeProps {
   hasWorkspace: boolean;
   error: string | null;
   onOpenFile: (path: string) => void;
+  // M3.5: optional overlay (ancestor / attachment / context) trees and toggle
+  // state. When `showOverlays` is true the parent component fetches the
+  // overlays via the bridge and passes them in; the tree renders them as
+  // collapsible siblings under the main lane root.
+  overlays?: OverlayTreeDto[];
+  overlaysLoading?: boolean;
+  overlaysError?: string | null;
+  showOverlays?: boolean;
+  canShowOverlays?: boolean;
+  onToggleOverlays?: () => void;
+  onOpenOverlayFile?: (virtualPath: string) => void;
 }
 
 function compareNodes(a: FileTreeNode, b: FileTreeNode): number {
@@ -80,10 +91,16 @@ export function FileTree({
   hasWorkspace,
   error,
   onOpenFile,
+  overlays,
+  overlaysLoading,
+  overlaysError,
+  showOverlays,
+  canShowOverlays,
+  onToggleOverlays,
+  onOpenOverlayFile,
 }: FileTreeProps): JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
-  // Auto-expand the root whenever a new tree arrives.
   useEffect(() => {
     if (root) {
       setExpanded((prev) => {
@@ -94,6 +111,23 @@ export function FileTree({
       });
     }
   }, [root]);
+
+  // Auto-expand newly-arriving overlay roots so the user sees their
+  // contents on first toggle without an extra click each.
+  useEffect(() => {
+    if (!showOverlays || !overlays) return;
+    setExpanded((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const overlay of overlays) {
+        if (overlay.tree && !next.has(overlay.tree.path)) {
+          next.add(overlay.tree.path);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [showOverlays, overlays]);
 
   const toggle = (p: string) => {
     setExpanded((prev) => {
@@ -120,6 +154,17 @@ export function FileTree({
 
   return (
     <div className="file-tree">
+      {canShowOverlays && onToggleOverlays && (
+        <label className="overlay-toggle">
+          <input
+            type="checkbox"
+            checked={Boolean(showOverlays)}
+            onChange={onToggleOverlays}
+          />
+          <span>Show ancestor / attachment / context files</span>
+          {overlaysLoading && <span className="muted"> (loading…)</span>}
+        </label>
+      )}
       <TreeNode
         node={root}
         expanded={expanded}
@@ -128,6 +173,33 @@ export function FileTree({
         onOpenFile={onOpenFile}
         depth={0}
       />
+      {showOverlays && overlays && overlays.length > 0 && (
+        <div className="overlay-section">
+          <div className="overlay-section-title">Inherited context</div>
+          {overlays.map((overlay) =>
+            overlay.tree ? (
+              <TreeNode
+                key={overlay.prefix}
+                node={overlay.tree}
+                expanded={expanded}
+                toggle={toggle}
+                activePath={activePath}
+                onOpenFile={(virtualPath) => {
+                  if (onOpenOverlayFile) onOpenOverlayFile(virtualPath);
+                }}
+                depth={0}
+              />
+            ) : (
+              <div key={overlay.prefix} className="empty">
+                {overlay.prefix}: {overlay.error || "unavailable"}
+              </div>
+            )
+          )}
+        </div>
+      )}
+      {showOverlays && overlaysError && (
+        <div className="empty">Overlay error: {overlaysError}</div>
+      )}
     </div>
   );
 }

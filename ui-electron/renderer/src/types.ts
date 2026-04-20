@@ -87,11 +87,53 @@ export interface CasefileSnapshot {
   activeLaneId: string | null;
 }
 
+export interface LaneAttachmentInput {
+  name: string;
+  root: string;
+}
+
 export interface RegisterLaneInput {
   name: string;
   kind: LaneKind;
   root: string;
   id?: string;
+  parentId?: string | null;
+  attachments?: LaneAttachmentInput[];
+}
+
+export interface ContextResolvedFileDto {
+  path: string;
+  absolutePath: string;
+  sizeBytes: number;
+}
+
+export interface ContextManifestDto {
+  files: string[];
+  autoIncludeMaxBytes: number;
+  resolved: ContextResolvedFileDto[];
+}
+
+export interface ReadOverlayDto {
+  prefix: string;
+  root: string;
+  label: string;
+}
+
+export interface ScopeDto {
+  laneId: string;
+  writeRoot: string;
+  casefileRoot: string;
+  readOverlays: ReadOverlayDto[];
+  contextFiles: ContextResolvedFileDto[];
+  autoIncludeMaxBytes: number;
+}
+
+export interface OverlayTreeDto {
+  prefix: string;
+  label: string;
+  root: string;
+  tree: FileTreeNode | null;
+  error?: string;
 }
 
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
@@ -174,6 +216,23 @@ export interface AssistantApi {
   compareLanes: (leftLaneId: string, rightLaneId: string) => Promise<LaneComparisonDto>;
   exportFindings: (laneIds: string[]) => Promise<ExportResult>;
   readLaneFile: (
+    laneId: string,
+    path: string,
+    maxChars?: number
+  ) => Promise<FileReadResult>;
+
+  // M3.5: hierarchical scope, attachments, context manifest, overlay reads.
+  setLaneParent: (laneId: string, parentId: string | null) => Promise<CasefileSnapshot>;
+  updateLaneAttachments: (
+    laneId: string,
+    attachments: LaneAttachmentInput[]
+  ) => Promise<CasefileSnapshot>;
+  getContext: () => Promise<ContextManifestDto>;
+  saveContext: (manifest: { files: string[]; autoIncludeMaxBytes: number }) =>
+    Promise<ContextManifestDto>;
+  resolveScope: (laneId: string) => Promise<ScopeDto>;
+  listOverlayTrees: (laneId: string, maxDepth?: number) => Promise<OverlayTreeDto[]>;
+  readOverlayFile: (
     laneId: string,
     path: string,
     maxChars?: number

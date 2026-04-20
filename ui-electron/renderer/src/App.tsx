@@ -3,11 +3,14 @@ import type {
   ApiKeyStatus,
   CasefileSnapshot,
   ChatMessage,
+  ContextManifestDto,
   ExportResult,
   FindingDraft,
   FindingDto,
   FileTreeNode,
+  LaneAttachmentInput,
   LaneComparisonDto,
+  OverlayTreeDto,
   Provider,
   RegisterLaneInput,
   ToolCall,
@@ -208,6 +211,91 @@ export function App(): JSX.Element {
   const [comparison, setComparison] = useState<LaneComparisonDto | null>(null);
   const [comparisonBusy, setComparisonBusy] = useState(false);
 
+  // ----- M3.5: casefile context manifest + ancestor-files overlays -----
+
+  const [contextManifest, setContextManifest] = useState<ContextManifestDto | null>(null);
+  const [contextBusy, setContextBusy] = useState(false);
+  const [contextError, setContextError] = useState<string | null>(null);
+
+  const reloadContext = useCallback(async () => {
+    if (!casefile) {
+      setContextManifest(null);
+      return;
+    }
+    try {
+      const next = await api().getContext();
+      setContextManifest(next);
+      setContextError(null);
+    } catch (error) {
+      setContextError(error instanceof Error ? error.message : String(error));
+    }
+  }, [casefile]);
+
+  const handleSaveContext = useCallback(
+    async (manifest: { files: string[]; autoIncludeMaxBytes: number }) => {
+      setContextBusy(true);
+      try {
+        const saved = await api().saveContext(manifest);
+        setContextManifest(saved);
+        setContextError(null);
+      } catch (error) {
+        setContextError(error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        setContextBusy(false);
+      }
+    },
+    []
+  );
+
+  const handleSetLaneParent = useCallback(
+    async (laneId: string, parentId: string | null) => {
+      try {
+        const snapshot = await api().setLaneParent(laneId, parentId);
+        setCasefile(snapshot);
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const handleUpdateLaneAttachments = useCallback(
+    async (laneId: string, attachments: LaneAttachmentInput[]) => {
+      try {
+        const snapshot = await api().updateLaneAttachments(laneId, attachments);
+        setCasefile(snapshot);
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const [showOverlays, setShowOverlays] = useState(false);
+  const [overlayTrees, setOverlayTrees] = useState<OverlayTreeDto[]>([]);
+  const [overlaysLoading, setOverlaysLoading] = useState(false);
+  const [overlaysError, setOverlaysError] = useState<string | null>(null);
+
+  const reloadOverlays = useCallback(async () => {
+    if (!casefile || !activeLaneId || !showOverlays) {
+      setOverlayTrees([]);
+      return;
+    }
+    setOverlaysLoading(true);
+    try {
+      const overlays = await api().listOverlayTrees(activeLaneId, 4);
+      setOverlayTrees(overlays);
+      setOverlaysError(null);
+    } catch (error) {
+      setOverlaysError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOverlaysLoading(false);
+    }
+  }, [casefile, activeLaneId, showOverlays]);
+
   // ----- API keys -----
 
   const [keyStatus, setKeyStatus] = useState<ApiKeyStatus>(DEFAULT_KEY_STATUS);
@@ -321,6 +409,18 @@ export function App(): JSX.Element {
   useEffect(() => {
     void reloadFindings();
   }, [reloadFindings]);
+
+  // Reload context manifest whenever the casefile changes.
+  useEffect(() => {
+    void reloadContext();
+  }, [reloadContext]);
+
+  // Reload overlay trees whenever the active lane changes (or the toggle
+  // flips on); refresh is also implicit after registerLane / setParent /
+  // updateAttachments because those replace the casefile snapshot.
+  useEffect(() => {
+    void reloadOverlays();
+  }, [reloadOverlays]);
 
   // ----- Casefile ops -----
 
@@ -537,6 +637,42 @@ export function App(): JSX.Element {
       }
     },
     [casefile, comparison, session.tabs, updateSession]
+  );
+
+  const handleOpenOverlayFile = useCallback(
+    async (virtualPath: string) => {
+      // Overlay files (`_ancestors/...`, `_attachments/...`, `_context/...`)
+      // are read-only views; they're opened as a regular tab keyed by their
+      // virtual path, with savedContent === content so the editor treats
+      // them as clean. Saves still go through the active lane only.
+      if (!casefile || !activeLaneId) return;
+      const key = `overlay:${virtualPath}`;
+      if (session.tabs.some((t) => t.key === key)) {
+        updateSession((prev) => ({ ...prev, activeTabKey: key }));
+        return;
+      }
+      try {
+        const result = await api().readOverlayFile(activeLaneId, virtualPath);
+        updateSession((prev) => ({
+          ...prev,
+          tabs: [
+            ...prev.tabs,
+            {
+              kind: "file",
+              key,
+              path: virtualPath,
+              content: result.content,
+              savedContent: result.content,
+              truncated: result.truncated,
+            },
+          ],
+          activeTabKey: key,
+        }));
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [casefile, activeLaneId, session.tabs, updateSession]
   );
 
   const handleOpenLaneFile = useCallback(
@@ -782,6 +918,7 @@ export function App(): JSX.Element {
         keyStatus={keyStatus}
         onChooseCasefile={handleChooseCasefile}
         onOpenKeys={() => setKeysOpen(true)}
+        onSwitchLane={handleSwitchLane}
       />
       <div className="workbench">
         <section className="pane">
@@ -793,6 +930,13 @@ export function App(): JSX.Element {
               onOpenFile={handleOpenFile}
               error={treeError}
               hasWorkspace={Boolean(activeLane)}
+              overlays={overlayTrees}
+              overlaysLoading={overlaysLoading}
+              overlaysError={overlaysError}
+              showOverlays={showOverlays}
+              canShowOverlays={Boolean(activeLane)}
+              onToggleOverlays={() => setShowOverlays((v) => !v)}
+              onOpenOverlayFile={handleOpenOverlayFile}
             />
           </div>
         </section>
@@ -850,6 +994,12 @@ export function App(): JSX.Element {
               onClearComparison: handleClearComparison,
               onOpenDiff: handleOpenDiff,
               onOpenLaneFile: handleOpenLaneFile,
+              context: contextManifest,
+              contextBusy,
+              contextError,
+              onSaveContext: handleSaveContext,
+              onSetLaneParent: handleSetLaneParent,
+              onUpdateLaneAttachments: handleUpdateLaneAttachments,
             }}
           />
         </section>

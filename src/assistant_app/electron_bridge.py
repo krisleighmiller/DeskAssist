@@ -548,6 +548,35 @@ def handle_casefile_export(request: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "path": str(output_path), "markdown": markdown}
 
 
+def handle_casefile_read_overlay_file(request: dict[str, Any]) -> dict[str, Any]:
+    """Read a file from one of the active scope's read overlays.
+
+    Used by the renderer's "Show ancestor files" file-tree view. The path
+    must use a virtual prefix (e.g. `_ancestors/<lane>/foo.md`,
+    `_attachments/notes/log.txt`, `_context/Rubric.md`); the scope's
+    overlay map handles the rewrite to a real disk path. Reads are
+    bounded just like `lane:readFile`.
+    """
+    root = _require_casefile_root(request)
+    lane_id = request.get("laneId")
+    file_path = request.get("path")
+    if not isinstance(lane_id, str) or not lane_id.strip():
+        raise ValueError("laneId is required")
+    if not isinstance(file_path, str) or not file_path.strip():
+        raise ValueError("path is required")
+    max_chars_raw = request.get("maxChars")
+    max_chars = (
+        int(max_chars_raw)
+        if isinstance(max_chars_raw, int) and max_chars_raw > 0
+        else 200_000
+    )
+    service = CasefileService(root)
+    scope = service.resolve_scope(lane_id)
+    fs = WorkspaceFilesystem(scope.write_root, read_overlays=scope.overlay_map())
+    content, truncated, target = fs.read_text_bounded(file_path, max_chars)
+    return {"ok": True, "path": str(target), "content": content, "truncated": truncated}
+
+
 def handle_lane_read_file(request: dict[str, Any]) -> dict[str, Any]:
     """Read a file from a specific lane (not necessarily the active one).
 
@@ -597,6 +626,7 @@ _HANDLERS = {
     "casefile:compareLanes": handle_casefile_compare_lanes,
     "casefile:exportFindings": handle_casefile_export,
     "lane:readFile": handle_lane_read_file,
+    "casefile:readOverlayFile": handle_casefile_read_overlay_file,
 }
 
 
