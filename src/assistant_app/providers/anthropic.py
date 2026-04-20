@@ -8,6 +8,21 @@ from assistant_app.providers.http_chat import HttpChatProvider
 class AnthropicProvider(HttpChatProvider):
     metadata = ProviderMetadata(name="anthropic", env_var_name="ANTHROPIC_API_KEY")
     endpoint = "https://api.anthropic.com/v1/messages"
+    # Per-class default.  Override at the class level for a custom subclass, or
+    # pass `max_tokens=N` to the constructor for a one-off instance.
+    default_max_tokens: int = 8192
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        timeout_seconds: float = 30.0,
+        max_tokens: int | None = None,
+    ) -> None:
+        super().__init__(api_key=api_key, timeout_seconds=timeout_seconds)
+        if max_tokens is not None:
+            self._max_tokens = max_tokens
+        else:
+            self._max_tokens = self.default_max_tokens
 
     def _build_anthropic_payload(self, request: ChatRequest) -> dict[str, object]:
         system_parts: list[str] = []
@@ -58,7 +73,7 @@ class AnthropicProvider(HttpChatProvider):
 
         payload: dict[str, object] = {
             "model": request.model,
-            "max_tokens": 1024,
+            "max_tokens": self._max_tokens,
             "messages": messages,
         }
         if system_parts:

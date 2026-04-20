@@ -7,7 +7,29 @@ logger = logging.getLogger(__name__)
 
 
 class _InternalCapability:
-    """Process-local capability token for trusted internal calls."""
+    """Process-local capability token for trusted internal calls.
+
+    SECURITY NOTE: ``INTERNAL_CAPABILITY`` is intentionally a module-level
+    singleton rather than a secret token — the safety property is *not*
+    "attackers cannot obtain it" (any Python code imported into the bridge
+    process can do ``from assistant_app.security.policy import
+    INTERNAL_CAPABILITY``).  The property is instead "every path that
+    reaches an internal-only command is *explicit* and *auditable*":
+
+    * ``authorize()`` logs every use via ``audit()``.
+    * There is currently *one* internal command (``sys_exec``) and *zero*
+      bridge handlers that invoke it via ``INTERNAL_CAPABILITY``.  The only
+      safety guarantee is structural: no current code path threads the
+      capability from an untrusted IPC message to ``execute_tool_command``.
+
+    If you add a handler that calls ``execute_tool_command(...,
+    capability=INTERNAL_CAPABILITY)``, you are bypassing the external-caller
+    guard.  That may be intentional for trusted automation, but you must:
+      1. Add an ``audit()`` entry with a distinct origin label.
+      2. Ensure the call site is reachable only from trusted code (not from
+         the raw JSON dispatch loop in ``electron_bridge.__main__``).
+      3. Update this docstring to list the new authorized caller.
+    """
 
     __slots__ = ("_secret",)
     _instantiated = False

@@ -5,6 +5,10 @@ from pathlib import Path
 from assistant_app.casefile.models import Casefile
 from assistant_app.casefile.store import normalize_lane_id
 
+# 10 MB is generous for an analyst scratch-pad; anything larger is almost
+# certainly unintentional (e.g. an LLM writing unbounded output).
+MAX_NOTE_BYTES: int = 10 * 1024 * 1024
+
 
 class NotesStore:
     """Per-lane notes persisted under `.casefile/notes/<lane_id>.md`.
@@ -37,6 +41,12 @@ class NotesStore:
 
     def write(self, lane_id: str, content: str) -> Path:
         path = self._path_for(lane_id)
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_NOTE_BYTES:
+            raise ValueError(
+                f"Note content size ({len(encoded):,} bytes) exceeds the maximum "
+                f"allowed size ({MAX_NOTE_BYTES:,} bytes)"
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write so a crash mid-save can't truncate the user's notes.
         tmp = path.with_suffix(".md.tmp")

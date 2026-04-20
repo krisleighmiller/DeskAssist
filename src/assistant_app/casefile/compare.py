@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Iterator
 
@@ -106,15 +106,24 @@ def _hash_file(path: Path, *, max_bytes: int) -> tuple[str, int]:
             chunk = handle.read(65536)
             if not chunk:
                 break
+            digest.update(chunk)
             size += len(chunk)
             if size > max_bytes:
-                # We still want a stable identifier for "this file is huge"
-                # so the comparison reports it as changed deterministically
-                # rather than crashing or silently skipping. Consume to a
-                # marker hash that encodes the over-limit truncation.
-                return f"oversize:{max_bytes}", size
-            digest.update(chunk)
+                # File exceeds max_bytes.  Rather than returning a bare
+                # "oversize:{N}" marker (which would make *all* oversized files
+                # compare equal regardless of content), include a partial hash
+                # of the bytes read so far.  Two different oversized files will
+                # almost certainly produce different partial hashes, giving
+                # true changed-detection instead of false negatives.
+                return f"oversize:{max_bytes}:{digest.hexdigest()[:16]}", size
     return digest.hexdigest(), size
+
+
+@dataclass
+class _BytesBudget:
+    """Mutable counter for total bytes read across both lanes in a comparison."""
+
+    bytes_read: int = field(default=0)
 
 
 def _index_lane(
@@ -123,6 +132,8 @@ def _index_lane(
     skip_dir_names: frozenset[str],
     max_files: int,
     max_bytes_per_file: int,
+    budget: _BytesBudget,
+    max_total_bytes: int,
 ) -> dict[str, FileEntry]:
     resolved_root = lane_root.resolve()
     if not resolved_root.exists() or not resolved_root.is_dir():
@@ -134,6 +145,13 @@ def _index_lane(
         except ValueError:
             continue
         sha, size = _hash_file(path, max_bytes=max_bytes_per_file)
+        budget.bytes_read += min(size, max_bytes_per_file)
+        if budget.bytes_read > max_total_bytes:
+            raise RuntimeError(
+                f"Lane comparison exceeded {max_total_bytes:,} bytes total across "
+                "both lanes; refusing to continue. Use a smaller lane root or "
+                "increase max_total_bytes."
+            )
         index[rel.as_posix()] = FileEntry(path=rel.as_posix(), sha256=sha, size=size)
     return index
 
@@ -145,6 +163,7 @@ def compare_lanes(
     skip_dir_names: Iterable[str] = DEFAULT_SKIP_DIR_NAMES,
     max_files_per_lane: int = 10_000,
     max_bytes_per_file: int = 5_000_000,
+    max_total_bytes: int = 500_000_000,
 ) -> LaneComparison:
     """Compute file-level differences between two lanes.
 
@@ -153,19 +172,30 @@ def compare_lanes(
     on purpose to avoid both cycles and lane-escape paths. Common build /
     VCS / metadata directories are skipped by default; pass an empty
     `skip_dir_names` to compare verbatim.
+
+    ``max_total_bytes`` caps the combined byte-read work across both lanes
+    (default 500 MB).  Raise it explicitly for unusually large lane roots;
+    do not remove it, as a malicious or misconfigured lane root (e.g. a bind
+    mount of /proc) could otherwise lock the process for minutes.
     """
     skip_set = frozenset(skip_dir_names)
+    # Shared budget so the limit applies to the combined work of both lanes.
+    budget = _BytesBudget()
     left_index = _index_lane(
         left.root,
         skip_dir_names=skip_set,
         max_files=max_files_per_lane,
         max_bytes_per_file=max_bytes_per_file,
+        budget=budget,
+        max_total_bytes=max_total_bytes,
     )
     right_index = _index_lane(
         right.root,
         skip_dir_names=skip_set,
         max_files=max_files_per_lane,
         max_bytes_per_file=max_bytes_per_file,
+        budget=budget,
+        max_total_bytes=max_total_bytes,
     )
     left_paths = set(left_index)
     right_paths = set(right_index)

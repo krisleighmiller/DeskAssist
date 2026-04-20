@@ -152,14 +152,17 @@ _ID_FORMAT = "%Y%m%dT%H%M%S"
 def generate_finding_id(now: datetime | None = None) -> str:
     """Generate a stable, sortable, filesystem-safe finding id.
 
-    Format: `<UTC timestamp>-<6 hex chars>`. The timestamp prefix gives us
+    Format: ``<UTC timestamp>-<16 hex chars>``.  The timestamp prefix gives us
     chronological ordering without a separate sort key file; the hex suffix
-    handles the case where two findings are created in the same second.
+    handles same-second creation races.
+
+    The suffix uses 8 bytes (64 bits) of randomness — negligible collision
+    probability even with thousands of findings created in the same second.
+    The previous 3-byte (24-bit) suffix could produce a ``FileExistsError``
+    in a tight loop, which ``create()`` retries.
     """
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-    # Lowercased so the in-memory id matches the on-disk filename without
-    # round-tripping through `_validate_finding_id`.
-    return f"{moment.strftime(_ID_FORMAT).lower()}-{secrets.token_hex(3)}"
+    return f"{moment.strftime(_ID_FORMAT).lower()}-{secrets.token_hex(8)}"
 
 
 def _validate_finding_id(candidate: str) -> str:
@@ -260,8 +263,35 @@ class FindingsStore:
             lane_ids=lanes_tuple,
             source_refs=tuple(source_refs),
         )
-        self._write_finding(finding, expect_existing=False)
-        return finding
+        # Retry on the (extremely unlikely) event that the random suffix collides
+        # with an existing id.  A caller-supplied finding_id is never retried —
+        # the caller owns uniqueness in that case.
+        if finding_id:
+            self._write_finding(finding, expect_existing=False)
+            return finding
+        for _ in range(5):
+            try:
+                self._write_finding(finding, expect_existing=False)
+                return finding
+            except FileExistsError:
+                # Only retry when the conflict is a genuine ID collision with
+                # an existing finding file.  If the path is occupied by a
+                # directory (or something else), retrying with a new id won't
+                # help — propagate immediately.
+                if not self._path_for(finding.id).is_file():
+                    raise
+                new_id = generate_finding_id(now)
+                finding = Finding(
+                    id=new_id,
+                    title=finding.title,
+                    body=finding.body,
+                    severity=finding.severity,
+                    created_at=finding.created_at,
+                    updated_at=finding.updated_at,
+                    lane_ids=finding.lane_ids,
+                    source_refs=finding.source_refs,
+                )
+        raise RuntimeError("Failed to generate a unique finding id after 5 attempts")
 
     def update(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,6 +20,13 @@ from assistant_app.casefile.models import (
 # Version 1 files are still loadable: missing fields default to "no parent,
 # no attachments" and the file is rewritten as version 2 on first mutation.
 LANES_FILE_VERSION = 2
+
+# Maximum size for a single serialised chat message line.  An LLM response
+# with embedded tool results can be large, but 1 MB per line is already
+# generous.  Anything larger almost certainly indicates runaway content.
+MAX_CHAT_LINE_BYTES: int = 1 * 1024 * 1024  # 1 MB
+
+_logger = logging.getLogger(__name__)
 
 
 class LanesFileError(ValueError):
@@ -331,17 +339,38 @@ class CasefileStore:
     ) -> Path:
         path = self.chat_log_path(lane_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Validate every message before opening the file so that a size
+        # violation on message N never leaves messages 0..N-1 partially
+        # appended while the caller sees a ValueError.
+        serialized: list[str] = []
+        for message in messages:
+            line = json.dumps(message, ensure_ascii=False)
+            line_bytes = len(line.encode("utf-8"))
+            if line_bytes > MAX_CHAT_LINE_BYTES:
+                raise ValueError(
+                    f"Chat message exceeds maximum line size "
+                    f"({line_bytes:,} bytes > {MAX_CHAT_LINE_BYTES:,} bytes)"
+                )
+            serialized.append(line)
         with path.open("a", encoding="utf-8") as handle:
-            for message in messages:
-                handle.write(json.dumps(message, ensure_ascii=False))
+            for line in serialized:
+                handle.write(line)
                 handle.write("\n")
         return path
 
-    def read_chat_messages(self, lane_id: str) -> list[dict[str, Any]]:
+    def read_chat_messages(self, lane_id: str) -> tuple[list[dict[str, Any]], int]:
+        """Read chat messages from the lane log.
+
+        Returns ``(messages, skipped_count)`` where ``skipped_count`` is the
+        number of corrupt lines that were skipped with a warning.  Callers
+        should surface a non-zero count to the user so that slow log rot is
+        not invisible.
+        """
         path = self.chat_log_path(lane_id)
         if not path.exists():
-            return []
+            return [], 0
         out: list[dict[str, Any]] = []
+        skipped = 0
         with path.open("r", encoding="utf-8") as handle:
             for line_no, raw_line in enumerate(handle, start=1):
                 line = raw_line.strip()
@@ -350,12 +379,20 @@ class CasefileStore:
                 try:
                     parsed = json.loads(line)
                 except json.JSONDecodeError as exc:
-                    raise LanesFileError(
-                        f"Corrupt chat log {path} at line {line_no}: {exc}"
-                    ) from exc
+                    # Skip corrupt lines with a warning rather than aborting the
+                    # whole chat history.  A single bad write (e.g. from a crash
+                    # mid-append) should not make the entire log unreadable.
+                    _logger.warning(
+                        "Skipping corrupt line %d in chat log %s: %s",
+                        line_no,
+                        path,
+                        exc,
+                    )
+                    skipped += 1
+                    continue
                 if isinstance(parsed, dict):
                     out.append(parsed)
-        return out
+        return out, skipped
 
     def clear_chat_messages(self, lane_id: str) -> None:
         path = self.chat_log_path(lane_id)

@@ -168,6 +168,21 @@ class ChatService:
             command_name = str(call.get("name") or "")
             raw_input = call.get("input")
             params = raw_input if isinstance(raw_input, dict) else {}
+            # Surface argument parse failures (flagged by providers via a
+            # top-level "parse_error" field) as a structured tool-error
+            # response so the model can see the problem and self-correct,
+            # rather than executing the tool with an empty params dict.
+            parse_error = call.get("parse_error")
+            if parse_error:
+                result: dict[str, object] = {"error": str(parse_error)}
+                messages.append(
+                    ChatMessage(
+                        role="tool",
+                        content=json.dumps(result),
+                        tool_call_id=call_id,
+                    )
+                )
+                continue
             if command_name in self._write_commands and not allow_write_tools:
                 raise RuntimeError("Write tool execution attempted without approval")
             result = self.execute_tool_command(command_name, params)

@@ -98,7 +98,8 @@ class CasefileService:
             return
         self.store.append_chat_messages(lane_id, messages)
 
-    def read_chat(self, lane_id: str) -> list[dict[str, Any]]:
+    def read_chat(self, lane_id: str) -> tuple[list[dict[str, Any]], int]:
+        """Return ``(messages, skipped_corrupt_count)`` for the lane's chat log."""
         return self.store.read_chat_messages(lane_id)
 
     # ----- IPC serialization -----

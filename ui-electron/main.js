@@ -74,6 +74,18 @@ async function loadApiKeys() {
     }
   }
   apiKeysCache = loaded;
+  // Remove the plain-text fallback file once keys are available from the
+  // system keychain.  We delete it whenever the file contained at least one
+  // non-empty key; if any keytar.setPassword call above threw, we never reach
+  // this point, so the file is only removed after a fully successful cycle.
+  const fileHasKeys = PROVIDERS.some((p) => Boolean(fileKeys[p]));
+  if (fileHasKeys) {
+    try {
+      await fs.unlink(apiKeysPath());
+    } catch {
+      // Non-fatal: file may already be absent or on a read-only filesystem.
+    }
+  }
 }
 
 async function persistApiKeys() {
@@ -94,6 +106,13 @@ async function persistApiKeys() {
     encoding: "utf-8",
     mode: 0o600,
   });
+  // Tighten permissions on an already-existing file; writeFile's `mode`
+  // option only applies on creation, not when the file is truncated.
+  try {
+    await fs.chmod(apiKeysPath(), 0o600);
+  } catch {
+    // Non-fatal on filesystems that do not support chmod (e.g. FAT32).
+  }
 }
 
 function createWindow() {
@@ -342,20 +361,23 @@ async function runPythonBridge(payload, { attachApiKeys = false } = {}) {
       }
       settled = true;
       clearTimeout(timeout);
+      // Always log raw stderr in the main process only — it may contain
+      // request payload fragments (including API keys) from Python tracebacks
+      // and must never be forwarded verbatim to the renderer.
+      if (stderr) {
+        console.error("[bridge stderr]", stderr);
+      }
       try {
         const response = extractBridgeResponse(stdout);
         if (response.ok) {
           resolve(response);
           return;
         }
-        reject(new Error(response.error || stderr || `Bridge failed with exit code ${code}`));
+        // response.error is produced by the bridge's own error handling and
+        // is safe to surface; raw stderr is kept in the main process only.
+        reject(new Error(response.error || `Bridge failed with exit code ${code}`));
       } catch (error) {
-        reject(
-          new Error(
-            stderr ||
-              `Bridge parse error: ${error.message}; stdout=${stdout.slice(-500)}`
-          )
-        );
+        reject(new Error(`Bridge response parse error (exit ${code}): ${error.message}`));
       }
     });
 
@@ -364,7 +386,29 @@ async function runPythonBridge(payload, { attachApiKeys = false } = {}) {
   });
 }
 
+// Sentinel constants must match electron_bridge.py RESPONSE_START / RESPONSE_END.
+const BRIDGE_RESPONSE_START = "<<<BRIDGE_RESPONSE>>>";
+const BRIDGE_RESPONSE_END = "<<<END_RESPONSE>>>";
+
 function extractBridgeResponse(stdout) {
+  // Primary path: sentinel-framed response written by electron_bridge.py main().
+  // Use lastIndexOf for END so that earlier occurrences of the marker in tool
+  // output or user content don't truncate the real payload prematurely.
+  const startIdx = stdout.lastIndexOf(BRIDGE_RESPONSE_START);
+  const endIdx = stdout.lastIndexOf(BRIDGE_RESPONSE_END);
+  if (startIdx !== -1 && endIdx > startIdx) {
+    const jsonStr = stdout.slice(startIdx + BRIDGE_RESPONSE_START.length, endIdx);
+    try {
+      const parsed = JSON.parse(jsonStr);
+      if (parsed && typeof parsed === "object") {
+        return parsed;
+      }
+    } catch {
+      // Framed payload was corrupt; fall through to the line-scan fallback.
+    }
+  }
+  // Fallback: scan lines from the end for the last parseable JSON object.
+  // Kept for backward compatibility with tests that invoke the bridge directly.
   const lines = stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -376,7 +420,7 @@ function extractBridgeResponse(stdout) {
         return parsed;
       }
     } catch (error) {
-      // keep scanning for final JSON line
+      // keep scanning
     }
   }
   throw new Error("No JSON response found on bridge stdout");

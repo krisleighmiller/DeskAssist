@@ -101,6 +101,10 @@ def make_sys_exec_tool(workspace_root: Path):
 
         process = subprocess.Popen(
             command,
+            # shell=False is mandatory and must never be changed.  ALLOWED_EXECUTABLES
+            # blocks path-based invocation but cannot prevent shell metacharacter
+            # injection (e.g. redirections, command substitution) if shell=True were
+            # ever set.  Arguments are passed as a list, not a shell string.
             shell=False,
             cwd=str(workspace_root),
             stdout=subprocess.PIPE,

@@ -52,7 +52,6 @@ def test_chat_service_can_list_disabled_tool_commands():
         "list_dir",
         "read_file",
         "save_file",
-        "sys_exec",
     ]
 
 

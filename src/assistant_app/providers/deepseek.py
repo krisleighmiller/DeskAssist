@@ -88,21 +88,17 @@ class DeepSeekProvider(HttpChatProvider):
                 if isinstance(function_block, dict):
                     name = function_block.get("name")
                     raw_arguments = function_block.get("arguments")
-                    parsed_arguments: dict[str, object] = {}
-                    if isinstance(raw_arguments, str):
-                        try:
-                            loaded = json.loads(raw_arguments)
-                            if isinstance(loaded, dict):
-                                parsed_arguments = loaded
-                        except Exception:
-                            parsed_arguments = {}
-                    normalized.append(
-                        {
-                            "id": str(item.get("id", "")),
-                            "name": str(name or ""),
-                            "input": parsed_arguments,
-                        }
+                    parsed_arguments, parse_error = self._normalize_tool_arguments(
+                        raw_arguments
                     )
+                    call_entry: dict[str, object] = {
+                        "id": str(item.get("id", "")),
+                        "name": str(name or ""),
+                        "input": parsed_arguments,
+                    }
+                    if parse_error is not None:
+                        call_entry["parse_error"] = parse_error
+                    normalized.append(call_entry)
                     continue
                 normalized.append(item)
             tool_calls = normalized or None

@@ -228,19 +228,25 @@ def test_chat_log_round_trip(tmp_path: Path):
     ]
     store.append_chat_messages("main", messages)
     store.append_chat_messages("main", [{"role": "user", "content": "again"}])
-    read = store.read_chat_messages("main")
+    read, skipped = store.read_chat_messages("main")
+    assert skipped == 0
     assert [m["role"] for m in read] == ["user", "assistant", "user"]
     assert read[-1]["content"] == "again"
 
 
-def test_chat_log_corruption_surfaces_clearly(tmp_path: Path):
+def test_chat_log_corruption_skips_bad_lines(tmp_path: Path):
+    """A corrupt line in the chat log is skipped (with a warning) rather than
+    aborting the entire read.  The policy deliberately matches FindingsStore
+    behaviour: one bad write must not make the whole history unreadable."""
     store = CasefileStore(tmp_path)
     store.ensure_initialized()
     log = store.chat_log_path("main")
     log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text("not-json\n", encoding="utf-8")
-    with pytest.raises(LanesFileError):
-        store.read_chat_messages("main")
+    # Write one corrupt line followed by a valid one.
+    log.write_text('not-json\n{"role":"user","content":"hi"}\n', encoding="utf-8")
+    messages, skipped = store.read_chat_messages("main")
+    assert skipped == 1
+    assert messages == [{"role": "user", "content": "hi"}]
 
 
 def test_chat_log_path_safe_against_traversal(tmp_path: Path):

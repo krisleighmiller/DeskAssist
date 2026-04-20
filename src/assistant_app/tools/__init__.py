@@ -22,6 +22,7 @@ def build_default_tool_registry(
     *,
     casefile_root: Path | None = None,
     read_overlays: Mapping[str, Path] | None = None,
+    register_system_exec: bool = False,
 ) -> ToolRegistry:
     """Build the standard tool registry rooted at `workspace_root`.
 
@@ -35,6 +36,21 @@ def build_default_tool_registry(
     `workspace_root`. The overlays are propagated to the file tools so
     `read_file("_ancestors/foo/bar.md")` resolves into the right ancestor
     without exposing absolute paths to the model.
+
+    `register_system_exec` controls whether the ``sys_exec`` tool is
+    registered at all.  It defaults to ``False`` so the registry never
+    exposes it to the model unless explicitly opted in.  No currently
+    shipped bridge handler sets this flag; the tool exists for future
+    trusted-automation use cases only.
+
+    AUDIT INVARIANT: no bridge handler in ``electron_bridge`` passes
+    ``capability=INTERNAL_CAPABILITY`` to ``execute_tool_command``.  If
+    you add one, follow the checklist in
+    ``assistant_app.security.policy._InternalCapability`` (add an
+    ``audit()`` entry, restrict the call site to trusted code, and
+    update the docstring).  A structural test in
+    ``tests/test_tools.py::test_no_bridge_handler_uses_internal_capability``
+    asserts this invariant — update it if you intentionally break it.
     """
     enabled = {"append_file", "delete_file", "delete_path", "list_dir", "read_file", "save_file"}
     if casefile_root is not None:
@@ -100,14 +116,15 @@ def build_default_tool_registry(
             required_params={"id"},
             permission="workspace_read",
         )
-    registry.register(
-        "sys_exec",
-        make_sys_exec_tool(workspace_root),
-        input_schema={"command": str, "confirm": bool, "timeout_seconds": int, "max_output_chars": int},
-        required_params={"command", "confirm"},
-        permission="system_exec",
-        internal_enabled=True,
-    )
+    if register_system_exec:
+        registry.register(
+            "sys_exec",
+            make_sys_exec_tool(workspace_root),
+            input_schema={"command": str, "confirm": bool, "timeout_seconds": int, "max_output_chars": int},
+            required_params={"command", "confirm"},
+            permission="system_exec",
+            internal_enabled=True,
+        )
     return registry
 
 

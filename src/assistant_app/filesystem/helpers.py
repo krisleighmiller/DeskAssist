@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import codecs
 from pathlib import Path
 from typing import Mapping
 import shutil
+
+# Hard upper bound for LLM-initiated file writes.  At 10 MB a single save_file
+# call can already saturate the model's context; anything larger is almost
+# certainly unintentional and could fill disk rapidly across repeated calls.
+MAX_WRITE_BYTES: int = 10 * 1024 * 1024  # 10 MB
 
 
 class WorkspaceFilesystem:
@@ -111,10 +117,33 @@ class WorkspaceFilesystem:
             raise FileNotFoundError(f"File not found: {candidate}")
         if not target.is_file():
             raise IsADirectoryError(f"Not a file: {candidate}")
-        with target.open("r", encoding="utf-8") as handle:
-            sampled = handle.read(max_chars + 1)
-        truncated = len(sampled) > max_chars
-        return sampled[:max_chars], truncated, target
+        # Read in binary chunks and decode incrementally to avoid allocating the
+        # entire file in memory even for very large files with no newlines.
+        # Using an incremental decoder handles multi-byte UTF-8 sequences that
+        # straddle chunk boundaries without raising a spurious UnicodeDecodeError.
+        _CHUNK = 65536
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+        parts: list[str] = []
+        total = 0
+        try:
+            with target.open("rb") as fh:
+                while True:
+                    raw = fh.read(_CHUNK)
+                    final = not raw
+                    chunk = decoder.decode(raw, final=final)
+                    if chunk:
+                        remaining = max_chars - total
+                        if len(chunk) > remaining:
+                            # We have more than enough characters — truncate and stop.
+                            parts.append(chunk[:remaining])
+                            return "".join(parts), True, target
+                        parts.append(chunk)
+                        total += len(chunk)
+                    if final:
+                        break
+        except UnicodeDecodeError:
+            raise ValueError(f"File is not valid UTF-8 text: {candidate}")
+        return "".join(parts), False, target
 
     def list_dir(self, candidate: str) -> tuple[Path, list[dict[str, str]]]:
         target, prefix = self._resolve_for_read(candidate)
@@ -156,17 +185,29 @@ class WorkspaceFilesystem:
         target = self.resolve_relative(candidate)
         if target.exists() and not overwrite:
             raise FileExistsError(f"File already exists: {candidate}")
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_WRITE_BYTES:
+            raise ValueError(
+                f"Content size ({len(encoded):,} bytes) exceeds the maximum allowed "
+                f"write size ({MAX_WRITE_BYTES:,} bytes)"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
-        return target, len(content.encode("utf-8"))
+        return target, len(encoded)
 
     def append_text(self, candidate: str, content: str) -> tuple[Path, int]:
         self._reject_overlay_write(candidate)
         target = self.resolve_relative(candidate)
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_WRITE_BYTES:
+            raise ValueError(
+                f"Append content size ({len(encoded):,} bytes) exceeds the maximum allowed "
+                f"write size ({MAX_WRITE_BYTES:,} bytes)"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         with target.open("a", encoding="utf-8") as handle:
             handle.write(content)
-        return target, len(content.encode("utf-8"))
+        return target, len(encoded)
 
     def delete_file(self, candidate: str) -> Path:
         self._reject_overlay_write(candidate)

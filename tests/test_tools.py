@@ -76,8 +76,20 @@ def test_workspace_escape_is_blocked(tmp_path: Path):
     assert result["error"]["type"] == "PermissionError"
 
 
-def test_sys_exec_disabled_by_default_but_internal_can_use(tmp_path: Path):
+def test_sys_exec_not_registered_by_default(tmp_path: Path):
+    """sys_exec must not appear in the registry unless explicitly opted in."""
     registry = build_default_tool_registry(tmp_path)
+    result = registry.execute(
+        {"cmd": "sys_exec", "params": {"command": "echo hi", "confirm": True}},
+        capability=INTERNAL_CAPABILITY,
+    )
+    assert result["ok"] is False
+    assert result["error"]["type"] == "PermissionError"
+    assert "not in registry allowlist" in result["error"]["message"]
+
+
+def test_sys_exec_disabled_by_default_but_internal_can_use(tmp_path: Path):
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     denied_result = registry.execute({"cmd": "sys_exec", "params": {"command": "echo hi"}})
     assert denied_result["ok"] is False
     assert denied_result["error"]["type"] == "ValueError"
@@ -124,7 +136,7 @@ def test_parameter_type_validation_rejected(tmp_path: Path):
 
 
 def test_sys_exec_uses_non_shell_execution(tmp_path: Path):
-    registry = build_default_tool_registry(tmp_path)
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     registry.grant_permission("system_exec")
     result = registry.execute(
         {"cmd": "sys_exec", "params": {"command": "echo hi && echo there", "confirm": True}},
@@ -176,7 +188,7 @@ def test_workspace_read_permission_enforced(tmp_path: Path):
 
 
 def test_sys_exec_requires_confirm_true(tmp_path: Path):
-    registry = build_default_tool_registry(tmp_path)
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     registry.grant_permission("system_exec")
     result = registry.execute(
         {"cmd": "sys_exec", "params": {"command": "echo hi", "confirm": False}},
@@ -188,7 +200,7 @@ def test_sys_exec_requires_confirm_true(tmp_path: Path):
 
 
 def test_sys_exec_blocks_dangerous_executables(tmp_path: Path):
-    registry = build_default_tool_registry(tmp_path)
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     registry.grant_permission("system_exec")
     result = registry.execute(
         {"cmd": "sys_exec", "params": {"command": "rm -rf tmp", "confirm": True}},
@@ -200,7 +212,7 @@ def test_sys_exec_blocks_dangerous_executables(tmp_path: Path):
 
 
 def test_sys_exec_blocks_shell_launcher_bypass(tmp_path: Path):
-    registry = build_default_tool_registry(tmp_path)
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     registry.grant_permission("system_exec")
     result = registry.execute(
         {"cmd": "sys_exec", "params": {"command": "bash -c 'echo hi'", "confirm": True}},
@@ -212,7 +224,7 @@ def test_sys_exec_blocks_shell_launcher_bypass(tmp_path: Path):
 
 
 def test_sys_exec_blocks_absolute_executable_path(tmp_path: Path):
-    registry = build_default_tool_registry(tmp_path)
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     registry.grant_permission("system_exec")
     result = registry.execute(
         {"cmd": "sys_exec", "params": {"command": "/bin/echo hi", "confirm": True}},
@@ -224,7 +236,7 @@ def test_sys_exec_blocks_absolute_executable_path(tmp_path: Path):
 
 
 def test_sys_exec_enforces_timeout_range(tmp_path: Path):
-    registry = build_default_tool_registry(tmp_path)
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     registry.grant_permission("system_exec")
     result = registry.execute(
         {"cmd": "sys_exec", "params": {"command": "echo hi", "confirm": True, "timeout_seconds": 0}},
@@ -236,7 +248,7 @@ def test_sys_exec_enforces_timeout_range(tmp_path: Path):
 
 
 def test_sys_exec_output_is_bounded(tmp_path: Path):
-    registry = build_default_tool_registry(tmp_path)
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     registry.grant_permission("system_exec")
     result = registry.execute(
         {
@@ -251,7 +263,7 @@ def test_sys_exec_output_is_bounded(tmp_path: Path):
 
 
 def test_sys_exec_timeout_is_enforced_during_run(tmp_path: Path):
-    registry = build_default_tool_registry(tmp_path)
+    registry = build_default_tool_registry(tmp_path, register_system_exec=True)
     registry.grant_permission("system_exec")
     result = registry.execute(
         {"cmd": "sys_exec", "params": {"command": "printf 1234567890", "confirm": True, "timeout_seconds": 1}},
@@ -268,3 +280,32 @@ def test_bounded_file_read_rejects_non_positive_limit(tmp_path: Path):
     assert result["ok"] is False
     assert result["error"]["type"] == "ValueError"
     assert "max_chars" in result["error"]["message"]
+
+
+def test_no_bridge_handler_uses_internal_capability():
+    """Structural invariant: no electron_bridge handler threads INTERNAL_CAPABILITY.
+
+    If this test fails because you intentionally added a trusted-automation
+    handler, follow the checklist in
+    assistant_app.security.policy._InternalCapability and update this test.
+    """
+    import ast
+    import inspect
+    import assistant_app.electron_bridge as bridge_module
+
+    source = inspect.getsource(bridge_module)
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword):
+            if node.arg == "capability":
+                value = node.value
+                if isinstance(value, ast.Attribute) and value.attr == "INTERNAL_CAPABILITY":
+                    raise AssertionError(
+                        "electron_bridge passes INTERNAL_CAPABILITY to execute_tool_command; "
+                        "update this test if intentional and follow the audit checklist."
+                    )
+                if isinstance(value, ast.Name) and value.id == "INTERNAL_CAPABILITY":
+                    raise AssertionError(
+                        "electron_bridge passes INTERNAL_CAPABILITY to execute_tool_command; "
+                        "update this test if intentional and follow the audit checklist."
+                    )
