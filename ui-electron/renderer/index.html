@@ -3,83 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Desktop Assistant</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <title>DeskAssist</title>
   </head>
   <body>
-    <header>
-      <button id="chooseWorkspaceBtn">Choose Workspace</button>
-      <span id="workspaceLabel">No workspace selected</span>
-      <label for="providerSelect">Provider</label>
-      <select id="providerSelect">
-        <option value="openai">OpenAI</option>
-        <option value="anthropic">Anthropic</option>
-        <option value="deepseek">DeepSeek</option>
-      </select>
-    </header>
-
-    <main>
-      <section class="panel" id="filesPanel">
-        <h2>Workspace Files</h2>
-        <div id="fileTree"></div>
-      </section>
-
-      <section class="panel" id="viewerPanel">
-        <h2>File Viewer</h2>
-        <div id="viewerPath"></div>
-        <div id="viewerActions">
-          <button id="saveFileBtn" type="button" disabled>Save File</button>
-          <span id="viewerStatus"></span>
-        </div>
-        <textarea id="fileViewer" rows="24" spellcheck="false"></textarea>
-      </section>
-
-      <section class="panel" id="chatPanel">
-        <h2>Chat</h2>
-        <div id="keysStatusLabel"></div>
-        <div id="messages"></div>
-        <div id="approvalPanel" hidden>
-          <div id="approvalSummary"></div>
-          <div class="approval-actions">
-            <button id="approveToolsBtn" type="button">Approve and Continue</button>
-            <button id="denyToolsBtn" type="button">Deny</button>
-          </div>
-        </div>
-        <form id="chatForm">
-          <textarea id="chatInput" rows="4" placeholder="Ask about your workspace..."></textarea>
-          <button type="submit">Send</button>
-        </form>
-      </section>
-    </main>
-
-    <dialog id="apiKeysDialog">
-      <form method="dialog" id="apiKeysForm">
-        <h3>API Keys</h3>
-        <p class="muted">Open from menu: Settings -> API Keys</p>
-        <div class="keys-grid">
-          <label for="openaiKeyInput">OpenAI</label>
-          <div class="key-row">
-            <input id="openaiKeyInput" type="password" placeholder="sk-... (leave blank to keep)" />
-            <button id="clearOpenaiKeyBtn" type="button">Clear</button>
-          </div>
-          <label for="anthropicKeyInput">Anthropic</label>
-          <div class="key-row">
-            <input id="anthropicKeyInput" type="password" placeholder="sk-ant-... (leave blank to keep)" />
-            <button id="clearAnthropicKeyBtn" type="button">Clear</button>
-          </div>
-          <label for="deepseekKeyInput">DeepSeek</label>
-          <div class="key-row">
-            <input id="deepseekKeyInput" type="password" placeholder="sk-... (leave blank to keep)" />
-            <button id="clearDeepseekKeyBtn" type="button">Clear</button>
-          </div>
-        </div>
-        <div class="keys-actions">
-          <button id="saveKeysBtn" type="button">Save Keys</button>
-          <button id="closeKeysBtn" type="button">Close</button>
-        </div>
-      </form>
-    </dialog>
-
-    <script src="./renderer.js"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

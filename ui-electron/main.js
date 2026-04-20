@@ -202,7 +202,15 @@ function createWindow() {
   const menu = Menu.buildFromTemplate(template);
   Menu.setApplicationMenu(menu);
 
-  mainWindow.loadFile(path.join(__dirname, "renderer", "index.html"));
+  // In dev (`npm run start:dev`) the Vite server is loaded directly so HMR
+  // works. In normal `npm start` the renderer is built first and served from
+  // the static dist/ directory via file://.
+  const devUrl = process.env.DESKASSIST_RENDERER_URL;
+  if (devUrl) {
+    mainWindow.loadURL(devUrl);
+  } else {
+    mainWindow.loadFile(path.join(__dirname, "renderer", "dist", "index.html"));
+  }
 }
 
 function ensureInWorkspace(targetPath) {

@@ -143,7 +143,7 @@ These four milestones cover the path from the current inherited backend foundati
 
 ## Status
 
-- M1: not started.
+- M1: in progress. Vite + React + TypeScript renderer scaffolded with three-pane layout (file tree / Monaco editor / four-tab right panel: Chat / Notes / Findings / Lanes). Chat behavior, tool-approval flow, and API-keys dialog ported. Exit criterion 1 (open workbench, browse, edit/save, run a chat against a configured provider end-to-end) requires manual verification with a running Electron + provider key.
 - M2: not started.
 - M3: not started.
 - M4: not started.

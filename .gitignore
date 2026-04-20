@@ -20,3 +20,5 @@ out/
 !.env.example
 
 docs/Notes_Should_Be_Ignored/
+
+ui-electron/renderer/dist/
