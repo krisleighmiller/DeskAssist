@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FileTreeNode, OverlayTreeDto } from "../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 
@@ -41,14 +41,12 @@ function compareNodes(a: FileTreeNode, b: FileTreeNode): number {
 interface MenuState {
   x: number;
   y: number;
+  /** The node the user right-clicked. May or may not be in `selectedPaths`
+   * — we resolve "what does this menu act on?" at render time so that
+   * acting on a single un-selected node Just Works. */
   node: FileTreeNode;
-  /** Absolute filesystem path. Always equals node.path for the active-lane
-   * tree, but for overlay trees node.path is the virtual prefix and we
-   * don't have the real fs path — in that case we fall back to the prefix. */
-  absolutePath: string;
-  /** Path relative to the casefile root, or null if it could not be
-   * computed (overlay nodes, or nodes outside the casefile root). */
-  relativePath: string | null;
+  /** Snapshot of the multi-selection at the time the menu opened. */
+  selectedPaths: string[];
 }
 
 interface NodeProps {
@@ -56,8 +54,9 @@ interface NodeProps {
   expanded: Set<string>;
   toggle: (path: string) => void;
   activePath: string | null;
-  onOpenFile: (path: string) => void;
+  selected: Set<string>;
   depth: number;
+  onRowClick: (event: React.MouseEvent, node: FileTreeNode) => void;
   onContextMenu: (event: React.MouseEvent, node: FileTreeNode) => void;
   onDragStartNode: (event: React.DragEvent, node: FileTreeNode) => void;
 }
@@ -67,18 +66,21 @@ function TreeNode({
   expanded,
   toggle,
   activePath,
-  onOpenFile,
+  selected,
   depth,
+  onRowClick,
   onContextMenu,
   onDragStartNode,
 }: NodeProps): JSX.Element {
+  const isSelected = selected.has(node.path);
+  const selClass = isSelected ? " selected" : "";
   if (node.type === "file") {
     const isActive = activePath === node.path;
     return (
       <div
-        className={`tree-row${isActive ? " active" : ""}`}
+        className={`tree-row${isActive ? " active" : ""}${selClass}`}
         style={{ paddingLeft: depth * 10 + 8 }}
-        onClick={() => onOpenFile(node.path)}
+        onClick={(event) => onRowClick(event, node)}
         onContextMenu={(event) => onContextMenu(event, node)}
         title={node.path}
         draggable
@@ -95,9 +97,17 @@ function TreeNode({
   return (
     <div>
       <div
-        className="tree-row"
+        className={`tree-row${selClass}`}
         style={{ paddingLeft: depth * 10 + 4 }}
-        onClick={() => toggle(node.path)}
+        onClick={(event) => {
+          // Plain clicks on a directory toggle expansion; modifier-clicks
+          // are pure selection ops and must NOT collapse the row out from
+          // under the user mid-range-select.
+          if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+            toggle(node.path);
+          }
+          onRowClick(event, node);
+        }}
         onContextMenu={(event) => onContextMenu(event, node)}
         title={node.path}
         draggable
@@ -116,8 +126,9 @@ function TreeNode({
               expanded={expanded}
               toggle={toggle}
               activePath={activePath}
-              onOpenFile={onOpenFile}
+              selected={selected}
               depth={depth + 1}
+              onRowClick={onRowClick}
               onContextMenu={onContextMenu}
               onDragStartNode={onDragStartNode}
             />
@@ -168,14 +179,56 @@ async function copyToClipboard(text: string): Promise<void> {
 
 /** Custom MIME type for our drag payloads. The drop targets read this to
  * distinguish "a tree row was dragged" from any other drag activity (URL,
- * external file, text selection, etc.). The payload is a JSON string with
- * `{ relativePath, absolutePath, type }`. */
+ * external file, text selection, etc.). The payload is a JSON string
+ * carrying one OR many `FileTreeDragPayload` entries — multi-select drags
+ * always send an array, single-row drags send a single object. Drop
+ * handlers should accept both shapes (see `parseDragPayload` below). */
 export const FILETREE_DRAG_MIME = "application/x-deskassist-tree-node";
 
 export interface FileTreeDragPayload {
   relativePath: string | null;
   absolutePath: string;
   type: "file" | "dir";
+}
+
+/** Normalise the drag payload string into a list. Older callers that only
+ * sent a single object continue to work (and brand-new multi-select
+ * drags get the array shape). */
+export function parseDragPayload(raw: string): FileTreeDragPayload[] {
+  if (!raw) return [];
+  const parsed = JSON.parse(raw);
+  if (Array.isArray(parsed)) return parsed as FileTreeDragPayload[];
+  return [parsed as FileTreeDragPayload];
+}
+
+/** Walk an expanded tree in render order, returning a flat list of node
+ * paths. Used to resolve shift-click ranges: the anchor and the clicked
+ * node are looked up by index, and every visible row between them
+ * (inclusive) joins the selection.
+ *
+ * Closed directories contribute only themselves (their children are not
+ * visible, so they cannot be part of a range). */
+function flattenVisible(
+  root: FileTreeNode | null,
+  expanded: Set<string>,
+  overlays: OverlayTreeDto[] | undefined,
+  showOverlays: boolean | undefined
+): string[] {
+  const out: string[] = [];
+  const walk = (node: FileTreeNode) => {
+    out.push(node.path);
+    if (node.type === "dir" && expanded.has(node.path)) {
+      const children = [...(node.children ?? [])].sort(compareNodes);
+      for (const child of children) walk(child);
+    }
+  };
+  if (root) walk(root);
+  if (showOverlays && overlays) {
+    for (const overlay of overlays) {
+      if (overlay.tree) walk(overlay.tree);
+    }
+  }
+  return out;
 }
 
 export function FileTree({
@@ -196,6 +249,11 @@ export function FileTree({
 }: FileTreeProps): JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // Multi-selection state. `selected` is the set of selected node paths;
+  // `anchor` is the most recent plain/ctrl-click target and serves as the
+  // shift-click range origin, mirroring File-Explorer / Finder behaviour.
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [anchor, setAnchor] = useState<string | null>(null);
 
   useEffect(() => {
     if (root) {
@@ -225,6 +283,25 @@ export function FileTree({
     });
   }, [showOverlays, overlays]);
 
+  // Whenever the tree root changes (different workspace / lane), drop
+  // the selection and anchor — keeping them around would orphan paths
+  // that no longer exist in the new tree.
+  const lastRootPath = useRef<string | null>(null);
+  useEffect(() => {
+    const next = root?.path ?? null;
+    if (next !== lastRootPath.current) {
+      lastRootPath.current = next;
+      setSelected(new Set());
+      setAnchor(null);
+    }
+  }, [root]);
+
+  // Memoised because the visible-order list is rebuilt for every shift-click.
+  const visibleOrder = useMemo(
+    () => flattenVisible(root, expanded, overlays, showOverlays),
+    [root, expanded, overlays, showOverlays]
+  );
+
   const toggle = (p: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -234,45 +311,114 @@ export function FileTree({
     });
   };
 
+  /** Resolve the new selection given a click event + target node, then
+   * decide whether to also "open" the node. Mirrors VSCode / Explorer:
+   *   - plain click            → select-only (replace), open if file
+   *   - ctrl/meta click        → toggle in selection, do NOT open
+   *   - shift click            → range from anchor to node, do NOT open
+   *   - shift + ctrl/meta      → extend range without clearing existing
+   * The anchor is updated on plain and ctrl-click; shift-click leaves it
+   * alone so successive shift-clicks pivot around the same origin. */
+  const handleRowClick = (event: React.MouseEvent, node: FileTreeNode) => {
+    const path = node.path;
+    const isMulti = event.ctrlKey || event.metaKey;
+    const isRange = event.shiftKey;
+
+    if (isRange && anchor) {
+      const idxAnchor = visibleOrder.indexOf(anchor);
+      const idxClicked = visibleOrder.indexOf(path);
+      if (idxAnchor !== -1 && idxClicked !== -1) {
+        const lo = Math.min(idxAnchor, idxClicked);
+        const hi = Math.max(idxAnchor, idxClicked);
+        const range = visibleOrder.slice(lo, hi + 1);
+        setSelected((prev) => {
+          const base = isMulti ? new Set(prev) : new Set<string>();
+          for (const p of range) base.add(p);
+          return base;
+        });
+      }
+      return;
+    }
+
+    if (isMulti) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+      setAnchor(path);
+      return;
+    }
+
+    // Plain click: select just this node, become the new anchor, and
+    // open the file (directories are toggled by the TreeNode itself).
+    setSelected(new Set([path]));
+    setAnchor(path);
+    if (node.type === "file") {
+      // Overlay-tree files use virtual paths and have a different opener;
+      // route them through the appropriate callback.
+      const isVirtual = node.path.startsWith("_");
+      if (isVirtual && onOpenOverlayFile) {
+        onOpenOverlayFile(node.path);
+      } else {
+        onOpenFile(node.path);
+      }
+    }
+  };
+
   const handleContextMenu = (event: React.MouseEvent, node: FileTreeNode) => {
     event.preventDefault();
     event.stopPropagation();
-    // Overlay node paths are virtual prefixes (e.g. `_ancestors/foo/bar.md`)
-    // and therefore have no meaningful "absolute path" we can copy. We still
-    // offer Copy name / Copy virtual path for them.
-    const isVirtual = node.path.startsWith("_");
-    const absolutePath = node.path;
+    // If the right-clicked node isn't in the current selection, reset the
+    // selection to just this node — File-Explorer behaviour. Otherwise
+    // keep the existing multi-selection so menu actions act on all of it.
+    let snapshot: string[];
+    if (selected.has(node.path)) {
+      snapshot = Array.from(selected);
+    } else {
+      snapshot = [node.path];
+      setSelected(new Set([node.path]));
+      setAnchor(node.path);
+    }
+    setMenu({ x: event.clientX, y: event.clientY, node, selectedPaths: snapshot });
+  };
+
+  /** Build a `FileTreeDragPayload` for an absolute (or virtual) tree-node
+   * path. Returns null if the node can't be located in the current tree
+   * — this is defensive: stale selection paths shouldn't crash a drag. */
+  const buildPayload = (path: string, type: "file" | "dir"): FileTreeDragPayload => {
+    const isVirtual = path.startsWith("_");
     const relativePath = isVirtual
       ? null
       : casefileRoot
-        ? relativeFromBase(absolutePath, casefileRoot)
+        ? relativeFromBase(path, casefileRoot)
         : null;
-    setMenu({
-      x: event.clientX,
-      y: event.clientY,
-      node,
-      absolutePath,
-      relativePath,
-    });
+    return { relativePath, absolutePath: path, type };
   };
 
   const handleDragStartNode = (event: React.DragEvent, node: FileTreeNode) => {
-    const isVirtual = node.path.startsWith("_");
-    const relativePath = isVirtual
-      ? null
-      : casefileRoot
-        ? relativeFromBase(node.path, casefileRoot)
-        : null;
-    const payload: FileTreeDragPayload = {
-      relativePath,
-      absolutePath: node.path,
-      type: node.type,
-    };
-    event.dataTransfer.setData(FILETREE_DRAG_MIME, JSON.stringify(payload));
-    // Also include plain text so the payload is dragable into any text
-    // input (e.g. the chat composer): the relative path if we have one,
-    // otherwise the absolute path / virtual prefix.
-    event.dataTransfer.setData("text/plain", relativePath ?? node.path);
+    // If the dragged node is part of the multi-selection, the drag
+    // payload covers the whole selection. Otherwise it's just this one
+    // row and the multi-selection is left untouched (so the user doesn't
+    // lose their selection by dragging an unrelated file).
+    let payloads: FileTreeDragPayload[];
+    let plainText: string;
+    if (selected.has(node.path) && selected.size > 1) {
+      // We don't have node-type metadata for arbitrary selected paths
+      // (they may live in collapsed branches), so we treat them as
+      // files-by-default. Drop targets that care (e.g. the context
+      // editor) only consume the relative path anyway.
+      payloads = Array.from(selected).map((p) => buildPayload(p, p === node.path ? node.type : "file"));
+      plainText = payloads.map((p) => p.relativePath ?? p.absolutePath).join("\n");
+    } else {
+      payloads = [buildPayload(node.path, node.type)];
+      plainText = payloads[0].relativePath ?? payloads[0].absolutePath;
+    }
+    event.dataTransfer.setData(FILETREE_DRAG_MIME, JSON.stringify(payloads));
+    // Plain-text fallback so the payload drops cleanly into any text
+    // input (e.g. the chat composer).
+    event.dataTransfer.setData("text/plain", plainText);
     event.dataTransfer.effectAllowed = "copy";
   };
 
@@ -290,51 +436,99 @@ export function FileTree({
     return <div className="file-tree"><div className="empty">Loading...</div></div>;
   }
 
-  const menuItems: ContextMenuItem[] = menu
-    ? [
-        {
-          label: "Copy name",
-          onSelect: () => void copyToClipboard(menu.node.name),
+  // Build menu items from the snapshot, not from `selected` directly —
+  // the snapshot is what the user saw when they opened the menu.
+  const menuItems: ContextMenuItem[] = (() => {
+    if (!menu) return [];
+    const paths = menu.selectedPaths;
+    const count = paths.length;
+    const multi = count > 1;
+    const namesOf = (p: string) => p.split(/[\\/]/).pop() ?? p;
+    const relOf = (p: string): string | null => {
+      if (p.startsWith("_")) return null;
+      return casefileRoot ? relativeFromBase(p, casefileRoot) : null;
+    };
+    const rels = paths.map(relOf);
+    const allRel = rels.every((r) => r !== null) ? (rels as string[]) : null;
+
+    return [
+      {
+        label: multi ? `Copy ${count} names` : "Copy name",
+        onSelect: () => {
+          const text = multi ? paths.map(namesOf).join("\n") : namesOf(paths[0]);
+          void copyToClipboard(text);
         },
-        {
-          label: menu.relativePath ? "Copy relative path" : "Copy relative path (n/a)",
-          onSelect: () => {
-            if (menu.relativePath) void copyToClipboard(menu.relativePath);
-          },
-          disabled: !menu.relativePath,
-          separator: !onAddToContext,
+      },
+      {
+        label: multi
+          ? allRel
+            ? `Copy ${count} relative paths`
+            : `Copy relative paths (some n/a)`
+          : rels[0]
+            ? "Copy relative path"
+            : "Copy relative path (n/a)",
+        onSelect: () => {
+          const usable = rels.filter((r): r is string => r !== null);
+          if (usable.length > 0) void copyToClipboard(usable.join("\n"));
         },
-        {
-          label: "Copy full path",
-          onSelect: () => void copyToClipboard(menu.absolutePath),
-          separator: Boolean(onAddToContext),
+        disabled: !rels.some((r) => r !== null),
+        separator: !onAddToContext,
+      },
+      {
+        label: multi ? `Copy ${count} full paths` : "Copy full path",
+        onSelect: () => {
+          void copyToClipboard(multi ? paths.join("\n") : paths[0]);
         },
-        ...(onAddToContext
-          ? [
-              {
-                label: menu.relativePath
+        separator: Boolean(onAddToContext),
+      },
+      ...(onAddToContext
+        ? [
+            {
+              label: multi
+                ? allRel
+                  ? `Add ${count} items to casefile context`
+                  : `Add to casefile context (${rels.filter((r) => r !== null).length}/${count})`
+                : rels[0]
                   ? `Add to casefile context (${menu.node.type})`
                   : "Add to casefile context (n/a)",
-                onSelect: () => {
-                  if (menu.relativePath && onAddToContext) {
-                    // For directories we add a recursive glob so the
-                    // context editor's resolver picks up everything inside.
-                    const pattern =
-                      menu.node.type === "dir"
-                        ? `${menu.relativePath.replace(/\/$/, "")}/**/*`
-                        : menu.relativePath;
-                    onAddToContext(pattern);
-                  }
-                },
-                disabled: !menu.relativePath,
+              onSelect: () => {
+                if (!onAddToContext) return;
+                // Map each path to a pattern: directories get a recursive
+                // glob, files keep their literal relative path. Skip any
+                // entries we couldn't make relative (overlay / outside).
+                for (let i = 0; i < paths.length; i++) {
+                  const rel = rels[i];
+                  if (!rel) continue;
+                  // Without per-path type info we treat the right-clicked
+                  // node's type as authoritative for itself, and any
+                  // other selected paths as files (the safe default —
+                  // users can refine with an explicit dir glob).
+                  const isDir = paths[i] === menu.node.path && menu.node.type === "dir";
+                  const pattern = isDir ? `${rel.replace(/\/$/, "")}/**/*` : rel;
+                  onAddToContext(pattern);
+                }
               },
-            ]
-          : []),
-      ]
-    : [];
+              disabled: !rels.some((r) => r !== null),
+            },
+          ]
+        : []),
+    ];
+  })();
 
   return (
-    <div className="file-tree">
+    <div
+      className="file-tree"
+      onClick={(event) => {
+        // Click on the empty area below the tree clears the selection
+        // (matches Explorer / Finder). Don't clear if the click landed
+        // on a tree-row — those have their own handler that has already
+        // updated the selection.
+        if (event.target === event.currentTarget) {
+          setSelected(new Set());
+          setAnchor(null);
+        }
+      }}
+    >
       {canShowOverlays && onToggleOverlays && (
         <label className="overlay-toggle">
           <input
@@ -351,8 +545,9 @@ export function FileTree({
         expanded={expanded}
         toggle={toggle}
         activePath={activePath}
-        onOpenFile={onOpenFile}
+        selected={selected}
         depth={0}
+        onRowClick={handleRowClick}
         onContextMenu={handleContextMenu}
         onDragStartNode={handleDragStartNode}
       />
@@ -367,10 +562,9 @@ export function FileTree({
                 expanded={expanded}
                 toggle={toggle}
                 activePath={activePath}
-                onOpenFile={(virtualPath) => {
-                  if (onOpenOverlayFile) onOpenOverlayFile(virtualPath);
-                }}
+                selected={selected}
                 depth={0}
+                onRowClick={handleRowClick}
                 onContextMenu={handleContextMenu}
                 onDragStartNode={handleDragStartNode}
               />

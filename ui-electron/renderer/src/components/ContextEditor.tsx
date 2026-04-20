@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ContextManifestDto } from "../types";
-import { FILETREE_DRAG_MIME, type FileTreeDragPayload } from "./FileTree";
+import { FILETREE_DRAG_MIME, parseDragPayload } from "./FileTree";
 
 interface ContextEditorProps {
   context: ContextManifestDto | null;
@@ -84,18 +84,32 @@ export function ContextEditor({
     if (!raw) return;
     event.preventDefault();
     try {
-      const payload = JSON.parse(raw) as FileTreeDragPayload;
-      if (!payload.relativePath) {
+      const payloads = parseDragPayload(raw);
+      const patterns: string[] = [];
+      let skipped = 0;
+      for (const payload of payloads) {
+        if (!payload.relativePath) {
+          skipped++;
+          continue;
+        }
+        patterns.push(
+          payload.type === "dir"
+            ? `${payload.relativePath.replace(/\/$/, "")}/**/*`
+            : payload.relativePath
+        );
+      }
+      if (patterns.length === 0) {
         setLocalError(
-          "Cannot add this entry: it lives outside the casefile root or is a virtual overlay path."
+          "Cannot add: dropped items live outside the casefile root or are virtual overlay paths."
         );
         return;
       }
-      const pattern =
-        payload.type === "dir"
-          ? `${payload.relativePath.replace(/\/$/, "")}/**/*`
-          : payload.relativePath;
-      mergePatterns([pattern]);
+      mergePatterns(patterns);
+      if (skipped > 0) {
+        setLocalError(
+          `Added ${patterns.length}; skipped ${skipped} (outside casefile root or overlay paths).`
+        );
+      }
     } catch {
       setLocalError("Could not parse dropped item.");
     }

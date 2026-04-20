@@ -1272,3 +1272,18 @@ a {
 .tree-row.drag-source {
   opacity: 0.6;
 }
+
+.tree-row.selected {
+  background: #1e293b;
+}
+
+.tree-row.selected.active {
+  background: #1e40af;
+}
+
+/* Suppress text selection while shift-clicking a range — otherwise the
+   browser highlights every character between the rows in addition to
+   selecting the rows themselves, which looks awful. */
+.file-tree {
+  user-select: none;
+}
