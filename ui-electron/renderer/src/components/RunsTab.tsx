@@ -17,19 +17,6 @@ interface RunsTabProps {
   onDelete: (runId: string) => Promise<void>;
 }
 
-// Mirror of `assistant_app.system_exec.ALLOWED_EXECUTABLES`. Kept here as
-// a tiny piece of duplication (so the UI doesn't need a roundtrip to know
-// what's allowed) — the backend is still the source of truth and any
-// mismatch shows up cleanly in the persisted run's `error` field.
-export const RUNS_ALLOWED_EXECUTABLES = [
-  "echo",
-  "printf",
-  "pwd",
-  "date",
-  "uname",
-  "whoami",
-] as const;
-
 interface PendingState {
   busy: boolean;
   error: string | null;

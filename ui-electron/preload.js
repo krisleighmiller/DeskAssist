@@ -55,6 +55,10 @@ contextBridge.exposeInMainWorld("assistantApi", {
   getRun: (runId) => ipcRenderer.invoke("casefile:getRun", { runId }),
   runCommand: (payload) => ipcRenderer.invoke("casefile:runCommand", payload),
   deleteRun: (runId) => ipcRenderer.invoke("casefile:deleteRun", { runId }),
+  // Single source of truth for the safe-allowlist; the renderer used to
+  // hard-code a copy of `system_exec.ALLOWED_EXECUTABLES` and could
+  // silently desync on backend changes.
+  getAllowedExecutables: () => ipcRenderer.invoke("casefile:getAllowedExecutables"),
 
   // M4.3: external local-directory inboxes.
   listInboxSources: () => ipcRenderer.invoke("casefile:listInboxSources"),

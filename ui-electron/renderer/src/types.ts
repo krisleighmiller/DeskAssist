@@ -369,6 +369,7 @@ export interface AssistantApi {
   getRun: (runId: string) => Promise<RunRecordDto>;
   runCommand: (payload: RunCommandPayload) => Promise<RunRecordDto>;
   deleteRun: (runId: string) => Promise<true>;
+  getAllowedExecutables: () => Promise<string[]>;
 
   // M4.3: inbox sources + item access (read-only).
   listInboxSources: () => Promise<InboxSourceDto[]>;

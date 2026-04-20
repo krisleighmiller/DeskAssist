@@ -31,7 +31,7 @@ import { LanesTab } from "./LanesTab";
 import { ComparisonChatTab } from "./ComparisonChatTab";
 import { InboxTab } from "./InboxTab";
 import { PromptsTab } from "./PromptsTab";
-import { RunsTab, RUNS_ALLOWED_EXECUTABLES } from "./RunsTab";
+import { RunsTab } from "./RunsTab";
 
 export type RightTabKey =
   | "chat"
@@ -128,6 +128,9 @@ interface RightPanelProps {
     runs: RunSummaryDto[];
     loading: boolean;
     error: string | null;
+    // Sourced from the backend (`casefile:getAllowedExecutables`) so the
+    // renderer never holds a stale copy of `system_exec.ALLOWED_EXECUTABLES`.
+    allowedExecutables: readonly string[];
     onRun: (payload: RunCommandPayload) => Promise<RunRecordDto>;
     onLoadRun: (runId: string) => Promise<RunRecordDto>;
     onDelete: (runId: string) => Promise<void>;
@@ -264,7 +267,7 @@ export function RightPanel({
             runs={runs.runs}
             loading={runs.loading}
             error={runs.error}
-            allowedExecutables={RUNS_ALLOWED_EXECUTABLES}
+            allowedExecutables={runs.allowedExecutables}
             onRun={runs.onRun}
             onLoadRun={runs.onLoadRun}
             onDelete={runs.onDelete}

@@ -19,6 +19,7 @@ is required.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
 from dataclasses import dataclass, replace
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from assistant_app.casefile.models import Casefile
+
+_LOGGER = logging.getLogger(__name__)
 
 INBOX_FILE_VERSION = 1
 INBOX_FILENAME = "inbox.json"
@@ -49,6 +52,16 @@ class InboxFileError(ValueError):
 _ID_SAFE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
+def _slugify(raw: str) -> str:
+    """Lowercase, collapse non-id chars to ``-``, strip surrounding ``-``.
+
+    Shared by :func:`normalize_source_id` and :func:`slug_from_name` (and
+    mirrors the same transformation used by ``prompts._slugify``); both
+    callers wrap the result with their own emptiness/fallback policy.
+    """
+    return re.sub(r"[^a-z0-9_-]+", "-", raw.lower()).strip("-")
+
+
 def normalize_source_id(raw: str) -> str:
     """Collapse a user-supplied id to the safe-character set.
 
@@ -60,7 +73,7 @@ def normalize_source_id(raw: str) -> str:
         raise ValueError("inbox source id must be a string")
     if "/" in raw or "\\" in raw or ".." in raw or "\x00" in raw:
         raise ValueError(f"Invalid inbox source id (path-like): {raw!r}")
-    cleaned = re.sub(r"[^a-z0-9_-]+", "-", raw.lower()).strip("-")
+    cleaned = _slugify(raw)
     if not cleaned:
         raise ValueError("inbox source id is empty after normalization")
     if not _ID_SAFE_RE.match(cleaned):
@@ -75,8 +88,7 @@ def slug_from_name(name: str) -> str:
     ``prompt``) when the name has no usable characters; the caller is
     expected to handle id-collision suffixing itself.
     """
-    cleaned = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-")
-    return cleaned or "inbox"
+    return _slugify(name) or "inbox"
 
 
 @dataclass(slots=True, frozen=True)
@@ -161,12 +173,27 @@ class InboxStore:
         if not isinstance(sources_raw, list):
             raise InboxFileError("inbox.json `sources` must be an array")
         out: list[InboxSource] = []
+        skipped = 0
         for entry in sources_raw:
             try:
                 out.append(InboxSource.from_json(entry))
-            except InboxFileError:
-                # A single malformed entry should not blank the list.
+            except InboxFileError as exc:
+                # A single malformed entry should not blank the list, but
+                # silently dropping would let a typo in inbox.json hide a
+                # source forever. Log a warning so the bridge stderr (and
+                # any operator tailing logs) shows the cause.
+                skipped += 1
+                _LOGGER.warning(
+                    "inbox.list_sources: skipping malformed entry: %s", exc
+                )
                 continue
+        if skipped:
+            _LOGGER.warning(
+                "inbox.list_sources: skipped %d malformed source entr%s in %s",
+                skipped,
+                "y" if skipped == 1 else "ies",
+                self.config_path,
+            )
         return out
 
     def get_source(self, source_id: str) -> InboxSource:
@@ -315,10 +342,11 @@ class InboxStore:
         except OSError:
             return
         for entry in entries:
-            # Hidden + casefile metadata directories are skipped: they're
-            # noise from the user's perspective and would break the
-            # virtual-path assumption when nested inside a casefile root.
-            if entry.name.startswith(".") or entry.name == ".casefile":
+            # Hidden directories are skipped: they're noise from the user's
+            # perspective and the `.casefile` metadata directory (which is
+            # what we'd otherwise need to special-case) already starts with
+            # a dot, so the single check is sufficient.
+            if entry.name.startswith("."):
                 continue
             if entry.is_dir():
                 self._walk(

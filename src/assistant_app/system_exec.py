@@ -83,40 +83,50 @@ def _read_bounded_streams(
     timeout_seconds: int,
     max_output_chars: int,
 ) -> tuple[bytes, bytes]:
-    assert process.stdout is not None
-    assert process.stderr is not None
+    # Explicit `if` guards rather than `assert` because asserts are stripped
+    # under `python -O`/`-OO`. If a future caller hands us a Popen without
+    # piped stdout/stderr we want a clear error here, not an opaque
+    # `AttributeError` from `None.read1(...)` deeper in.
+    if process.stdout is None or process.stderr is None:
+        raise RuntimeError(
+            "Popen must be created with stdout=PIPE and stderr=PIPE"
+        )
     cap = max_output_chars + 1
     stdout_buf = bytearray()
     stderr_buf = bytearray()
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     deadline = time.monotonic() + timeout_seconds
 
-    while selector.get_map():
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            process.kill()
-            process.wait()
-            raise TimeoutError(f"command timed out after {timeout_seconds}s")
+    # `with` ensures the selector's epoll/kqueue fd is released even when we
+    # bail out of the loop with TimeoutError (GC-based cleanup is too fragile
+    # for OS resources).
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
 
-        events = selector.select(timeout=min(0.2, remaining))
-        for key, _ in events:
-            stream = key.fileobj
-            channel = key.data
-            chunk = stream.read1(4096)
-            if not chunk:
-                selector.unregister(stream)
-                continue
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                process.kill()
+                process.wait()
+                raise TimeoutError(f"command timed out after {timeout_seconds}s")
 
-            target = stdout_buf if channel == "stdout" else stderr_buf
-            if len(target) < cap:
-                remaining_capacity = cap - len(target)
-                target.extend(chunk[:remaining_capacity])
-            # Continue draining even after cap to avoid pipe backpressure.
+            events = selector.select(timeout=min(0.2, remaining))
+            for key, _ in events:
+                stream = key.fileobj
+                channel = key.data
+                chunk = stream.read1(4096)
+                if not chunk:
+                    selector.unregister(stream)
+                    continue
 
-        if process.poll() is not None and not events:
-            break
+                target = stdout_buf if channel == "stdout" else stderr_buf
+                if len(target) < cap:
+                    remaining_capacity = cap - len(target)
+                    target.extend(chunk[:remaining_capacity])
+                # Continue draining even after cap to avoid pipe backpressure.
+
+            if process.poll() is not None and not events:
+                break
 
     process.wait()
     return bytes(stdout_buf), bytes(stderr_buf)

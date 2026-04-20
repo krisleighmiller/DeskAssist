@@ -1034,7 +1034,10 @@ def test_run_command_with_unknown_lane_raises(tmp_path: Path):
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
-    with pytest.raises(KeyError):
+    # The bridge translates `lane_by_id`'s `KeyError` into a `ValueError`
+    # with a descriptive message so the renderer-facing error string is
+    # human-readable rather than just `"'ghost'"`.
+    with pytest.raises(ValueError, match="Unknown laneId"):
         bridge.dispatch(
             {
                 "command": "casefile:runCommand",

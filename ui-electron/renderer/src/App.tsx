@@ -308,6 +308,25 @@ export function App(): JSX.Element {
   const [runs, setRuns] = useState<RunSummaryDto[]>([]);
   const [runsLoading, setRunsLoading] = useState(false);
   const [runsError, setRunsError] = useState<string | null>(null);
+  // Allowlist comes from the backend (`system_exec.ALLOWED_EXECUTABLES`)
+  // rather than a hard-coded mirror in the renderer. Fetched once at
+  // mount; the set is small and effectively immutable across a session.
+  const [allowedExecutables, setAllowedExecutables] = useState<readonly string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    api()
+      .getAllowedExecutables()
+      .then((list) => {
+        if (!cancelled) setAllowedExecutables(list);
+      })
+      .catch(() => {
+        // Non-fatal: the placeholder hint just won't list commands.
+        if (!cancelled) setAllowedExecutables([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const reloadRuns = useCallback(async () => {
     if (!casefile) {
@@ -1373,6 +1392,7 @@ export function App(): JSX.Element {
               runs,
               loading: runsLoading,
               error: runsError,
+              allowedExecutables,
               onRun: handleRunCommand,
               onLoadRun: handleLoadRun,
               onDelete: handleDeleteRun,

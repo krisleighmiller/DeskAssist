@@ -302,7 +302,15 @@ async function buildTreeAt(directory, depth = 0, maxDepth = 4, virtualPath = nul
   return node;
 }
 
-async function runPythonBridge(payload, { attachApiKeys = false } = {}) {
+// Default budget covers chat / run commands (where the user's allowlisted
+// shell command can legitimately take up to `system_exec.run_safe`'s 120s
+// cap). Metadata calls (list/get/save/etc) should never legitimately take
+// this long, so callers pass `BRIDGE_METADATA_TIMEOUT_MS` to surface hangs
+// as a process error within seconds.
+const BRIDGE_DEFAULT_TIMEOUT_MS = 120_000;
+const BRIDGE_METADATA_TIMEOUT_MS = 10_000;
+
+async function runPythonBridge(payload, { attachApiKeys = false, timeoutMs } = {}) {
   const repoRoot = path.resolve(__dirname, "..");
   const pythonPath = process.env.PYTHONPATH
     ? `${path.join(repoRoot, "src")}:${process.env.PYTHONPATH}`
@@ -316,6 +324,10 @@ async function runPythonBridge(payload, { attachApiKeys = false } = {}) {
       deepseek: apiKeysCache.deepseek || null,
     };
   }
+  const effectiveTimeoutMs =
+    Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : BRIDGE_DEFAULT_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -338,7 +350,7 @@ async function runPythonBridge(payload, { attachApiKeys = false } = {}) {
         child.kill("SIGKILL");
         reject(new Error("Python bridge timed out"));
       }
-    }, 120000);
+    }, effectiveTimeoutMs);
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString();
@@ -384,6 +396,13 @@ async function runPythonBridge(payload, { attachApiKeys = false } = {}) {
     child.stdin.write(JSON.stringify(bridgePayload));
     child.stdin.end();
   });
+}
+
+function runPythonBridgeMeta(payload) {
+  // Read-only / metadata bridge calls use a tighter timeout so a hung
+  // Python process surfaces as a renderer error within seconds rather
+  // than the two-minute budget reserved for chat / run commands.
+  return runPythonBridge(payload, { timeoutMs: BRIDGE_METADATA_TIMEOUT_MS });
 }
 
 // Sentinel constants must match electron_bridge.py RESPONSE_START / RESPONSE_END.
@@ -434,21 +453,28 @@ async function readUtf8Bounded(filePath, maxChars) {
     const buffer = Buffer.allocUnsafe(chunkSize);
     const chunks = [];
     let totalBytes = 0;
-    let decoded = "";
+    // Approximate-byte budget: ASCII is 1 byte/char so reading
+    // `maxChars` bytes is a safe lower bound on the eventual decoded
+    // length. We over-read by `chunkSize` to absorb multi-byte codepoints
+    // straddling the cap, then verify the truncation cleanly after a
+    // single decode.
+    const byteBudget = maxChars + chunkSize;
     let truncated = false;
-    while (decoded.length <= maxChars) {
+    while (totalBytes < byteBudget) {
       const { bytesRead } = await handle.read(buffer, 0, chunkSize, null);
       if (bytesRead === 0) {
         break;
       }
-      const chunk = Buffer.from(buffer.subarray(0, bytesRead));
-      chunks.push(chunk);
+      chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
       totalBytes += bytesRead;
-      decoded = decoder.decode(Buffer.concat(chunks, totalBytes));
-      if (decoded.length > maxChars) {
-        truncated = true;
-        break;
-      }
+    }
+    // Single decode after the loop: previously this ran on every
+    // iteration, making the overall read O(n²) in file size. For a 2 MB
+    // file at the declared MAX_FILE_READ_CHARS limit that was a real
+    // regression, however unlikely in practice.
+    const decoded = decoder.decode(Buffer.concat(chunks, totalBytes));
+    if (decoded.length > maxChars) {
+      truncated = true;
     }
     return { content: decoded.slice(0, maxChars), truncated };
   } catch (error) {
@@ -491,7 +517,7 @@ ipcMain.handle("casefile:choose", async () => {
     return null;
   }
   const chosen = result.filePaths[0];
-  const response = await runPythonBridge({ command: "casefile:open", root: chosen });
+  const response = await runPythonBridgeMeta({ command: "casefile:open", root: chosen });
   return adoptCasefileSnapshot(response.casefile);
 });
 
@@ -500,7 +526,7 @@ ipcMain.handle("casefile:open", async (_, args = {}) => {
   if (!root) {
     throw new Error("root is required");
   }
-  const response = await runPythonBridge({ command: "casefile:open", root });
+  const response = await runPythonBridgeMeta({ command: "casefile:open", root });
   return adoptCasefileSnapshot(response.casefile);
 });
 
@@ -530,7 +556,7 @@ ipcMain.handle("casefile:registerLane", async (_, args = {}) => {
   if (!lane) {
     throw new Error("lane is required");
   }
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:registerLane",
     casefileRoot: activeCasefileRoot,
     lane,
@@ -546,7 +572,7 @@ ipcMain.handle("casefile:switchLane", async (_, args = {}) => {
   if (!laneId) {
     throw new Error("laneId is required");
   }
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:switchLane",
     casefileRoot: activeCasefileRoot,
     laneId,
@@ -562,11 +588,14 @@ ipcMain.handle("casefile:listChat", async (_, args = {}) => {
   if (!laneId) {
     throw new Error("laneId is required");
   }
-  const response = await runPythonBridge({
-    command: "casefile:listChat",
-    casefileRoot: activeCasefileRoot,
-    laneId,
-  });
+  const response = await runPythonBridge(
+    {
+      command: "casefile:listChat",
+      casefileRoot: activeCasefileRoot,
+      laneId,
+    },
+    { timeoutMs: BRIDGE_METADATA_TIMEOUT_MS }
+  );
   return Array.isArray(response.messages) ? response.messages : [];
 });
 
@@ -584,7 +613,7 @@ ipcMain.handle("casefile:listFindings", async (_, args = {}) => {
   const laneId = typeof args.laneId === "string" && args.laneId ? args.laneId : null;
   const payload = { command: "casefile:listFindings", casefileRoot };
   if (laneId) payload.laneId = laneId;
-  const response = await runPythonBridge(payload);
+  const response = await runPythonBridgeMeta(payload);
   return Array.isArray(response.findings) ? response.findings : [];
 });
 
@@ -592,7 +621,7 @@ ipcMain.handle("casefile:getFinding", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const findingId = typeof args.findingId === "string" ? args.findingId : "";
   if (!findingId) throw new Error("findingId is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:getFinding",
     casefileRoot,
     findingId,
@@ -604,7 +633,7 @@ ipcMain.handle("casefile:createFinding", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const finding = args.finding && typeof args.finding === "object" ? args.finding : null;
   if (!finding) throw new Error("finding is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:createFinding",
     casefileRoot,
     finding,
@@ -618,7 +647,7 @@ ipcMain.handle("casefile:updateFinding", async (_, args = {}) => {
   const finding = args.finding && typeof args.finding === "object" ? args.finding : null;
   if (!findingId) throw new Error("findingId is required");
   if (!finding) throw new Error("finding is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:updateFinding",
     casefileRoot,
     findingId,
@@ -631,7 +660,7 @@ ipcMain.handle("casefile:deleteFinding", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const findingId = typeof args.findingId === "string" ? args.findingId : "";
   if (!findingId) throw new Error("findingId is required");
-  await runPythonBridge({ command: "casefile:deleteFinding", casefileRoot, findingId });
+  await runPythonBridgeMeta({ command: "casefile:deleteFinding", casefileRoot, findingId });
   return true;
 });
 
@@ -639,7 +668,11 @@ ipcMain.handle("casefile:getNote", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const laneId = typeof args.laneId === "string" ? args.laneId : "";
   if (!laneId) throw new Error("laneId is required");
-  const response = await runPythonBridge({ command: "casefile:getNote", casefileRoot, laneId });
+  const response = await runPythonBridgeMeta({
+    command: "casefile:getNote",
+    casefileRoot,
+    laneId,
+  });
   return typeof response.content === "string" ? response.content : "";
 });
 
@@ -648,7 +681,7 @@ ipcMain.handle("casefile:saveNote", async (_, args = {}) => {
   const laneId = typeof args.laneId === "string" ? args.laneId : "";
   const content = typeof args.content === "string" ? args.content : "";
   if (!laneId) throw new Error("laneId is required");
-  await runPythonBridge({ command: "casefile:saveNote", casefileRoot, laneId, content });
+  await runPythonBridgeMeta({ command: "casefile:saveNote", casefileRoot, laneId, content });
   return true;
 });
 
@@ -688,7 +721,7 @@ ipcMain.handle("lane:readFile", async (_, args = {}) => {
   if (!filePath) throw new Error("path is required");
   const payload = { command: "lane:readFile", casefileRoot, laneId, path: filePath };
   if (Number.isInteger(args.maxChars)) payload.maxChars = args.maxChars;
-  const response = await runPythonBridge(payload);
+  const response = await runPythonBridgeMeta(payload);
   return {
     path: response.path,
     content: response.content,
@@ -706,7 +739,7 @@ ipcMain.handle("casefile:setLaneParent", async (_, args = {}) => {
     args.parentId === null || args.parentId === undefined
       ? null
       : String(args.parentId);
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:setLaneParent",
     casefileRoot,
     laneId,
@@ -720,7 +753,7 @@ ipcMain.handle("casefile:updateLaneAttachments", async (_, args = {}) => {
   const laneId = typeof args.laneId === "string" ? args.laneId : "";
   if (!laneId) throw new Error("laneId is required");
   const attachments = Array.isArray(args.attachments) ? args.attachments : [];
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:updateLaneAttachments",
     casefileRoot,
     laneId,
@@ -731,7 +764,7 @@ ipcMain.handle("casefile:updateLaneAttachments", async (_, args = {}) => {
 
 ipcMain.handle("casefile:getContext", async () => {
   const casefileRoot = requireCasefile();
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:getContext",
     casefileRoot,
   });
@@ -742,7 +775,7 @@ ipcMain.handle("casefile:saveContext", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const manifest = args.manifest && typeof args.manifest === "object" ? args.manifest : null;
   if (!manifest) throw new Error("manifest is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:saveContext",
     casefileRoot,
     context: manifest,
@@ -754,7 +787,7 @@ ipcMain.handle("casefile:resolveScope", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const laneId = typeof args.laneId === "string" ? args.laneId : "";
   if (!laneId) throw new Error("laneId is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:resolveScope",
     casefileRoot,
     laneId,
@@ -768,7 +801,7 @@ ipcMain.handle("casefile:listOverlayTrees", async (_, args = {}) => {
   if (!laneId) throw new Error("laneId is required");
   const maxDepthRaw = Number.isInteger(args.maxDepth) ? args.maxDepth : 3;
   const maxDepth = Math.max(1, Math.min(maxDepthRaw, 8));
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:resolveScope",
     casefileRoot,
     laneId,
@@ -835,7 +868,7 @@ ipcMain.handle("casefile:readOverlayFile", async (_, args = {}) => {
     path: filePath,
   };
   if (Number.isInteger(args.maxChars)) payload.maxChars = args.maxChars;
-  const response = await runPythonBridge(payload);
+  const response = await runPythonBridgeMeta(payload);
   return {
     path: response.path,
     content: response.content,
@@ -874,6 +907,11 @@ ipcMain.handle("file:save", async (_, args = {}) => {
     throw new Error("content must be a string");
   }
   const content = args.content;
+  // Create intermediate directories so a future "new file" workflow can
+  // save into a path whose parent doesn't exist yet without hitting an
+  // ENOENT from writeFile. The path-escape check above already runs
+  // through `ensureInWorkspace`, so mkdir is bounded to the lane.
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, "utf-8");
   return { path: filePath, saved: true };
 });
@@ -906,7 +944,7 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
 
 ipcMain.handle("casefile:listPrompts", async () => {
   const casefileRoot = requireCasefile();
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:listPrompts",
     casefileRoot,
   });
@@ -917,7 +955,7 @@ ipcMain.handle("casefile:getPrompt", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const promptId = typeof args.promptId === "string" ? args.promptId : "";
   if (!promptId) throw new Error("promptId is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:getPrompt",
     casefileRoot,
     promptId,
@@ -929,7 +967,7 @@ ipcMain.handle("casefile:createPrompt", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const prompt = args.prompt && typeof args.prompt === "object" ? args.prompt : null;
   if (!prompt) throw new Error("prompt is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:createPrompt",
     casefileRoot,
     prompt,
@@ -943,7 +981,7 @@ ipcMain.handle("casefile:savePrompt", async (_, args = {}) => {
   const prompt = args.prompt && typeof args.prompt === "object" ? args.prompt : null;
   if (!promptId) throw new Error("promptId is required");
   if (!prompt) throw new Error("prompt is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:savePrompt",
     casefileRoot,
     promptId,
@@ -956,7 +994,7 @@ ipcMain.handle("casefile:deletePrompt", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const promptId = typeof args.promptId === "string" ? args.promptId : "";
   if (!promptId) throw new Error("promptId is required");
-  await runPythonBridge({
+  await runPythonBridgeMeta({
     command: "casefile:deletePrompt",
     casefileRoot,
     promptId,
@@ -970,7 +1008,7 @@ ipcMain.handle("casefile:listRuns", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const payload = { command: "casefile:listRuns", casefileRoot };
   if (typeof args.laneId === "string" && args.laneId) payload.laneId = args.laneId;
-  const response = await runPythonBridge(payload);
+  const response = await runPythonBridgeMeta(payload);
   return Array.isArray(response.runs) ? response.runs : [];
 });
 
@@ -978,12 +1016,22 @@ ipcMain.handle("casefile:getRun", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const runId = typeof args.runId === "string" ? args.runId : "";
   if (!runId) throw new Error("runId is required");
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:getRun",
     casefileRoot,
     runId,
   });
   return response.run;
+});
+
+ipcMain.handle("casefile:getAllowedExecutables", async () => {
+  // Routed through the bridge so the renderer's Runs tab cannot
+  // desync from `system_exec.ALLOWED_EXECUTABLES`. Cached at the
+  // renderer to avoid a roundtrip per render.
+  const response = await runPythonBridgeMeta({
+    command: "casefile:getAllowedExecutables",
+  });
+  return Array.isArray(response.executables) ? response.executables : [];
 });
 
 ipcMain.handle("casefile:runCommand", async (_, args = {}) => {
@@ -1010,7 +1058,7 @@ ipcMain.handle("casefile:deleteRun", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const runId = typeof args.runId === "string" ? args.runId : "";
   if (!runId) throw new Error("runId is required");
-  await runPythonBridge({
+  await runPythonBridgeMeta({
     command: "casefile:deleteRun",
     casefileRoot,
     runId,
@@ -1022,7 +1070,7 @@ ipcMain.handle("casefile:deleteRun", async (_, args = {}) => {
 
 ipcMain.handle("casefile:listInboxSources", async () => {
   const casefileRoot = requireCasefile();
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:listInboxSources",
     casefileRoot,
   });
@@ -1044,7 +1092,7 @@ ipcMain.handle("casefile:addInboxSource", async (_, args = {}) => {
   if (typeof args.sourceId === "string" && args.sourceId.trim()) {
     payload.sourceId = args.sourceId;
   }
-  const response = await runPythonBridge(payload);
+  const response = await runPythonBridgeMeta(payload);
   return response.source;
 });
 
@@ -1059,7 +1107,7 @@ ipcMain.handle("casefile:updateInboxSource", async (_, args = {}) => {
   };
   if (typeof args.name === "string") payload.name = args.name;
   if (typeof args.root === "string") payload.root = args.root;
-  const response = await runPythonBridge(payload);
+  const response = await runPythonBridgeMeta(payload);
   return response.source;
 });
 
@@ -1067,7 +1115,7 @@ ipcMain.handle("casefile:removeInboxSource", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
   if (!sourceId.trim()) throw new Error("sourceId is required");
-  await runPythonBridge({
+  await runPythonBridgeMeta({
     command: "casefile:removeInboxSource",
     casefileRoot,
     sourceId,
@@ -1083,7 +1131,7 @@ ipcMain.handle("casefile:listInboxItems", async (_, args = {}) => {
   if (Number.isInteger(args.maxDepth) && args.maxDepth > 0) {
     payload.maxDepth = args.maxDepth;
   }
-  const response = await runPythonBridge(payload);
+  const response = await runPythonBridgeMeta(payload);
   return Array.isArray(response.items) ? response.items : [];
 });
 
@@ -1102,7 +1150,7 @@ ipcMain.handle("casefile:readInboxItem", async (_, args = {}) => {
   if (Number.isInteger(args.maxChars) && args.maxChars > 0) {
     payload.maxChars = args.maxChars;
   }
-  const response = await runPythonBridge(payload);
+  const response = await runPythonBridgeMeta(payload);
   return {
     content: response.content || "",
     truncated: Boolean(response.truncated),
@@ -1139,7 +1187,7 @@ function normalizeLaneIds(raw) {
 ipcMain.handle("casefile:openComparison", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const laneIds = normalizeLaneIds(args.laneIds);
-  const response = await runPythonBridge({
+  const response = await runPythonBridgeMeta({
     command: "casefile:openComparison",
     casefileRoot,
     laneIds,

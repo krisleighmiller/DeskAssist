@@ -37,6 +37,7 @@ from assistant_app.casefile.prompts import PromptDraft, PromptSummary
 from assistant_app.chat_service import ChatService
 from assistant_app.filesystem import WorkspaceFilesystem
 from assistant_app.models import ChatMessage
+from assistant_app.system_exec import ALLOWED_EXECUTABLES
 
 
 # ---------------------------------------------------------------------------
@@ -95,18 +96,22 @@ def _build_prompt_system_message(prompt: PromptDraft) -> str:
 
 
 def _history_has_context_marker(history: list[ChatMessage]) -> bool:
-    """True if the history already starts with the auto-injected system message.
+    """True if the auto-injected casefile-context system message is present.
 
     Auto-include is recomputed on every chat:send (cheaper than tracking
     state in the renderer), so we need a stable marker to avoid stacking
-    duplicates when a turn is resumed.
+    duplicates when a turn is resumed. Scans the *full* history (mirroring
+    `_history_has_prompt_marker`) so a context message reordered behind
+    another system message is still detected.
     """
-    if not history:
-        return False
-    first = history[0]
-    if first.role != "system":
-        return False
-    return isinstance(first.content, str) and first.content.startswith(_CONTEXT_MARKER)
+    for msg in history:
+        if (
+            msg.role == "system"
+            and isinstance(msg.content, str)
+            and msg.content.startswith(_CONTEXT_MARKER)
+        ):
+            return True
+    return False
 
 
 def _serialize_message(message: ChatMessage) -> dict[str, Any]:
@@ -918,6 +923,16 @@ def handle_casefile_delete_run(request: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
+def handle_runs_get_allowed_executables(_request: dict[str, Any]) -> dict[str, Any]:
+    """Return the safe-allowlist for the renderer's Runs tab.
+
+    The frontend used to maintain its own copy of this list; routing the
+    canonical set through the bridge means a backend allowlist change can
+    never silently desync from the UI hint.
+    """
+    return {"ok": True, "executables": sorted(ALLOWED_EXECUTABLES)}
+
+
 def handle_casefile_run_command(request: dict[str, Any]) -> dict[str, Any]:
     """Execute one safe-allowlisted command and persist the result.
 
@@ -943,25 +958,41 @@ def handle_casefile_run_command(request: dict[str, Any]) -> dict[str, Any]:
     lane_id = raw_lane.strip() if isinstance(raw_lane, str) and raw_lane.strip() else None
     if lane_id is not None:
         snapshot = CasefileService(root).snapshot()
-        # `lane_by_id` raises KeyError on miss — propagate as the bridge
-        # error path so a stale lane id from the renderer surfaces clearly.
-        lane = snapshot.lane_by_id(lane_id)
+        # `lane_by_id` raises KeyError on miss; translate into a ValueError
+        # with a descriptive message so the bridge `error` field is human-
+        # readable (otherwise `str(KeyError('x'))` becomes the unhelpful
+        # quoted string `"'x'"`). Mirrors the pattern in findings/prompts.
+        try:
+            lane = snapshot.lane_by_id(lane_id)
+        except KeyError as exc:
+            raise ValueError(f"Unknown laneId: {lane_id!r}") from exc
         cwd = lane.root
     else:
         cwd = root
 
+    # Range-check at the bridge level so out-of-range inputs surface as
+    # plain validation errors rather than being baked into a persisted
+    # run record (which is what would happen if we let `run_safe` raise
+    # downstream from `RunsStore.start`).
     timeout_raw = request.get("timeoutSeconds")
-    timeout_seconds = (
-        int(timeout_raw)
-        if isinstance(timeout_raw, int) and timeout_raw > 0
-        else DEFAULT_RUN_TIMEOUT_SECONDS
-    )
+    if timeout_raw is None:
+        timeout_seconds = DEFAULT_RUN_TIMEOUT_SECONDS
+    elif isinstance(timeout_raw, int) and not isinstance(timeout_raw, bool):
+        if timeout_raw < 1 or timeout_raw > 120:
+            raise ValueError("timeoutSeconds must be between 1 and 120")
+        timeout_seconds = timeout_raw
+    else:
+        raise ValueError("timeoutSeconds must be an integer")
+
     max_chars_raw = request.get("maxOutputChars")
-    max_output_chars = (
-        int(max_chars_raw)
-        if isinstance(max_chars_raw, int) and max_chars_raw > 0
-        else DEFAULT_RUN_MAX_OUTPUT_CHARS
-    )
+    if max_chars_raw is None:
+        max_output_chars = DEFAULT_RUN_MAX_OUTPUT_CHARS
+    elif isinstance(max_chars_raw, int) and not isinstance(max_chars_raw, bool):
+        if max_chars_raw < 1 or max_chars_raw > 200_000:
+            raise ValueError("maxOutputChars must be between 1 and 200000")
+        max_output_chars = max_chars_raw
+    else:
+        raise ValueError("maxOutputChars must be an integer")
 
     record = RunsStore(root).start(
         command=command_line,
@@ -1278,6 +1309,7 @@ _HANDLERS = {
     "casefile:createPrompt": handle_casefile_create_prompt,
     "casefile:savePrompt": handle_casefile_save_prompt,
     "casefile:deletePrompt": handle_casefile_delete_prompt,
+    "casefile:getAllowedExecutables": handle_runs_get_allowed_executables,
     "casefile:listRuns": handle_casefile_list_runs,
     "casefile:getRun": handle_casefile_get_run,
     "casefile:deleteRun": handle_casefile_delete_run,

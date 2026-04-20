@@ -148,12 +148,16 @@ def generate_run_id(now: datetime | None = None) -> str:
 
 
 def _validate_run_id(candidate: str) -> str:
+    # Generated ids are always lowercase (see `generate_run_id`); accepting
+    # mixed-case here would be an implicit, undocumented contract that lets
+    # `store.get("ABC...")` resolve to a file written under a different
+    # case. Reject mixed-case outright instead.
     if "/" in candidate or "\\" in candidate or ".." in candidate or "\x00" in candidate:
         raise ValueError(f"Invalid run id (path-like characters): {candidate!r}")
-    lowered = candidate.strip().lower()
-    if not _ID_SAFE_RE.match(lowered):
+    stripped = candidate.strip()
+    if not _ID_SAFE_RE.match(stripped):
         raise ValueError(f"Invalid run id: {candidate!r}")
-    return lowered
+    return stripped
 
 
 def _now_iso(now: datetime | None = None) -> str:
