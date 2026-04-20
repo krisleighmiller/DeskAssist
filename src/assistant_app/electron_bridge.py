@@ -639,7 +639,24 @@ def handle_casefile_compare_lanes(request: dict[str, Any]) -> dict[str, Any]:
     snapshot = service.snapshot()
     left = snapshot.lane_by_id(left_id)
     right = snapshot.lane_by_id(right_id)
-    comparison = compare_lanes(left, right)
+    # Optional per-call overrides for the safety caps.  The defaults in
+    # compare.compare_lanes are tuned for "monorepo-sized" lanes (250k
+    # files / 2 GB combined); callers that know they need more can pass
+    # explicit values, but we still validate they are positive ints to
+    # avoid accidental "unbounded" comparisons.
+    kwargs: dict[str, Any] = {}
+    for key, src in (
+        ("max_files_per_lane", "maxFilesPerLane"),
+        ("max_bytes_per_file", "maxBytesPerFile"),
+        ("max_total_bytes", "maxTotalBytes"),
+    ):
+        raw = request.get(src)
+        if raw is None:
+            continue
+        if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
+            raise ValueError(f"{src} must be a positive integer")
+        kwargs[key] = raw
+    comparison = compare_lanes(left, right, **kwargs)
     return {"ok": True, "comparison": comparison.to_json()}
 
 

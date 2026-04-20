@@ -254,6 +254,35 @@ export function App(): JSX.Element {
     []
   );
 
+  // M3.5c+: invoked by the file-tree right-click menu. We persist the
+  // pattern immediately rather than only updating the editor's draft —
+  // the user clicked "Add to context" with intent and may not even have
+  // the Lanes tab + context section open. We base the merge on the
+  // freshest manifest fetched from disk to avoid clobbering concurrent
+  // edits made via the ContextEditor itself.
+  const handleAddToContext = useCallback(
+    async (pattern: string) => {
+      const trimmed = pattern.trim();
+      if (!trimmed) return;
+      let base = contextManifest;
+      try {
+        base = await api().getContext();
+      } catch {
+        // Fall back to the last manifest we held in state — better than
+        // nothing if the bridge is momentarily unhappy.
+      }
+      const existing = new Set(base?.files ?? []);
+      if (existing.has(trimmed)) {
+        setContextError(`Pattern "${trimmed}" is already in the casefile context.`);
+        return;
+      }
+      const nextFiles = [...(base?.files ?? []), trimmed];
+      const cap = base?.autoIncludeMaxBytes ?? 32 * 1024;
+      await handleSaveContext({ files: nextFiles, autoIncludeMaxBytes: cap });
+    },
+    [contextManifest, handleSaveContext]
+  );
+
   const handleSetLaneParent = useCallback(
     async (laneId: string, parentId: string | null) => {
       try {
@@ -1023,6 +1052,8 @@ export function App(): JSX.Element {
               canShowOverlays={Boolean(activeLane)}
               onToggleOverlays={() => setShowOverlays((v) => !v)}
               onOpenOverlayFile={handleOpenOverlayFile}
+              casefileRoot={casefile?.root ?? null}
+              onAddToContext={casefile ? handleAddToContext : undefined}
             />
           </div>
         </section>

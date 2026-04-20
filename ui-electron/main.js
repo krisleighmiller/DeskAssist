@@ -476,9 +476,16 @@ function adoptCasefileSnapshot(snapshot) {
 }
 
 ipcMain.handle("casefile:choose", async () => {
+  // Default to the parent of the currently-open casefile (so "open another
+  // casefile" lands in the right neighbourhood) or to the user's documents
+  // folder on first launch — never the home directory, which is noisy.
+  const defaultPath = activeCasefileRoot
+    ? path.dirname(activeCasefileRoot)
+    : app.getPath("documents");
   const result = await dialog.showOpenDialog({
     properties: ["openDirectory", "createDirectory"],
     title: "Open Casefile",
+    defaultPath,
   });
   if (result.canceled || result.filePaths.length === 0) {
     return null;
@@ -498,9 +505,16 @@ ipcMain.handle("casefile:open", async (_, args = {}) => {
 });
 
 ipcMain.handle("casefile:chooseLaneRoot", async () => {
+  // Lane / attachment / context pickers all default to the casefile root
+  // when one is open. This is the right behaviour for the common case
+  // (lanes live next to or under the casefile) and falls back to documents
+  // only when no casefile is open yet (in which case there's no lane to
+  // register anyway, but we still want a sane default).
+  const defaultPath = activeCasefileRoot || app.getPath("documents");
   const result = await dialog.showOpenDialog({
     properties: ["openDirectory", "createDirectory"],
-    title: "Choose Lane Directory",
+    title: "Choose Directory",
+    defaultPath,
   });
   if (result.canceled || result.filePaths.length === 0) {
     return null;

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ContextManifestDto } from "../types";
+import { FILETREE_DRAG_MIME, type FileTreeDragPayload } from "./FileTree";
 
 interface ContextEditorProps {
   context: ContextManifestDto | null;
@@ -24,6 +25,7 @@ export function ContextEditor({
   const [maxKb, setMaxKb] = useState<number>(DEFAULT_MAX_KB);
   const [draft, setDraft] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [dropActive, setDropActive] = useState(false);
 
   useEffect(() => {
     if (context) {
@@ -32,16 +34,71 @@ export function ContextEditor({
     }
   }, [context]);
 
+  const mergePatterns = (incoming: string[]) => {
+    if (incoming.length === 0) return;
+    setFiles((prev) => {
+      const seen = new Set(prev);
+      const next = [...prev];
+      const skipped: string[] = [];
+      for (const raw of incoming) {
+        const value = raw.trim();
+        if (!value) continue;
+        if (seen.has(value)) {
+          skipped.push(value);
+          continue;
+        }
+        seen.add(value);
+        next.push(value);
+      }
+      if (skipped.length > 0) {
+        setLocalError(
+          `Already in list: ${skipped.slice(0, 3).join(", ")}${skipped.length > 3 ? "…" : ""}`
+        );
+      } else {
+        setLocalError(null);
+      }
+      return next;
+    });
+  };
+
   const addPattern = () => {
     const value = draft.trim();
     if (!value) return;
-    if (files.includes(value)) {
-      setLocalError(`Pattern "${value}" already in list`);
-      return;
-    }
-    setFiles([...files, value]);
+    mergePatterns([value]);
     setDraft("");
-    setLocalError(null);
+  };
+
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.types.includes(FILETREE_DRAG_MIME)) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      if (!dropActive) setDropActive(true);
+    }
+  };
+
+  const handleDragLeave = () => setDropActive(false);
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    setDropActive(false);
+    const raw = event.dataTransfer.getData(FILETREE_DRAG_MIME);
+    if (!raw) return;
+    event.preventDefault();
+    try {
+      const payload = JSON.parse(raw) as FileTreeDragPayload;
+      if (!payload.relativePath) {
+        setLocalError(
+          "Cannot add this entry: it lives outside the casefile root or is a virtual overlay path."
+        );
+        return;
+      }
+      const pattern =
+        payload.type === "dir"
+          ? `${payload.relativePath.replace(/\/$/, "")}/**/*`
+          : payload.relativePath;
+      mergePatterns([pattern]);
+    } catch {
+      setLocalError("Could not parse dropped item.");
+    }
   };
 
   const save = async () => {
@@ -57,11 +114,17 @@ export function ContextEditor({
   };
 
   return (
-    <div className="context-editor">
+    <div
+      className={`context-editor${dropActive ? " drop-target" : ""}`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div className="context-header">
         <strong>Casefile context (always-on)</strong>
         <span className="muted">
           Files matched here are visible to every lane via <code>_context/...</code>.
+          Drag files from the tree, or right-click → "Add to casefile context".
         </span>
       </div>
       <ul className="context-list">

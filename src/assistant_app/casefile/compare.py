@@ -161,9 +161,9 @@ def compare_lanes(
     right: Lane,
     *,
     skip_dir_names: Iterable[str] = DEFAULT_SKIP_DIR_NAMES,
-    max_files_per_lane: int = 10_000,
+    max_files_per_lane: int = 250_000,
     max_bytes_per_file: int = 5_000_000,
-    max_total_bytes: int = 500_000_000,
+    max_total_bytes: int = 2_000_000_000,
 ) -> LaneComparison:
     """Compute file-level differences between two lanes.
 
