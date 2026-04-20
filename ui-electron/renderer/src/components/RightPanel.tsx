@@ -9,6 +9,9 @@ import type {
   FindingDto,
   LaneAttachmentInput,
   LaneComparisonDto,
+  PromptDraftDto,
+  PromptInputDto,
+  PromptSummaryDto,
   Provider,
   RegisterLaneInput,
   ToolCall,
@@ -18,8 +21,15 @@ import { NotesTab } from "./NotesTab";
 import { FindingsTab } from "./FindingsTab";
 import { LanesTab } from "./LanesTab";
 import { ComparisonChatTab } from "./ComparisonChatTab";
+import { PromptsTab } from "./PromptsTab";
 
-export type RightTabKey = "chat" | "notes" | "findings" | "lanes" | "compare";
+export type RightTabKey =
+  | "chat"
+  | "notes"
+  | "findings"
+  | "lanes"
+  | "compare"
+  | "prompts";
 
 interface RightPanelProps {
   activeTab: RightTabKey;
@@ -31,6 +41,8 @@ interface RightPanelProps {
     pendingApprovals: ToolCall[];
     busy: boolean;
     hasActiveLane: boolean;
+    activePromptName: string | null;
+    onClearActivePrompt: () => void;
     onSend: (text: string) => void;
     onApproveTools: () => void;
     onDenyTools: () => void;
@@ -83,6 +95,19 @@ interface RightPanelProps {
     onSend: (text: string) => void;
     onClose: () => void;
   };
+  prompts: {
+    hasCasefile: boolean;
+    hasActiveLane: boolean;
+    prompts: PromptSummaryDto[];
+    loading: boolean;
+    error: string | null;
+    selectedPromptId: string | null;
+    onSelectForChat: (promptId: string | null) => void;
+    onCreate: (input: PromptInputDto) => Promise<PromptDraftDto>;
+    onSave: (promptId: string, input: PromptInputDto) => Promise<PromptDraftDto>;
+    onDelete: (promptId: string) => Promise<void>;
+    onLoad: (promptId: string) => Promise<PromptDraftDto>;
+  };
 }
 
 const TABS: { key: RightTabKey; label: string }[] = [
@@ -91,6 +116,7 @@ const TABS: { key: RightTabKey; label: string }[] = [
   { key: "findings", label: "Findings" },
   { key: "lanes", label: "Lanes" },
   { key: "compare", label: "Compare" },
+  { key: "prompts", label: "Prompts" },
 ];
 
 export function RightPanel({
@@ -101,6 +127,7 @@ export function RightPanel({
   findings,
   lanes,
   compareChat,
+  prompts,
 }: RightPanelProps): JSX.Element {
   return (
     <>
@@ -125,6 +152,8 @@ export function RightPanel({
             pendingApprovals={chat.pendingApprovals}
             busy={chat.busy}
             hasActiveLane={chat.hasActiveLane}
+            activePromptName={chat.activePromptName}
+            onClearActivePrompt={chat.onClearActivePrompt}
             onSend={chat.onSend}
             onApproveTools={chat.onApproveTools}
             onDenyTools={chat.onDenyTools}
@@ -181,6 +210,21 @@ export function RightPanel({
             busy={compareChat.busy}
             onSend={compareChat.onSend}
             onClose={compareChat.onClose}
+          />
+        )}
+        {activeTab === "prompts" && (
+          <PromptsTab
+            hasCasefile={prompts.hasCasefile}
+            hasActiveLane={prompts.hasActiveLane}
+            prompts={prompts.prompts}
+            loading={prompts.loading}
+            error={prompts.error}
+            selectedPromptId={prompts.selectedPromptId}
+            onSelectForChat={prompts.onSelectForChat}
+            onCreate={prompts.onCreate}
+            onSave={prompts.onSave}
+            onDelete={prompts.onDelete}
+            onLoad={prompts.onLoad}
           />
         )}
       </div>

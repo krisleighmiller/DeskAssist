@@ -882,20 +882,86 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
   if (!activeCasefileRoot || !activeLaneId) {
     throw new Error("Open a casefile before sending a chat");
   }
-  return runPythonBridge(
-    {
-      command: "chat:send",
-      casefileRoot: activeCasefileRoot,
-      laneId: activeLaneId,
-      provider: payload.provider || "openai",
-      model: payload.model || null,
-      messages: Array.isArray(payload.messages) ? payload.messages : [],
-      userMessage: payload.userMessage || "",
-      allowWriteTools: Boolean(payload.allowWriteTools),
-      resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
-    },
-    { attachApiKeys: true }
-  );
+  const bridgePayload = {
+    command: "chat:send",
+    casefileRoot: activeCasefileRoot,
+    laneId: activeLaneId,
+    provider: payload.provider || "openai",
+    model: payload.model || null,
+    messages: Array.isArray(payload.messages) ? payload.messages : [],
+    userMessage: payload.userMessage || "",
+    allowWriteTools: Boolean(payload.allowWriteTools),
+    resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
+  };
+  // M4.1: only forward systemPromptId when set; the bridge treats absence
+  // as "no system prompt", whereas a literal empty string would be a
+  // validation error.
+  if (typeof payload.systemPromptId === "string" && payload.systemPromptId) {
+    bridgePayload.systemPromptId = payload.systemPromptId;
+  }
+  return runPythonBridge(bridgePayload, { attachApiKeys: true });
+});
+
+// ----- M4.1: prompt drafts -----
+
+ipcMain.handle("casefile:listPrompts", async () => {
+  const casefileRoot = requireCasefile();
+  const response = await runPythonBridge({
+    command: "casefile:listPrompts",
+    casefileRoot,
+  });
+  return Array.isArray(response.prompts) ? response.prompts : [];
+});
+
+ipcMain.handle("casefile:getPrompt", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const promptId = typeof args.promptId === "string" ? args.promptId : "";
+  if (!promptId) throw new Error("promptId is required");
+  const response = await runPythonBridge({
+    command: "casefile:getPrompt",
+    casefileRoot,
+    promptId,
+  });
+  return response.prompt;
+});
+
+ipcMain.handle("casefile:createPrompt", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const prompt = args.prompt && typeof args.prompt === "object" ? args.prompt : null;
+  if (!prompt) throw new Error("prompt is required");
+  const response = await runPythonBridge({
+    command: "casefile:createPrompt",
+    casefileRoot,
+    prompt,
+  });
+  return response.prompt;
+});
+
+ipcMain.handle("casefile:savePrompt", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const promptId = typeof args.promptId === "string" ? args.promptId : "";
+  const prompt = args.prompt && typeof args.prompt === "object" ? args.prompt : null;
+  if (!promptId) throw new Error("promptId is required");
+  if (!prompt) throw new Error("prompt is required");
+  const response = await runPythonBridge({
+    command: "casefile:savePrompt",
+    casefileRoot,
+    promptId,
+    prompt,
+  });
+  return response.prompt;
+});
+
+ipcMain.handle("casefile:deletePrompt", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const promptId = typeof args.promptId === "string" ? args.promptId : "";
+  if (!promptId) throw new Error("promptId is required");
+  await runPythonBridge({
+    command: "casefile:deletePrompt",
+    casefileRoot,
+    promptId,
+  });
+  return true;
 });
 
 // ----- M3.5c: comparison-chat sessions -----

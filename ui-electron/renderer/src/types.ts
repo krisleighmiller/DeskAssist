@@ -23,6 +23,12 @@ export interface ChatSendPayload {
   userMessage: string;
   allowWriteTools: boolean;
   resumePendingToolCalls: boolean;
+  /**
+   * M4.1: id of a casefile-level prompt draft to inject as a system message
+   * before the user turn. Idempotent across resumed turns (the bridge
+   * skips re-injection when the marker is already in `messages`).
+   */
+  systemPromptId?: string | null;
 }
 
 export interface ChatSendResponse {
@@ -215,6 +221,26 @@ export interface ComparisonChatSendResponse {
   error?: string;
 }
 
+// M4.1: prompt drafts (casefile-scoped, lightweight markdown bodies).
+
+export interface PromptSummaryDto {
+  id: string;
+  name: string;
+  sizeBytes: number;
+  updatedAt: string;
+}
+
+export interface PromptDraftDto extends PromptSummaryDto {
+  body: string;
+  createdAt: string;
+}
+
+export interface PromptInputDto {
+  name?: string;
+  body?: string;
+  id?: string;
+}
+
 export interface ExportResult {
   path: string;
   markdown: string;
@@ -270,6 +296,13 @@ export interface AssistantApi {
     path: string,
     maxChars?: number
   ) => Promise<FileReadResult>;
+
+  // M4.1: prompt drafts (casefile-scoped).
+  listPrompts: () => Promise<PromptSummaryDto[]>;
+  getPrompt: (promptId: string) => Promise<PromptDraftDto>;
+  createPrompt: (prompt: PromptInputDto) => Promise<PromptDraftDto>;
+  savePrompt: (promptId: string, prompt: PromptInputDto) => Promise<PromptDraftDto>;
+  deletePrompt: (promptId: string) => Promise<true>;
 
   // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;

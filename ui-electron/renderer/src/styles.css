@@ -1287,3 +1287,142 @@ a {
 .file-tree {
   user-select: none;
 }
+
+/* ----- M4.1: prompts tab + chat-prompt badge ----- */
+
+.prompts-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 8px;
+  padding: 8px;
+}
+
+.prompts-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.prompts-error {
+  color: #f87171;
+}
+
+.prompts-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) 1fr;
+  gap: 8px;
+  min-height: 0;
+}
+
+.prompts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  background: #0f172a;
+}
+
+.prompts-empty {
+  padding: 8px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.prompts-list-item {
+  border-bottom: 1px solid #111827;
+}
+
+.prompts-list-item:last-child {
+  border-bottom: none;
+}
+
+.prompts-list-button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.prompts-list-button:hover {
+  background: #111827;
+}
+
+.prompts-list-item.open .prompts-list-button {
+  background: #1f2937;
+}
+
+.prompts-list-item.selected .prompts-list-name::after {
+  content: " ●";
+  color: #34d399;
+}
+
+.prompts-list-name {
+  font-weight: 500;
+  color: #e5e7eb;
+}
+
+.prompts-list-meta {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.prompts-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.prompts-editor textarea {
+  flex: 1;
+  resize: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.prompts-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.prompts-actions .danger {
+  background: #7f1d1d;
+  border-color: #991b1b;
+}
+
+.chat-prompt-badge {
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: #064e3b;
+  color: #a7f3d0;
+  border: 1px solid #065f46;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.chat-prompt-clear {
+  background: transparent;
+  border: none;
+  color: #a7f3d0;
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.chat-prompt-clear:hover {
+  color: #ffffff;
+}

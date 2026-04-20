@@ -34,6 +34,16 @@ from assistant_app.casefile.models import (
     LANE_KINDS,
 )
 from assistant_app.casefile.notes import NotesStore
+from assistant_app.casefile.prompts import (
+    MAX_PROMPT_BODY_BYTES,
+    PROMPT_META_VERSION,
+    PromptDraft,
+    PromptFileError,
+    PromptSummary,
+    PromptsStore,
+    normalize_prompt_id,
+    slug_from_name as prompt_slug_from_name,
+)
 from assistant_app.casefile.scope import (
     ANCESTOR_PREFIX,
     ATTACHMENT_PREFIX,
@@ -76,7 +86,13 @@ __all__ = [
     "LaneComparison",
     "LaneKind",
     "LanesFileError",
+    "MAX_PROMPT_BODY_BYTES",
     "NotesStore",
+    "PROMPT_META_VERSION",
+    "PromptDraft",
+    "PromptFileError",
+    "PromptSummary",
+    "PromptsStore",
     "ReadOverlay",
     "ResolvedContextFile",
     "SEVERITIES",
@@ -88,6 +104,8 @@ __all__ = [
     "export_review",
     "generate_finding_id",
     "normalize_attachment_name",
+    "normalize_prompt_id",
+    "prompt_slug_from_name",
     "render_review_markdown",
     "resolve_comparison_scope",
     "resolve_scope",

@@ -686,3 +686,247 @@ def test_update_lane_attachments_command(tmp_path: Path):
     lane_a = next(lane for lane in response["casefile"]["lanes"] if lane["id"] == "a")
     assert lane_a["attachments"][0]["name"] == "notes"
     assert lane_a["attachments"][0]["root"] == str(notes_dir.resolve())
+
+
+# ---------------------------------------------------------------------------
+# M4.1: prompt drafts dispatch + chat:send systemPromptId injection
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_create_list_get_save_delete_round_trip(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+
+    create = bridge.dispatch(
+        {
+            "command": "casefile:createPrompt",
+            "casefileRoot": str(casefile_root),
+            "prompt": {"name": "Code Review", "body": "Be careful."},
+        }
+    )
+    prompt_id = create["prompt"]["id"]
+    assert prompt_id == "code-review"
+    assert create["prompt"]["name"] == "Code Review"
+
+    listed = bridge.dispatch(
+        {"command": "casefile:listPrompts", "casefileRoot": str(casefile_root)}
+    )
+    assert [p["id"] for p in listed["prompts"]] == [prompt_id]
+    assert listed["prompts"][0]["sizeBytes"] > 0
+
+    fetched = bridge.dispatch(
+        {
+            "command": "casefile:getPrompt",
+            "casefileRoot": str(casefile_root),
+            "promptId": prompt_id,
+        }
+    )
+    assert fetched["prompt"]["body"] == "Be careful."
+
+    saved = bridge.dispatch(
+        {
+            "command": "casefile:savePrompt",
+            "casefileRoot": str(casefile_root),
+            "promptId": prompt_id,
+            "prompt": {"body": "Be very careful.", "name": "Code Review v2"},
+        }
+    )
+    assert saved["prompt"]["body"] == "Be very careful."
+    assert saved["prompt"]["name"] == "Code Review v2"
+
+    bridge.dispatch(
+        {
+            "command": "casefile:deletePrompt",
+            "casefileRoot": str(casefile_root),
+            "promptId": prompt_id,
+        }
+    )
+    listed_after = bridge.dispatch(
+        {"command": "casefile:listPrompts", "casefileRoot": str(casefile_root)}
+    )
+    assert listed_after["prompts"] == []
+
+
+def test_create_prompt_requires_name(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    with pytest.raises(ValueError):
+        bridge.dispatch(
+            {
+                "command": "casefile:createPrompt",
+                "casefileRoot": str(casefile_root),
+                "prompt": {"body": "x"},
+            }
+        )
+
+
+def test_get_prompt_requires_prompt_id(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    with pytest.raises(ValueError):
+        bridge.dispatch(
+            {"command": "casefile:getPrompt", "casefileRoot": str(casefile_root)}
+        )
+
+
+def test_chat_send_injects_selected_system_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A `systemPromptId` on chat:send injects the prompt body as a system
+    message *after* the auto-context block (so casefile-wide instructions
+    still apply) and is idempotent across resumed turns."""
+    from assistant_app.casefile import PromptsStore
+
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane_a = tmp_path / "lane_a"
+    lane_a.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:switchLane",
+            "casefileRoot": str(casefile_root),
+            "laneId": "a",
+        }
+    )
+    PromptsStore(casefile_root).create(
+        name="Reviewer", body="You are a reviewer."
+    )
+
+    captured: dict[str, Any] = {}
+
+    class StubChatService:
+        def __init__(self, **_kw: Any) -> None:
+            self._injected: list[Any] = []
+            self._history: list[Any] = []
+
+        def replace_history(self, messages: list[Any]) -> None:
+            self._injected = list(messages)
+            captured.setdefault("system_prompts", []).append(
+                [m.content for m in messages if getattr(m, "role", None) == "system"]
+            )
+
+        @property
+        def history(self) -> list[Any]:
+            return list(self._injected) + list(self._history)
+
+        def send_user_message(self, _text: str, **_kw: Any) -> Any:
+            from assistant_app.models import ChatMessage
+
+            response = ChatMessage(role="assistant", content="ok")
+            self._history.append(response)
+            return response
+
+        def pending_write_tool_calls(self, _msg: Any) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(bridge, "ChatService", StubChatService)
+
+    # First turn: selecting the prompt injects it.
+    bridge.dispatch(
+        {
+            "command": "chat:send",
+            "casefileRoot": str(casefile_root),
+            "laneId": "a",
+            "provider": "openai",
+            "userMessage": "hello",
+            "messages": [],
+            "systemPromptId": "reviewer",
+        }
+    )
+    first_systems = captured["system_prompts"][0]
+    assert any("[DeskAssist prompt: reviewer]" in s for s in first_systems)
+    assert any("You are a reviewer." in s for s in first_systems)
+
+    # Second turn: replaying the same history (which now contains the marker)
+    # must not stack a duplicate prompt message.
+    history_with_prompt = [
+        {
+            "role": "system",
+            "content": "[DeskAssist prompt: reviewer] Reviewer\n\nYou are a reviewer.",
+        },
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "ok"},
+    ]
+    bridge.dispatch(
+        {
+            "command": "chat:send",
+            "casefileRoot": str(casefile_root),
+            "laneId": "a",
+            "provider": "openai",
+            "userMessage": "again",
+            "messages": history_with_prompt,
+            "systemPromptId": "reviewer",
+        }
+    )
+    second_systems = captured["system_prompts"][1]
+    prompt_count = sum(1 for s in second_systems if "[DeskAssist prompt: reviewer]" in s)
+    assert prompt_count == 1
+
+
+def test_chat_send_unknown_prompt_id_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane_a = tmp_path / "lane_a"
+    lane_a.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:switchLane",
+            "casefileRoot": str(casefile_root),
+            "laneId": "a",
+        }
+    )
+
+    class StubChatService:
+        def __init__(self, **_kw: Any) -> None:
+            self._history: list[Any] = []
+
+        def replace_history(self, _messages: list[Any]) -> None:
+            pass
+
+        @property
+        def history(self) -> list[Any]:
+            return list(self._history)
+
+        def send_user_message(self, _text: str, **_kw: Any) -> Any:
+            from assistant_app.models import ChatMessage
+
+            return ChatMessage(role="assistant", content="ok")
+
+        def pending_write_tool_calls(self, _msg: Any) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(bridge, "ChatService", StubChatService)
+
+    with pytest.raises(ValueError):
+        bridge.dispatch(
+            {
+                "command": "chat:send",
+                "casefileRoot": str(casefile_root),
+                "laneId": "a",
+                "provider": "openai",
+                "userMessage": "hi",
+                "messages": [],
+                "systemPromptId": "does-not-exist",
+            }
+        )

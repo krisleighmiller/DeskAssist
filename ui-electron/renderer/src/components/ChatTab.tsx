@@ -8,6 +8,12 @@ interface ChatTabProps {
   pendingApprovals: ToolCall[];
   busy: boolean;
   hasActiveLane: boolean;
+  /**
+   * M4.1: name of the system prompt currently injected into this lane's
+   * chat (or null if none). Shown as a small badge in the controls strip.
+   */
+  activePromptName: string | null;
+  onClearActivePrompt: () => void;
   onSend: (text: string) => void;
   onApproveTools: () => void;
   onDenyTools: () => void;
@@ -58,6 +64,8 @@ export function ChatTab({
   pendingApprovals,
   busy,
   hasActiveLane,
+  activePromptName,
+  onClearActivePrompt,
   onSend,
   onApproveTools,
   onDenyTools,
@@ -101,6 +109,20 @@ export function ChatTab({
           </span>
         ) : (
           <span style={{ color: "#9ca3af" }}>Provider: {provider}</span>
+        )}
+        {activePromptName && (
+          <span className="chat-prompt-badge" title="System prompt injected this turn">
+            Prompt: {activePromptName}
+            <button
+              type="button"
+              className="chat-prompt-clear"
+              onClick={onClearActivePrompt}
+              disabled={busy}
+              title="Clear system prompt"
+            >
+              ×
+            </button>
+          </span>
         )}
       </div>
       <div className="chat-messages" ref={messagesRef}>

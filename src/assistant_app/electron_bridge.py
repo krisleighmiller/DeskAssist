@@ -12,6 +12,7 @@ from assistant_app.casefile import (
     ContextManifest,
     FindingsStore,
     NotesStore,
+    PromptsStore,
     ResolvedContextFile,
     ScopeContext,
     compare_lanes,
@@ -24,6 +25,7 @@ from assistant_app.casefile.service import (
     serialize_finding,
     serialize_scope,
 )
+from assistant_app.casefile.prompts import PromptDraft, PromptSummary
 from assistant_app.chat_service import ChatService
 from assistant_app.filesystem import WorkspaceFilesystem
 from assistant_app.models import ChatMessage
@@ -58,6 +60,30 @@ def _parse_messages(raw_messages: list[dict[str, Any]]) -> list[ChatMessage]:
 
 
 _CONTEXT_MARKER = "You are operating inside a DeskAssist casefile scope."
+_PROMPT_MARKER = "[DeskAssist prompt: "
+
+
+def _history_has_prompt_marker(history: list[ChatMessage], prompt_id: str) -> bool:
+    """True if the given prompt is already injected as a system message.
+
+    The marker carries the prompt id so resuming a turn with the *same*
+    prompt selection is idempotent, but switching prompts mid-conversation
+    correctly appends a new system message rather than de-duping silently.
+    """
+    needle = f"{_PROMPT_MARKER}{prompt_id}]"
+    for msg in history:
+        if msg.role == "system" and isinstance(msg.content, str) and msg.content.startswith(needle):
+            return True
+    return False
+
+
+def _build_prompt_system_message(prompt: PromptDraft) -> str:
+    """Wrap a stored prompt body in a tagged system message.
+
+    The tag (`[DeskAssist prompt: <id>]`) is the marker used by
+    `_history_has_prompt_marker` to keep injection idempotent on retries.
+    """
+    return f"{_PROMPT_MARKER}{prompt.id}] {prompt.name}\n\n{prompt.body}"
 
 
 def _history_has_context_marker(history: list[ChatMessage]) -> bool:
@@ -248,6 +274,33 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
             parsed_history.insert(
                 0, ChatMessage(role="system", content=context_prompt)
             )
+
+    # M4.1: optional user-selected prompt draft. Loaded after the auto-context
+    # block so casefile-wide instructions are still in effect; the user's
+    # prompt augments them rather than replacing them. We tag the injected
+    # message with the prompt id so a resumed turn does not stack duplicates,
+    # but switching prompts mid-conversation does correctly append a new one.
+    raw_prompt_id = request.get("systemPromptId")
+    if (
+        casefile_root is not None
+        and isinstance(raw_prompt_id, str)
+        and raw_prompt_id.strip()
+    ):
+        try:
+            prompt = PromptsStore(casefile_root).get(raw_prompt_id.strip())
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"systemPromptId {raw_prompt_id!r}: {exc}") from exc
+        if not _history_has_prompt_marker(parsed_history, prompt.id):
+            insert_at = 1 if (
+                parsed_history
+                and parsed_history[0].role == "system"
+                and _history_has_context_marker(parsed_history)
+            ) else 0
+            parsed_history.insert(
+                insert_at,
+                ChatMessage(role="system", content=_build_prompt_system_message(prompt)),
+            )
+
     service.replace_history(parsed_history)
     history_before_count = len(service.history)
     if resume_pending:
@@ -706,6 +759,97 @@ def handle_casefile_read_overlay_file(request: dict[str, Any]) -> dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
+# M4.1: prompt drafts
+# ---------------------------------------------------------------------------
+
+
+def _serialize_prompt_summary(summary: PromptSummary) -> dict[str, Any]:
+    return {
+        "id": summary.id,
+        "name": summary.name,
+        "createdAt": summary.created_at,
+        "updatedAt": summary.updated_at,
+        "sizeBytes": summary.size_bytes,
+    }
+
+
+def _serialize_prompt(draft: PromptDraft) -> dict[str, Any]:
+    return {
+        "id": draft.id,
+        "name": draft.name,
+        "body": draft.body,
+        "createdAt": draft.created_at,
+        "updatedAt": draft.updated_at,
+    }
+
+
+def handle_casefile_list_prompts(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    summaries = PromptsStore(root).list()
+    return {"ok": True, "prompts": [_serialize_prompt_summary(s) for s in summaries]}
+
+
+def handle_casefile_get_prompt(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    prompt_id = request.get("promptId")
+    if not isinstance(prompt_id, str) or not prompt_id.strip():
+        raise ValueError("promptId is required")
+    draft = PromptsStore(root).get(prompt_id.strip())
+    return {"ok": True, "prompt": _serialize_prompt(draft)}
+
+
+def _prompt_input(request: dict[str, Any]) -> dict[str, Any]:
+    raw = request.get("prompt")
+    if not isinstance(raw, dict):
+        raise ValueError("prompt object is required")
+    return raw
+
+
+def handle_casefile_create_prompt(request: dict[str, Any]) -> dict[str, Any]:
+    """Create a new prompt draft. The id is derived from the name unless one
+    is explicitly supplied; an existing-id collision is resolved by suffixing
+    `-2`, `-3`, ... so the renderer never has to handle a 409-shaped error.
+    """
+    root = _require_casefile_root(request)
+    raw = _prompt_input(request)
+    name = raw.get("name")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("prompt.name is required")
+    body = raw.get("body") if isinstance(raw.get("body"), str) else ""
+    raw_id = raw.get("id")
+    prompt_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else None
+    draft = PromptsStore(root).create(name=name, body=body, prompt_id=prompt_id)
+    return {"ok": True, "prompt": _serialize_prompt(draft)}
+
+
+def handle_casefile_save_prompt(request: dict[str, Any]) -> dict[str, Any]:
+    """Update an existing prompt's name or body. Either field is optional;
+    omitting both is a no-op (still returns the current draft so the
+    renderer can refresh its view without a separate `get`)."""
+    root = _require_casefile_root(request)
+    prompt_id = request.get("promptId")
+    if not isinstance(prompt_id, str) or not prompt_id.strip():
+        raise ValueError("promptId is required")
+    raw = _prompt_input(request)
+    update_kwargs: dict[str, Any] = {}
+    if "name" in raw and isinstance(raw["name"], str):
+        update_kwargs["name"] = raw["name"]
+    if "body" in raw and isinstance(raw["body"], str):
+        update_kwargs["body"] = raw["body"]
+    draft = PromptsStore(root).save(prompt_id.strip(), **update_kwargs)
+    return {"ok": True, "prompt": _serialize_prompt(draft)}
+
+
+def handle_casefile_delete_prompt(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    prompt_id = request.get("promptId")
+    if not isinstance(prompt_id, str) or not prompt_id.strip():
+        raise ValueError("promptId is required")
+    PromptsStore(root).delete(prompt_id.strip())
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # M3.5c: comparison chat handlers
 # ---------------------------------------------------------------------------
 
@@ -903,6 +1047,11 @@ _HANDLERS = {
     "casefile:readOverlayFile": handle_casefile_read_overlay_file,
     "casefile:openComparison": handle_casefile_open_comparison,
     "casefile:sendComparisonChat": handle_casefile_send_comparison_chat,
+    "casefile:listPrompts": handle_casefile_list_prompts,
+    "casefile:getPrompt": handle_casefile_get_prompt,
+    "casefile:createPrompt": handle_casefile_create_prompt,
+    "casefile:savePrompt": handle_casefile_save_prompt,
+    "casefile:deletePrompt": handle_casefile_delete_prompt,
 }
 
 

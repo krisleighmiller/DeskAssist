@@ -42,6 +42,14 @@ contextBridge.exposeInMainWorld("assistantApi", {
   readOverlayFile: (laneId, path, maxChars) =>
     ipcRenderer.invoke("casefile:readOverlayFile", { laneId, path, maxChars }),
 
+  // M4.1: prompt drafts (casefile-scoped).
+  listPrompts: () => ipcRenderer.invoke("casefile:listPrompts"),
+  getPrompt: (promptId) => ipcRenderer.invoke("casefile:getPrompt", { promptId }),
+  createPrompt: (prompt) => ipcRenderer.invoke("casefile:createPrompt", { prompt }),
+  savePrompt: (promptId, prompt) =>
+    ipcRenderer.invoke("casefile:savePrompt", { promptId, prompt }),
+  deletePrompt: (promptId) => ipcRenderer.invoke("casefile:deletePrompt", { promptId }),
+
   // Chat (against the currently active casefile + lane).
   sendChat: (payload) => ipcRenderer.invoke("chat:send", payload),
 

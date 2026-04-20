@@ -12,6 +12,9 @@ import type {
   LaneAttachmentInput,
   LaneComparisonDto,
   OverlayTreeDto,
+  PromptDraftDto,
+  PromptInputDto,
+  PromptSummaryDto,
   Provider,
   RegisterLaneInput,
   ToolCall,
@@ -206,6 +209,94 @@ export function App(): JSX.Element {
       console.warn("listFindings failed", error);
     }
   }, [casefile]);
+
+  // ----- M4.1: prompt drafts (casefile-scoped) + per-lane selection -----
+  // The list itself is stored once per casefile; the "which prompt is
+  // currently injected into chat" selection is per-lane (so lane A can
+  // use the reviewer prompt while lane B runs without one).
+
+  const [prompts, setPrompts] = useState<PromptSummaryDto[]>([]);
+  const [promptsLoading, setPromptsLoading] = useState(false);
+  const [promptsError, setPromptsError] = useState<string | null>(null);
+  const [selectedPromptByLane, setSelectedPromptByLane] = useState<
+    Map<string, string | null>
+  >(() => new Map());
+
+  const reloadPrompts = useCallback(async () => {
+    if (!casefile) {
+      setPrompts([]);
+      return;
+    }
+    setPromptsLoading(true);
+    try {
+      const list = await api().listPrompts();
+      setPrompts(list);
+      setPromptsError(null);
+    } catch (error) {
+      setPromptsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPromptsLoading(false);
+    }
+  }, [casefile]);
+
+  const handleCreatePrompt = useCallback(
+    async (input: PromptInputDto): Promise<PromptDraftDto> => {
+      const created = await api().createPrompt(input);
+      await reloadPrompts();
+      return created;
+    },
+    [reloadPrompts]
+  );
+
+  const handleSavePrompt = useCallback(
+    async (promptId: string, input: PromptInputDto): Promise<PromptDraftDto> => {
+      const saved = await api().savePrompt(promptId, input);
+      await reloadPrompts();
+      return saved;
+    },
+    [reloadPrompts]
+  );
+
+  const handleDeletePrompt = useCallback(
+    async (promptId: string) => {
+      await api().deletePrompt(promptId);
+      // A deleted prompt cannot remain selected on any lane: silently drop
+      // the selection so chat doesn't keep trying to inject a missing id.
+      setSelectedPromptByLane((prev) => {
+        const next = new Map(prev);
+        for (const [key, value] of prev) {
+          if (value === promptId) next.set(key, null);
+        }
+        return next;
+      });
+      await reloadPrompts();
+    },
+    [reloadPrompts]
+  );
+
+  const handleLoadPrompt = useCallback(async (promptId: string) => {
+    return api().getPrompt(promptId);
+  }, []);
+
+  const selectedPromptId = sessionKey
+    ? selectedPromptByLane.get(sessionKey) ?? null
+    : null;
+
+  const handleSelectPromptForChat = useCallback(
+    (promptId: string | null) => {
+      if (!sessionKey) return;
+      setSelectedPromptByLane((prev) => {
+        const next = new Map(prev);
+        next.set(sessionKey, promptId);
+        return next;
+      });
+    },
+    [sessionKey]
+  );
+
+  const activePromptName = selectedPromptId
+    ? prompts.find((p) => p.id === selectedPromptId)?.name ?? null
+    : null;
 
   // ----- Lane comparison -----
 
@@ -449,6 +540,11 @@ export function App(): JSX.Element {
   useEffect(() => {
     void reloadContext();
   }, [reloadContext]);
+
+  // Reload prompts whenever the casefile changes.
+  useEffect(() => {
+    void reloadPrompts();
+  }, [reloadPrompts]);
 
   // Reload overlay trees whenever the active lane changes (or the toggle
   // flips on); refresh is also implicit after registerLane / setParent /
@@ -908,6 +1004,7 @@ export function App(): JSX.Element {
           userMessage: value,
           allowWriteTools: false,
           resumePendingToolCalls: false,
+          systemPromptId: selectedPromptId,
         });
         const delta = Array.isArray(response.messages) ? response.messages : [];
         const nextMessages =
@@ -956,6 +1053,7 @@ export function App(): JSX.Element {
       session.messages,
       updateSession,
       provider,
+      selectedPromptId,
       refreshTree,
       refreshOpenTabsFromDisk,
       reloadFindings,
@@ -973,6 +1071,7 @@ export function App(): JSX.Element {
         userMessage: "",
         allowWriteTools: true,
         resumePendingToolCalls: true,
+        systemPromptId: selectedPromptId,
       });
       const delta = Array.isArray(response.messages) ? response.messages : [];
       updateSession((prev) => ({
@@ -1002,6 +1101,7 @@ export function App(): JSX.Element {
     casefile,
     activeLaneId,
     provider,
+    selectedPromptId,
     updateSession,
     refreshTree,
     refreshOpenTabsFromDisk,
@@ -1078,6 +1178,8 @@ export function App(): JSX.Element {
               pendingApprovals: session.pendingApprovals,
               busy: chatBusy,
               hasActiveLane: Boolean(activeLane),
+              activePromptName,
+              onClearActivePrompt: () => handleSelectPromptForChat(null),
               onSend: sendMessage,
               onApproveTools: approveTools,
               onDenyTools: denyTools,
@@ -1126,6 +1228,19 @@ export function App(): JSX.Element {
               busy: comparisonChatBusy,
               onSend: sendComparisonChat,
               onClose: handleCloseComparisonChat,
+            }}
+            prompts={{
+              hasCasefile: Boolean(casefile),
+              hasActiveLane: Boolean(activeLane),
+              prompts,
+              loading: promptsLoading,
+              error: promptsError,
+              selectedPromptId,
+              onSelectForChat: handleSelectPromptForChat,
+              onCreate: handleCreatePrompt,
+              onSave: handleSavePrompt,
+              onDelete: handleDeletePrompt,
+              onLoad: handleLoadPrompt,
             }}
           />
         </section>
