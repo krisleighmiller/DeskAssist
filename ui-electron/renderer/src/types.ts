@@ -46,6 +46,26 @@ export interface ApiKeyStatus {
   storageBackend: "keychain" | "file";
 }
 
+/** Per-provider preferred model id. Empty string means "use the backend
+ * default" — the renderer should display the default as a placeholder so
+ * the user knows what they'd get without overriding. Stored separately
+ * from `ApiKeyStatus` because model ids are not secret and live in plain
+ * user-data, while keys are kept in the system keychain when available. */
+export interface ProviderModels {
+  openai: string;
+  anthropic: string;
+  deepseek: string;
+}
+
+/** Backend defaults, mirrored here for placeholder display in the API
+ * keys / models dialog and the toolbar model picker. Keep in sync with
+ * `ChatService._default_models` in `assistant_app/chat_service.py`. */
+export const DEFAULT_PROVIDER_MODELS: ProviderModels = {
+  openai: "gpt-4o-mini",
+  anthropic: "claude-haiku-4-5",
+  deepseek: "deepseek-chat",
+};
+
 export interface FileTreeNode {
   name: string;
   path: string;
@@ -105,6 +125,23 @@ export interface RegisterLaneInput {
   id?: string;
   parentId?: string | null;
   attachments?: LaneAttachmentInput[];
+}
+
+// M4.6: every field is independently optional. Omitting a field means
+// "leave the existing value unchanged"; the bridge enforces this via
+// JSON key presence.
+export interface LaneUpdateInput {
+  name?: string;
+  kind?: LaneKind;
+  root?: string;
+}
+
+// M4.6: `casefile:updateLane` may surface a non-blocking "another lane
+// already references this directory" warning alongside the new
+// snapshot. The renderer is responsible for displaying it.
+export interface UpdateLaneResult {
+  casefile: CasefileSnapshot;
+  rootConflict: { conflictingLaneId: string } | null;
 }
 
 export interface ContextResolvedFileDto {
@@ -346,6 +383,15 @@ export interface AssistantApi {
     laneId: string,
     attachments: LaneAttachmentInput[]
   ) => Promise<CasefileSnapshot>;
+
+  // M4.6: lane CRUD (edit/remove) + casefile reset (hard/soft).
+  updateLane: (
+    laneId: string,
+    update: LaneUpdateInput
+  ) => Promise<UpdateLaneResult>;
+  removeLane: (laneId: string) => Promise<CasefileSnapshot>;
+  hardResetCasefile: () => Promise<CasefileSnapshot>;
+  softResetCasefile: (keepPrompts: boolean) => Promise<CasefileSnapshot>;
   getContext: () => Promise<ContextManifestDto>;
   saveContext: (manifest: { files: string[]; autoIncludeMaxBytes: number }) =>
     Promise<ContextManifestDto>;
@@ -404,6 +450,10 @@ export interface AssistantApi {
     deepseek?: string;
   }) => Promise<ApiKeyStatus>;
   clearApiKey: (provider: Provider) => Promise<ApiKeyStatus>;
+
+  // Per-provider preferred model. Empty string means "use backend default".
+  getProviderModels: () => Promise<ProviderModels>;
+  saveProviderModels: (payload: Partial<ProviderModels>) => Promise<ProviderModels>;
   onOpenApiKeys: (handler: () => void) => () => void;
 }
 

@@ -48,12 +48,30 @@ export function ComparisonChatTab({
 }: ComparisonChatTabProps): JSX.Element {
   const [input, setInput] = useState("");
   const messagesRef = useRef<HTMLDivElement>(null);
+  // Same elapsed-time ticker as `ChatTab` so comparison chats also surface
+  // a visible "agent working" indicator instead of just a disabled Send.
+  const [busyStart, setBusyStart] = useState<number | null>(null);
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (busy) {
+      setBusyStart((prev) => prev ?? Date.now());
+    } else {
+      setBusyStart(null);
+    }
+  }, [busy]);
+
+  useEffect(() => {
+    if (busyStart === null) return;
+    const interval = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(interval);
+  }, [busyStart]);
 
   useEffect(() => {
     if (messagesRef.current) {
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
     }
-  }, [session?.messages]);
+  }, [session?.messages, busy]);
 
   if (!session) {
     return (
@@ -86,6 +104,11 @@ export function ComparisonChatTab({
   const keyMissing = !providerHasKey(provider, keyStatus);
   const inputDisabled = busy;
   const laneNames = session.lanes.map((l) => l.name).join(" ↔ ");
+  const elapsedSeconds = busyStart === null ? 0 : Math.max(0, Math.floor((now - busyStart) / 1000));
+  const elapsedLabel =
+    elapsedSeconds < 60
+      ? `${elapsedSeconds}s`
+      : `${Math.floor(elapsedSeconds / 60)}m${(elapsedSeconds % 60).toString().padStart(2, "0")}s`;
 
   return (
     <div className="chat">
@@ -127,6 +150,16 @@ export function ComparisonChatTab({
             </div>
           );
         })}
+        {busy && (
+          <div className="msg assistant chat-working" role="status" aria-live="polite">
+            <span className="role">agent</span>
+            <span className="chat-working-spinner" aria-hidden="true" />
+            <span className="chat-working-text">
+              Thinking...
+              <span className="chat-working-elapsed"> · {elapsedLabel}</span>
+            </span>
+          </div>
+        )}
       </div>
       <form
         className="chat-form"

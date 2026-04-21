@@ -7,6 +7,13 @@ contextBridge.exposeInMainWorld("assistantApi", {
   chooseLaneRoot: () => ipcRenderer.invoke("casefile:chooseLaneRoot"),
   registerLane: (lane) => ipcRenderer.invoke("casefile:registerLane", { lane }),
   switchLane: (laneId) => ipcRenderer.invoke("casefile:switchLane", { laneId }),
+  // M4.6: lane CRUD + casefile reset.
+  updateLane: (laneId, update) =>
+    ipcRenderer.invoke("casefile:updateLane", { laneId, ...update }),
+  removeLane: (laneId) => ipcRenderer.invoke("casefile:removeLane", { laneId }),
+  hardResetCasefile: () => ipcRenderer.invoke("casefile:hardReset"),
+  softResetCasefile: (keepPrompts) =>
+    ipcRenderer.invoke("casefile:softReset", { keepPrompts }),
   listChat: (laneId) => ipcRenderer.invoke("casefile:listChat", { laneId }),
 
   // Lane-scoped filesystem (rooted at the active lane).
@@ -86,6 +93,12 @@ contextBridge.exposeInMainWorld("assistantApi", {
   getApiKeyStatus: () => ipcRenderer.invoke("keys:getStatus"),
   saveApiKeys: (payload) => ipcRenderer.invoke("keys:save", payload),
   clearApiKey: (provider) => ipcRenderer.invoke("keys:clear", { provider }),
+
+  // Per-provider preferred model. Stored separately from keys (plain
+  // user-data file, not the keychain). Empty string for a provider means
+  // "use the backend default".
+  getProviderModels: () => ipcRenderer.invoke("models:get"),
+  saveProviderModels: (payload) => ipcRenderer.invoke("models:save", payload),
   onOpenApiKeys: (handler) => {
     const wrapped = () => handler();
     ipcRenderer.on("app:open-api-keys", wrapped);

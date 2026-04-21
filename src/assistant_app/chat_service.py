@@ -12,6 +12,14 @@ from assistant_app.providers import (
 from assistant_app.tools import ToolRegistry, ToolSpec, build_default_tool_registry
 
 
+# Cap on assistant↔tool round-trips per user turn. Real agentic turns regularly
+# need more than a handful of tool calls (e.g. list_dir → read_file ×N → answer),
+# so the limit is set high enough to allow normal exploration but low enough to
+# stop a runaway loop from billing out the user's API key. Bumped from 8 after
+# DeepSeek hit the cap on routine multi-file reads.
+MAX_TOOL_TURNS = 32
+
+
 class ChatService:
     def __init__(
         self,
@@ -51,7 +59,7 @@ class ChatService:
         )
         self._default_models = {
             "openai": "gpt-4o-mini",
-            "anthropic": "claude-3-5-haiku-latest",
+            "anthropic": "claude-haiku-4-5",
             "deepseek": "deepseek-chat",
         }
         if model_defaults:
@@ -116,7 +124,7 @@ class ChatService:
         if latest.role != "assistant" or not latest.tool_calls:
             raise ValueError("No pending assistant tool calls to resume")
         request_messages = list(self._history)
-        for _ in range(8):
+        for _ in range(MAX_TOOL_TURNS):
             latest = request_messages[-1]
             if latest.role == "assistant" and latest.tool_calls:
                 if self._tool_calls_require_write(latest.tool_calls) and not allow_write_tools:
@@ -140,7 +148,10 @@ class ChatService:
             if self._tool_calls_require_write(response.tool_calls) and not allow_write_tools:
                 self._history = request_messages
                 return response
-        raise RuntimeError("Tool loop exceeded maximum turns")
+        raise RuntimeError(
+            f"Tool loop exceeded maximum turns ({MAX_TOOL_TURNS}). "
+            "The model kept requesting tool calls without producing a final answer."
+        )
 
     def list_tool_commands(self, include_disabled: bool = False) -> list[str]:
         """Return tool commands for UI/planner discovery.
@@ -260,7 +271,7 @@ class ChatService:
         allow_write_tools: bool,
     ) -> ChatMessage:
         tools = self._build_tool_definitions()
-        for _ in range(8):
+        for _ in range(MAX_TOOL_TURNS):
             request = ChatRequest(
                 messages=request_messages,
                 model=self._resolve_model_name(model),
@@ -279,4 +290,7 @@ class ChatService:
                 allow_write_tools=allow_write_tools,
             )
             request_messages.extend(tool_messages)
-        raise RuntimeError("Tool loop exceeded maximum turns")
+        raise RuntimeError(
+            f"Tool loop exceeded maximum turns ({MAX_TOOL_TURNS}). "
+            "The model kept requesting tool calls without producing a final answer."
+        )

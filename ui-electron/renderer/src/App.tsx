@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ApiKeyStatus,
+  ProviderModels,
   CasefileSnapshot,
   ChatMessage,
   ComparisonSession,
@@ -12,6 +13,8 @@ import type {
   InboxSourceDto,
   InboxSourceInput,
   LaneAttachmentInput,
+  LaneUpdateInput,
+  UpdateLaneResult,
   LaneComparisonDto,
   OverlayTreeDto,
   PromptDraftDto,
@@ -30,6 +33,7 @@ import { FileTree } from "./components/FileTree";
 import { EditorPane, type OpenTab } from "./components/EditorPane";
 import { RightPanel, type RightTabKey } from "./components/RightPanel";
 import { ApiKeysDialog } from "./components/ApiKeysDialog";
+import { Splitter } from "./components/Splitter";
 import { languageFromPath } from "./lib/language";
 
 const PROVIDER_STORAGE_KEY = "deskassist.selectedProvider";
@@ -40,6 +44,12 @@ const DEFAULT_KEY_STATUS: ApiKeyStatus = {
   anthropicConfigured: false,
   deepseekConfigured: false,
   storageBackend: "file",
+};
+
+const EMPTY_PROVIDER_MODELS: ProviderModels = {
+  openai: "",
+  anthropic: "",
+  deepseek: "",
 };
 
 interface LaneSessionState {
@@ -77,8 +87,78 @@ function diffTabKey(leftId: string, rightId: string, path: string): string {
   return `diff:${leftId}\u21D4${rightId}:${path}`;
 }
 
+// Workbench column-width defaults + persistence (M4.7).
+//
+// The three-column workbench (file tree | editor | right panel) used to
+// be a CSS grid with hard-coded `260px 1fr 420px`. That made the right
+// panel's tab strip overflow off-screen on narrower displays. We now
+// own the side-pane widths in React state, persisted to localStorage,
+// with drag handles between the panes. The center pane stays `flex: 1`.
+const WORKBENCH_LEFT_DEFAULT = 260;
+const WORKBENCH_LEFT_MIN = 160;
+const WORKBENCH_LEFT_MAX = 600;
+const WORKBENCH_RIGHT_DEFAULT = 420;
+const WORKBENCH_RIGHT_MIN = 280;
+const WORKBENCH_RIGHT_MAX = 900;
+const LEFT_WIDTH_STORAGE_KEY = "deskassist:workbench:leftWidth";
+const RIGHT_WIDTH_STORAGE_KEY = "deskassist:workbench:rightWidth";
+
+function readPersistedWidth(
+  key: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallback;
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed)) {
+      return Math.min(max, Math.max(min, parsed));
+    }
+  } catch {
+    // localStorage can throw in private browsing / sandboxed contexts.
+  }
+  return fallback;
+}
+
 export function App(): JSX.Element {
   // ----- Casefile + active lane -----
+
+  // ----- Workbench column widths (M4.7) -----
+  const [leftPaneWidth, setLeftPaneWidth] = useState<number>(() =>
+    readPersistedWidth(
+      LEFT_WIDTH_STORAGE_KEY,
+      WORKBENCH_LEFT_DEFAULT,
+      WORKBENCH_LEFT_MIN,
+      WORKBENCH_LEFT_MAX
+    )
+  );
+  const [rightPaneWidth, setRightPaneWidth] = useState<number>(() =>
+    readPersistedWidth(
+      RIGHT_WIDTH_STORAGE_KEY,
+      WORKBENCH_RIGHT_DEFAULT,
+      WORKBENCH_RIGHT_MIN,
+      WORKBENCH_RIGHT_MAX
+    )
+  );
+  // Persist on every change. Splitter drags are coalesced by React's
+  // batching so we won't write more than once per frame in practice.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LEFT_WIDTH_STORAGE_KEY, String(leftPaneWidth));
+    } catch {
+      // ignore
+    }
+  }, [leftPaneWidth]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(RIGHT_WIDTH_STORAGE_KEY, String(rightPaneWidth));
+    } catch {
+      // ignore
+    }
+  }, [rightPaneWidth]);
 
   const [casefile, setCasefile] = useState<CasefileSnapshot | null>(null);
   const activeLaneId = casefile?.activeLaneId ?? null;
@@ -527,6 +607,62 @@ export function App(): JSX.Element {
     []
   );
 
+  // M4.6: lane CRUD + casefile reset.
+  const handleUpdateLane = useCallback(
+    async (
+      laneId: string,
+      update: LaneUpdateInput
+    ): Promise<UpdateLaneResult> => {
+      try {
+        const result = await api().updateLane(laneId, update);
+        setCasefile(result.casefile);
+        // The component that called us is responsible for surfacing the
+        // root-conflict warning; we just propagate it back.
+        return result;
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const handleRemoveLane = useCallback(
+    async (laneId: string) => {
+      try {
+        const snapshot = await api().removeLane(laneId);
+        setCasefile(snapshot);
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const handleHardResetCasefile = useCallback(async () => {
+    try {
+      const snapshot = await api().hardResetCasefile();
+      setCasefile(snapshot);
+    } catch (error) {
+      setTreeError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }, []);
+
+  const handleSoftResetCasefile = useCallback(
+    async (keepPrompts: boolean) => {
+      try {
+        const snapshot = await api().softResetCasefile(keepPrompts);
+        setCasefile(snapshot);
+      } catch (error) {
+        setTreeError(error instanceof Error ? error.message : String(error));
+        throw error;
+      }
+    },
+    []
+  );
+
   const [showOverlays, setShowOverlays] = useState(false);
   const [overlayTrees, setOverlayTrees] = useState<OverlayTreeDto[]>([]);
   const [overlaysLoading, setOverlaysLoading] = useState(false);
@@ -553,6 +689,26 @@ export function App(): JSX.Element {
 
   const [keyStatus, setKeyStatus] = useState<ApiKeyStatus>(DEFAULT_KEY_STATUS);
   const [keysOpen, setKeysOpen] = useState(false);
+  // Per-provider model overrides. Empty string = "use backend default".
+  // Loaded from main.js (plain user-data file) on startup; the
+  // ApiKeysDialog edits and persists this via the bridge.
+  const [providerModels, setProviderModels] =
+    useState<ProviderModels>(EMPTY_PROVIDER_MODELS);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next = await api().getProviderModels();
+        if (!cancelled) setProviderModels(next);
+      } catch (error) {
+        console.warn("getProviderModels failed", error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const refreshKeyStatus = useCallback(async () => {
     try {
@@ -906,6 +1062,7 @@ export function App(): JSX.Element {
         const response = await api().sendComparisonChat({
           laneIds: comparisonSession.laneIds,
           provider,
+          model: providerModels[provider] || null,
           messages: historyBeforeTurn,
           userMessage: value,
           resumePendingToolCalls: false,
@@ -946,7 +1103,7 @@ export function App(): JSX.Element {
         setComparisonChatBusy(false);
       }
     },
-    [casefile, comparisonChatBusy, comparisonSession, provider]
+    [casefile, comparisonChatBusy, comparisonSession, provider, providerModels]
   );
 
   const handleOpenDiff = useCallback(
@@ -1142,6 +1299,7 @@ export function App(): JSX.Element {
       try {
         const response = await api().sendChat({
           provider,
+          model: providerModels[provider] || null,
           messages: historyBeforeTurn,
           userMessage: value,
           allowWriteTools: false,
@@ -1195,6 +1353,7 @@ export function App(): JSX.Element {
       session.messages,
       updateSession,
       provider,
+      providerModels,
       selectedPromptId,
       refreshTree,
       refreshOpenTabsFromDisk,
@@ -1209,6 +1368,7 @@ export function App(): JSX.Element {
     try {
       const response = await api().sendChat({
         provider,
+        model: providerModels[provider] || null,
         messages: historyBeforeTurn,
         userMessage: "",
         allowWriteTools: true,
@@ -1243,6 +1403,7 @@ export function App(): JSX.Element {
     casefile,
     activeLaneId,
     provider,
+    providerModels,
     selectedPromptId,
     updateSession,
     refreshTree,
@@ -1273,12 +1434,13 @@ export function App(): JSX.Element {
         provider={provider}
         onProviderChange={setProvider}
         keyStatus={keyStatus}
+        providerModels={providerModels}
         onChooseCasefile={handleChooseCasefile}
         onOpenKeys={() => setKeysOpen(true)}
         onSwitchLane={handleSwitchLane}
       />
       <div className="workbench">
-        <section className="pane">
+        <section className="pane" style={{ width: leftPaneWidth }}>
           <header className="pane-header">{activeLane ? activeLane.name : "Workspace"}</header>
           <div className="pane-body">
             <FileTree
@@ -1299,6 +1461,15 @@ export function App(): JSX.Element {
             />
           </div>
         </section>
+        <Splitter
+          width={leftPaneWidth}
+          min={WORKBENCH_LEFT_MIN}
+          max={WORKBENCH_LEFT_MAX}
+          defaultWidth={WORKBENCH_LEFT_DEFAULT}
+          side="left"
+          onResize={setLeftPaneWidth}
+          ariaLabel="Resize workspace panel"
+        />
         <section className="pane editor-pane">
           <EditorPane
             tabs={session.tabs}
@@ -1309,7 +1480,16 @@ export function App(): JSX.Element {
             onSave={handleSaveTab}
           />
         </section>
-        <section className="pane">
+        <Splitter
+          width={rightPaneWidth}
+          min={WORKBENCH_RIGHT_MIN}
+          max={WORKBENCH_RIGHT_MAX}
+          defaultWidth={WORKBENCH_RIGHT_DEFAULT}
+          side="right"
+          onResize={setRightPaneWidth}
+          ariaLabel="Resize side panel"
+        />
+        <section className="pane" style={{ width: rightPaneWidth }}>
           <RightPanel
             activeTab={rightTab}
             onTabChange={setRightTab}
@@ -1362,6 +1542,10 @@ export function App(): JSX.Element {
               onSaveContext: handleSaveContext,
               onSetLaneParent: handleSetLaneParent,
               onUpdateLaneAttachments: handleUpdateLaneAttachments,
+              onUpdateLane: handleUpdateLane,
+              onRemoveLane: handleRemoveLane,
+              onHardResetCasefile: handleHardResetCasefile,
+              onSoftResetCasefile: handleSoftResetCasefile,
             }}
             compareChat={{
               provider,
@@ -1420,6 +1604,8 @@ export function App(): JSX.Element {
           status={keyStatus}
           onClose={() => setKeysOpen(false)}
           onStatusChange={setKeyStatus}
+          models={providerModels}
+          onModelsChange={setProviderModels}
         />
       )}
     </div>

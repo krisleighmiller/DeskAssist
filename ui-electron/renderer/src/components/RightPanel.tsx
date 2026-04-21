@@ -13,6 +13,8 @@ import type {
   InboxSourceInput,
   Lane,
   LaneAttachmentInput,
+  LaneUpdateInput,
+  UpdateLaneResult,
   LaneComparisonDto,
   PromptDraftDto,
   PromptInputDto,
@@ -98,6 +100,14 @@ interface RightPanelProps {
       laneId: string,
       attachments: LaneAttachmentInput[]
     ) => Promise<void>;
+    // M4.6: lane CRUD + casefile reset.
+    onUpdateLane: (
+      laneId: string,
+      update: LaneUpdateInput
+    ) => Promise<UpdateLaneResult>;
+    onRemoveLane: (laneId: string) => Promise<void>;
+    onHardResetCasefile: () => Promise<void>;
+    onSoftResetCasefile: (keepPrompts: boolean) => Promise<void>;
   };
   compareChat: {
     provider: Provider;
@@ -246,6 +256,10 @@ export function RightPanel({
             onSaveContext={lanes.onSaveContext}
             onSetLaneParent={lanes.onSetLaneParent}
             onUpdateLaneAttachments={lanes.onUpdateLaneAttachments}
+            onUpdateLane={lanes.onUpdateLane}
+            onRemoveLane={lanes.onRemoveLane}
+            onHardResetCasefile={lanes.onHardResetCasefile}
+            onSoftResetCasefile={lanes.onSoftResetCasefile}
           />
         )}
         {activeTab === "compare" && (

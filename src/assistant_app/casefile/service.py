@@ -69,6 +69,74 @@ class CasefileService:
     def set_lane_parent(self, lane_id: str, parent_id: str | None) -> CasefileSnapshot:
         return self.store.set_lane_parent(lane_id, parent_id)
 
+    def update_lane(
+        self,
+        lane_id: str,
+        *,
+        name: str | None = None,
+        kind: str | None = None,
+        root: Path | None = None,
+    ) -> CasefileSnapshot:
+        """Update an existing lane's `name` / `kind` / `root` (M4.6).
+
+        Each field is independently optional. Parent and attachments
+        have their own dedicated mutators (`set_lane_parent`,
+        `update_lane_attachments`); the lane id is intentionally
+        immutable here.
+        """
+        return self.store.update_lane(
+            lane_id, name=name, kind=kind, root=root,
+        )
+
+    def remove_lane(self, lane_id: str) -> CasefileSnapshot:
+        """Remove a lane from the casefile (M4.6).
+
+        On-disk per-lane data files (`chats/<id>.jsonl`,
+        `notes/<id>.md`, findings tagged with the lane id) are
+        intentionally **not** deleted. Re-registering a lane with the
+        same id will surface the prior data again. This mirrors the
+        "hidden but recoverable" decision from the M4.6 spec.
+        """
+        return self.store.remove_lane(lane_id)
+
+    def hard_reset(self) -> CasefileSnapshot:
+        """Restore the casefile to its pre-DeskAssist state (M4.6).
+
+        Wipes the entire `.casefile/` directory and re-initializes it,
+        so the returned snapshot is identical in shape to one from a
+        first-time `casefile:open` against a directory that had never
+        been opened before.
+        """
+        self.store.hard_reset()
+        return self.open()
+
+    def soft_reset(self, *, keep_prompts: bool) -> CasefileSnapshot:
+        """Clear per-task scratch but keep durable setup (M4.6)."""
+        self.store.soft_reset(keep_prompts=keep_prompts)
+        return self.snapshot()
+
+    def find_root_conflict(
+        self, root: Path, *, exclude_lane_id: str | None = None
+    ) -> str | None:
+        """Return the id of an existing lane whose root resolves to `root`.
+
+        Used by the M4.6 lane-edit / lane-register paths to surface a
+        non-blocking warning when a new or edited lane points at a
+        directory another lane already references. The system permits
+        overlapping roots; this helper just makes the overlap visible.
+        """
+        snapshot = self.store.load_snapshot()
+        try:
+            resolved = self.store._resolve_lane_root(root)
+        except OSError:
+            return None
+        for lane in snapshot.lanes:
+            if exclude_lane_id is not None and lane.id == exclude_lane_id:
+                continue
+            if lane.root == resolved:
+                return lane.id
+        return None
+
     # ----- context manifest -----
 
     def context_store(self) -> ContextManifestStore:

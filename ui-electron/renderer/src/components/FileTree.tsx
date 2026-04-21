@@ -158,6 +158,37 @@ function relativeFromBase(absolute: string, base: string): string | null {
   return null;
 }
 
+/** Translate a virtual overlay path (e.g. `_ancestors/task/ash_notes`) to
+ * the real on-disk absolute path by joining the matching overlay's `root`
+ * with the path segment after the prefix. Returns null if no overlay
+ * prefix matches the input — callers should treat that as "leave the
+ * payload virtual". The match is on full path segments so `_ancestors/foo`
+ * does not match `_ancestors/foobar`. We try the longest prefixes first
+ * because main.js can register nested overlays (e.g. an attachment
+ * mounted under an ancestor). */
+function resolveVirtualToReal(
+  virtualPath: string,
+  overlays: OverlayTreeDto[] | undefined
+): string | null {
+  if (!overlays || overlays.length === 0) return null;
+  const candidates = overlays
+    .filter((o) => typeof o.root === "string" && o.root.length > 0)
+    .slice()
+    .sort((a, b) => b.prefix.length - a.prefix.length);
+  for (const overlay of candidates) {
+    const prefix = overlay.prefix;
+    if (virtualPath === prefix) {
+      return overlay.root;
+    }
+    if (virtualPath.startsWith(prefix + "/")) {
+      const rest = virtualPath.slice(prefix.length + 1);
+      const base = overlay.root.replace(/[\\/]+$/, "");
+      return rest ? `${base}/${rest}` : base;
+    }
+  }
+  return null;
+}
+
 async function copyToClipboard(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
@@ -188,6 +219,11 @@ export const FILETREE_DRAG_MIME = "application/x-deskassist-tree-node";
 export interface FileTreeDragPayload {
   relativePath: string | null;
   absolutePath: string;
+  /** Set for overlay nodes (e.g. `_ancestors/<lane>/foo.md`). Drop targets
+   * that need the model-facing virtual path (chat composer) read this;
+   * targets that need a real on-disk path (lane attachment editor) read
+   * `absolutePath` instead. Undefined for non-overlay nodes. */
+  virtualPath?: string;
   type: "file" | "dir";
 }
 
@@ -385,15 +421,24 @@ export function FileTree({
   };
 
   /** Build a `FileTreeDragPayload` for an absolute (or virtual) tree-node
-   * path. Returns null if the node can't be located in the current tree
-   * — this is defensive: stale selection paths shouldn't crash a drag. */
+   * path. For overlay nodes (virtual paths like `_ancestors/<lane>/...`)
+   * `absolutePath` carries the *real* on-disk path resolved through the
+   * overlay's `root`, so drop targets like the lane attachment editor get
+   * a path the Python bridge can actually resolve. The virtual path stays
+   * available via `virtualPath` for consumers (e.g. the chat composer's
+   * text-fallback) that want to surface the model-facing prefix. */
   const buildPayload = (path: string, type: "file" | "dir"): FileTreeDragPayload => {
     const isVirtual = path.startsWith("_");
-    const relativePath = isVirtual
-      ? null
-      : casefileRoot
-        ? relativeFromBase(path, casefileRoot)
-        : null;
+    if (isVirtual) {
+      const real = resolveVirtualToReal(path, overlays);
+      return {
+        relativePath: null,
+        absolutePath: real ?? path,
+        virtualPath: path,
+        type,
+      };
+    }
+    const relativePath = casefileRoot ? relativeFromBase(path, casefileRoot) : null;
     return { relativePath, absolutePath: path, type };
   };
 
@@ -410,10 +455,13 @@ export function FileTree({
       // files-by-default. Drop targets that care (e.g. the context
       // editor) only consume the relative path anyway.
       payloads = Array.from(selected).map((p) => buildPayload(p, p === node.path ? node.type : "file"));
-      plainText = payloads.map((p) => p.relativePath ?? p.absolutePath).join("\n");
+      plainText = payloads
+        .map((p) => p.relativePath ?? p.virtualPath ?? p.absolutePath)
+        .join("\n");
     } else {
       payloads = [buildPayload(node.path, node.type)];
-      plainText = payloads[0].relativePath ?? payloads[0].absolutePath;
+      plainText =
+        payloads[0].relativePath ?? payloads[0].virtualPath ?? payloads[0].absolutePath;
     }
     event.dataTransfer.setData(FILETREE_DRAG_MIME, JSON.stringify(payloads));
     // Plain-text fallback so the payload drops cleanly into any text

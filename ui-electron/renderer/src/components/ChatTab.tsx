@@ -1,6 +1,35 @@
 import { useEffect, useRef, useState } from "react";
 import type { ApiKeyStatus, ChatMessage, Provider, ToolCall } from "../types";
 
+/** Last assistant tool-call burst, used by the "working" indicator to give
+ * the user a hint about *what* the agent is currently doing (e.g. "running
+ * read_file, list_dir") rather than just an indeterminate spinner. */
+function summariseLastToolCalls(messages: ChatMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      const names = msg.tool_calls.map((c) => c.name).filter(Boolean);
+      if (names.length === 0) return null;
+      const unique = Array.from(new Set(names));
+      return unique.join(", ");
+    }
+    // Stop scanning once we hit a previous user turn — older tool calls
+    // from prior turns aren't relevant to the in-flight one.
+    if (msg.role === "user") return null;
+  }
+  return null;
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0) {
+    return `${minutes}m${seconds.toString().padStart(2, "0")}s`;
+  }
+  return `${seconds}s`;
+}
+
 interface ChatTabProps {
   provider: Provider;
   keyStatus: ApiKeyStatus;
@@ -72,12 +101,31 @@ export function ChatTab({
 }: ChatTabProps): JSX.Element {
   const [input, setInput] = useState("");
   const messagesRef = useRef<HTMLDivElement>(null);
+  // Elapsed-time ticker for the working indicator. We track the wall-clock
+  // start of the current busy phase and tick every 500ms while busy. Reset
+  // to null when idle so the indicator disappears cleanly between turns.
+  const [busyStart, setBusyStart] = useState<number | null>(null);
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (busy) {
+      setBusyStart((prev) => prev ?? Date.now());
+    } else {
+      setBusyStart(null);
+    }
+  }, [busy]);
+
+  useEffect(() => {
+    if (busyStart === null) return;
+    const interval = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(interval);
+  }, [busyStart]);
 
   useEffect(() => {
     if (messagesRef.current) {
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
     }
-  }, [messages, pendingApprovals]);
+  }, [messages, pendingApprovals, busy]);
 
   const submit = () => {
     const value = input.trim();
@@ -95,6 +143,8 @@ export function ChatTab({
 
   const keyMissing = !providerHasKey(provider, keyStatus);
   const inputDisabled = busy || !hasActiveLane;
+  const elapsedMs = busyStart === null ? 0 : Math.max(0, now - busyStart);
+  const lastToolNames = busy ? summariseLastToolCalls(messages) : null;
 
   return (
     <div className="chat">
@@ -124,6 +174,19 @@ export function ChatTab({
             </button>
           </span>
         )}
+        {busy && (
+          <span
+            className="chat-busy-pill"
+            title="The agent is working on your request"
+            aria-live="polite"
+          >
+            <span className="chat-working-spinner" aria-hidden="true" />
+            <span>
+              {lastToolNames ? `Tools: ${lastToolNames}` : "Thinking"}
+              <span className="muted"> · {formatElapsed(elapsedMs)}</span>
+            </span>
+          </span>
+        )}
       </div>
       <div className="chat-messages" ref={messagesRef}>
         {messages.length === 0 && (
@@ -142,6 +205,18 @@ export function ChatTab({
             </div>
           );
         })}
+        {busy && (
+          <div className="msg assistant chat-working" role="status" aria-live="polite">
+            <span className="role">agent</span>
+            <span className="chat-working-spinner" aria-hidden="true" />
+            <span className="chat-working-text">
+              {lastToolNames
+                ? `Running tool${lastToolNames.includes(",") ? "s" : ""}: ${lastToolNames}`
+                : "Thinking..."}
+              <span className="chat-working-elapsed"> · {formatElapsed(elapsedMs)}</span>
+            </span>
+          </div>
+        )}
       </div>
       {pendingApprovals.length > 0 && (
         <div className="approval-panel">

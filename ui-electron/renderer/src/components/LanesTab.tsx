@@ -8,10 +8,46 @@ import type {
   LaneAttachmentInput,
   LaneComparisonDto,
   LaneKind,
+  LaneUpdateInput,
   RegisterLaneInput,
+  UpdateLaneResult,
 } from "../types";
 import { LANE_KINDS } from "../types";
 import { ContextEditor } from "./ContextEditor";
+import { FILETREE_DRAG_MIME, parseDragPayload } from "./FileTree";
+
+/** Drop handler for the attachment-root inputs. The lane attachment store
+ * needs a *real* on-disk path; when the user drags an overlay-tree node
+ * (e.g. an ancestor directory shown as `_ancestors/<lane>/<sub>`), the
+ * structured payload's `absolutePath` already carries the resolved real
+ * path — we read it from the FileTree drag MIME instead of letting the
+ * browser insert the plain-text fallback (which would be the virtual
+ * path and then fail server-side with "Attachment root does not exist").
+ * Returns true if the drop was handled. */
+function handleAttachmentRootDrop(
+  event: React.DragEvent<HTMLInputElement>,
+  setRoot: (value: string) => void
+): boolean {
+  const raw = event.dataTransfer.getData(FILETREE_DRAG_MIME);
+  if (!raw) return false;
+  try {
+    const payloads = parseDragPayload(raw);
+    const dirPayload = payloads.find((p) => p.type === "dir") ?? payloads[0];
+    if (!dirPayload) return false;
+    event.preventDefault();
+    setRoot(dirPayload.absolutePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function handleAttachmentRootDragOver(event: React.DragEvent<HTMLInputElement>): void {
+  if (event.dataTransfer.types.includes(FILETREE_DRAG_MIME)) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+}
 
 interface LanesTabProps {
   casefile: CasefileSnapshot | null;
@@ -36,6 +72,11 @@ interface LanesTabProps {
     laneId: string,
     attachments: LaneAttachmentInput[]
   ) => Promise<void>;
+  // M4.6: lane CRUD + casefile reset.
+  onUpdateLane: (laneId: string, update: LaneUpdateInput) => Promise<UpdateLaneResult>;
+  onRemoveLane: (laneId: string) => Promise<void>;
+  onHardResetCasefile: () => Promise<void>;
+  onSoftResetCasefile: (keepPrompts: boolean) => Promise<void>;
 }
 
 interface LaneNode {
@@ -84,6 +125,10 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
     onSaveContext,
     onSetLaneParent,
     onUpdateLaneAttachments,
+    onUpdateLane,
+    onRemoveLane,
+    onHardResetCasefile,
+    onSoftResetCasefile,
   } = props;
 
   const [showForm, setShowForm] = useState(false);
@@ -91,6 +136,11 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
   const [editLaneId, setEditLaneId] = useState<string | null>(null);
   const [compareLeft, setCompareLeft] = useState<string>("");
   const [compareRight, setCompareRight] = useState<string>("");
+  // M4.6: per-casefile destructive-action menu and its modal.
+  const [showCasefileMenu, setShowCasefileMenu] = useState(false);
+  const [resetMode, setResetMode] = useState<"hard" | "soft" | null>(null);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
 
   const forest = useMemo(
     () => (casefile ? buildLaneForest(casefile.lanes) : []),
@@ -136,6 +186,50 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
         <button type="button" onClick={() => setShowContext((v) => !v)}>
           {showContext ? "Hide context" : "Edit casefile context"}
         </button>
+        {/* M4.6: destructive operations live in an overflow menu so a stray
+            click cannot wipe a casefile. */}
+        <div className="casefile-menu">
+          <button
+            type="button"
+            className="casefile-menu-trigger"
+            aria-label="Casefile actions"
+            aria-expanded={showCasefileMenu}
+            onClick={() => setShowCasefileMenu((v) => !v)}
+          >
+            ⋯
+          </button>
+          {showCasefileMenu && (
+            <ul className="casefile-menu-list" role="menu">
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setShowCasefileMenu(false);
+                    setResetError(null);
+                    setResetMode("soft");
+                  }}
+                >
+                  New task (soft reset)…
+                </button>
+              </li>
+              <li>
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="destructive"
+                  onClick={() => {
+                    setShowCasefileMenu(false);
+                    setResetError(null);
+                    setResetMode("hard");
+                  }}
+                >
+                  Revert casefile (hard reset)…
+                </button>
+              </li>
+            </ul>
+          )}
+        </div>
       </div>
 
       {showContext && (
@@ -167,7 +261,42 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
           onClose={() => setEditLaneId(null)}
           onSetParent={onSetLaneParent}
           onUpdateAttachments={onUpdateLaneAttachments}
+          onUpdateLane={onUpdateLane}
+          onRemoveLane={async (laneId) => {
+            await onRemoveLane(laneId);
+            setEditLaneId(null);
+          }}
           onChooseDir={onChooseLaneRoot}
+        />
+      )}
+
+      {resetMode && (
+        <ResetCasefileDialog
+          mode={resetMode}
+          busy={resetBusy}
+          error={resetError}
+          onCancel={() => {
+            if (!resetBusy) {
+              setResetMode(null);
+              setResetError(null);
+            }
+          }}
+          onConfirm={async (keepPrompts) => {
+            setResetBusy(true);
+            setResetError(null);
+            try {
+              if (resetMode === "hard") {
+                await onHardResetCasefile();
+              } else {
+                await onSoftResetCasefile(keepPrompts);
+              }
+              setResetMode(null);
+            } catch (err) {
+              setResetError(err instanceof Error ? err.message : String(err));
+            } finally {
+              setResetBusy(false);
+            }
+          }}
         />
       )}
 
@@ -452,6 +581,9 @@ interface LaneEditPanelProps {
     laneId: string,
     attachments: LaneAttachmentInput[]
   ) => Promise<void>;
+  // M4.6: edit name/kind/root + remove the lane.
+  onUpdateLane: (laneId: string, update: LaneUpdateInput) => Promise<UpdateLaneResult>;
+  onRemoveLane: (laneId: string) => Promise<void>;
   onChooseDir: () => Promise<string | null>;
 }
 
@@ -478,8 +610,15 @@ function LaneEditPanel({
   onClose,
   onSetParent,
   onUpdateAttachments,
+  onUpdateLane,
+  onRemoveLane,
   onChooseDir,
 }: LaneEditPanelProps): JSX.Element {
+  // Core lane fields (M4.6).
+  const [laneName, setLaneName] = useState<string>(lane.name);
+  const [laneKind, setLaneKind] = useState<LaneKind>(lane.kind);
+  const [laneRoot, setLaneRoot] = useState<string>(lane.root);
+
   const [parentId, setParentId] = useState<string>(lane.parentId ?? "");
   const [attachments, setAttachments] = useState<LaneAttachmentInput[]>(
     (lane.attachments ?? []).map((a) => ({ name: a.name, root: a.root }))
@@ -488,6 +627,11 @@ function LaneEditPanel({
   const [newRoot, setNewRoot] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // M4.6: post-save warning when the new root collides with another lane.
+  const [rootConflictWith, setRootConflictWith] = useState<string | null>(null);
+  // M4.6: confirmation flow for removing the lane.
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   const forbiddenParents = useMemo(
     () => descendantsOf(lane.id, allLanes),
@@ -496,24 +640,62 @@ function LaneEditPanel({
 
   const save = async () => {
     setError(null);
+    setRootConflictWith(null);
     setBusy(true);
     try {
+      // 1. M4.6 core fields: name / kind / root via casefile:updateLane.
+      //    Only send fields the user actually changed; the bridge
+      //    distinguishes "omitted" from "null" and a no-op call still
+      //    triggers the round-trip cost.
+      const update: LaneUpdateInput = {};
+      const trimmedName = laneName.trim();
+      if (trimmedName && trimmedName !== lane.name) update.name = trimmedName;
+      if (laneKind !== lane.kind) update.kind = laneKind;
+      const trimmedRoot = laneRoot.trim();
+      if (trimmedRoot && trimmedRoot !== lane.root) update.root = trimmedRoot;
+      if (Object.keys(update).length > 0) {
+        const result = await onUpdateLane(lane.id, update);
+        if (result.rootConflict) {
+          // Surface the warning, but do not abort the rest of the save —
+          // the backend already accepted the change.
+          setRootConflictWith(result.rootConflict.conflictingLaneId);
+        }
+      }
+      // 2. Parent.
       const wantParent = parentId.trim() ? parentId.trim() : null;
       if ((lane.parentId ?? null) !== wantParent) {
         await onSetParent(lane.id, wantParent);
       }
+      // 3. Attachments.
       const before = JSON.stringify(lane.attachments ?? []);
       const after = JSON.stringify(attachments);
       if (before !== after) {
         await onUpdateAttachments(lane.id, attachments);
       }
-      onClose();
+      // Close only when nothing surfaced a warning the user needs to see.
+      if (!rootConflictWith) onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   };
+
+  const remove = async () => {
+    setRemoving(true);
+    setError(null);
+    try {
+      await onRemoveLane(lane.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setRemoving(false);
+    }
+  };
+
+  const conflictLaneName =
+    rootConflictWith != null
+      ? allLanes.find((l) => l.id === rootConflictWith)?.name ?? rootConflictWith
+      : null;
 
   const addAttachment = () => {
     const name = newName.trim();
@@ -540,6 +722,53 @@ function LaneEditPanel({
           close
         </button>
       </div>
+      <label className="lane-form-row">
+        <span>Name</span>
+        <input
+          type="text"
+          value={laneName}
+          onChange={(event) => setLaneName(event.target.value)}
+          placeholder="Lane name"
+        />
+      </label>
+      <label className="lane-form-row">
+        <span>Kind</span>
+        <select
+          value={laneKind}
+          onChange={(event) => setLaneKind(event.target.value as LaneKind)}
+        >
+          {LANE_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="lane-form-row">
+        <span>Root</span>
+        <input
+          type="text"
+          value={laneRoot}
+          onChange={(event) => setLaneRoot(event.target.value)}
+          placeholder="absolute or casefile-relative path"
+        />
+        <button
+          type="button"
+          onClick={async () => {
+            const chosen = await onChooseDir();
+            if (chosen) setLaneRoot(chosen);
+          }}
+          disabled={busy}
+        >
+          Browse
+        </button>
+      </label>
+      {rootConflictWith && (
+        <div className="lane-form-warning">
+          Heads up: <strong>{conflictLaneName}</strong> already references this
+          directory. Both lanes will see the same files.
+        </div>
+      )}
       <label className="lane-form-row">
         <span>Parent</span>
         <select value={parentId} onChange={(event) => setParentId(event.target.value)}>
@@ -588,6 +817,8 @@ function LaneEditPanel({
           placeholder="absolute or casefile-relative path"
           value={newRoot}
           onChange={(event) => setNewRoot(event.target.value)}
+          onDragOver={handleAttachmentRootDragOver}
+          onDrop={(event) => handleAttachmentRootDrop(event, setNewRoot)}
         />
         <button
           type="button"
@@ -604,9 +835,126 @@ function LaneEditPanel({
       </div>
       {error && <div className="lane-form-error">Error: {error}</div>}
       <div className="lane-form-actions">
-        <button type="button" onClick={save} disabled={busy}>
+        <button type="button" onClick={save} disabled={busy || removing}>
           {busy ? "Saving..." : "Save"}
         </button>
+        <span className="lane-form-spacer" />
+        {/* M4.6: removal is gated by a two-step "click → confirm" so a stray
+            click on the lane edit panel cannot delete a lane outright.
+            The chat log / notes / findings remain on disk and can be
+            recovered by re-registering the lane with the same id. */}
+        {!confirmRemove ? (
+          <button
+            type="button"
+            className="destructive"
+            onClick={() => setConfirmRemove(true)}
+            disabled={busy || removing}
+            title="Remove this lane (data on disk is preserved)"
+          >
+            Remove lane
+          </button>
+        ) : (
+          <>
+            <span className="lane-form-confirm">
+              Remove <strong>{lane.name}</strong>? Chat / notes / findings
+              stay on disk.
+            </span>
+            <button
+              type="button"
+              onClick={() => setConfirmRemove(false)}
+              disabled={removing}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="destructive"
+              onClick={remove}
+              disabled={removing}
+            >
+              {removing ? "Removing..." : "Yes, remove"}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// M4.6: confirmation dialog for casefile reset (hard or soft).
+interface ResetCasefileDialogProps {
+  mode: "hard" | "soft";
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: (keepPrompts: boolean) => void;
+}
+
+function ResetCasefileDialog({
+  mode,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: ResetCasefileDialogProps): JSX.Element {
+  // Soft-reset specifically asks whether to keep prompt drafts; hard
+  // reset always wipes everything.
+  const [keepPrompts, setKeepPrompts] = useState(true);
+  const isHard = mode === "hard";
+  return (
+    <div className="reset-dialog-backdrop" onClick={busy ? undefined : onCancel}>
+      <div
+        className="reset-dialog"
+        role="dialog"
+        aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3>{isHard ? "Revert casefile?" : "Start a new task?"}</h3>
+        {isHard ? (
+          <p>
+            This deletes the entire <code>.casefile/</code> directory: all
+            lanes, chat history, findings, notes, prompts, command runs,
+            and saved context. The casefile will look as if it had never
+            been opened in DeskAssist.{" "}
+            <strong>This cannot be undone.</strong>
+          </p>
+        ) : (
+          <>
+            <p>
+              This clears chat history, findings, notes, and command runs,
+              and restores a fresh default <code>main</code> lane. Your
+              casefile context manifest and inbox sources are preserved.
+            </p>
+            <label className="lane-form-row">
+              <input
+                type="checkbox"
+                checked={keepPrompts}
+                onChange={(event) => setKeepPrompts(event.target.checked)}
+              />
+              <span>Keep prompt drafts</span>
+            </label>
+          </>
+        )}
+        {error && <div className="lane-form-error">Error: {error}</div>}
+        <div className="lane-form-actions">
+          <button type="button" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="destructive"
+            onClick={() => onConfirm(isHard ? false : keepPrompts)}
+            disabled={busy}
+          >
+            {busy
+              ? isHard
+                ? "Reverting..."
+                : "Resetting..."
+              : isHard
+              ? "Yes, revert"
+              : "Yes, reset"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -763,6 +1111,8 @@ function RegisterLaneForm({
           placeholder="absolute or casefile-relative path"
           value={newRoot}
           onChange={(event) => setNewRoot(event.target.value)}
+          onDragOver={handleAttachmentRootDragOver}
+          onDrop={(event) => handleAttachmentRootDrop(event, setNewRoot)}
         />
         <button
           type="button"

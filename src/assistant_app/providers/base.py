@@ -9,6 +9,24 @@ from urllib.request import Request, urlopen
 from assistant_app.models import ChatMessage, ChatRequest
 
 
+# Long-form repo-review / multi-file prompts routinely take >30s for the
+# provider to finish generating, especially for DeepSeek and Anthropic with
+# large `max_tokens`. The previous 30s default surfaced as opaque
+# "read operation timed out" errors in the chat UI mid-generation. We pick
+# a generous default and let the operator override via env var when running
+# against faster/slower endpoints.
+def _default_provider_timeout() -> float:
+    raw = getenv("DESKASSIST_PROVIDER_TIMEOUT_SECONDS")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return 300.0
+
+
 @dataclass(slots=True, frozen=True)
 class ProviderMetadata:
     name: str
@@ -18,9 +36,15 @@ class ProviderMetadata:
 class BaseProvider(ABC):
     metadata: ProviderMetadata
 
-    def __init__(self, api_key: str | None = None, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        timeout_seconds: float | None = None,
+    ) -> None:
         self._api_key = api_key
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = (
+            timeout_seconds if timeout_seconds is not None else _default_provider_timeout()
+        )
 
     @property
     def api_key(self) -> str | None:

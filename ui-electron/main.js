@@ -19,6 +19,15 @@ let apiKeysCache = {
   anthropic: "",
   deepseek: "",
 };
+// Per-provider model overrides. The backend has its own defaults (see
+// `ChatService._default_models`); an empty string here means "use the
+// backend default". These are stored in plain config (not the keychain)
+// since they're not secret — keytar only carries credentials.
+let providerModelsCache = {
+  openai: "",
+  anthropic: "",
+  deepseek: "",
+};
 const KEY_SERVICE = "deskassist";
 const PROVIDERS = ["openai", "anthropic", "deepseek"];
 let keytar = null;
@@ -28,6 +37,33 @@ const MAX_FILE_READ_CHARS = 2_000_000;
 
 function apiKeysPath() {
   return path.join(app.getPath("userData"), "api-keys.json");
+}
+
+function providerModelsPath() {
+  return path.join(app.getPath("userData"), "provider-models.json");
+}
+
+async function readProviderModels() {
+  try {
+    const raw = await fs.readFile(providerModelsPath(), "utf-8");
+    const parsed = JSON.parse(raw);
+    return {
+      openai: typeof parsed.openai === "string" ? parsed.openai : "",
+      anthropic: typeof parsed.anthropic === "string" ? parsed.anthropic : "",
+      deepseek: typeof parsed.deepseek === "string" ? parsed.deepseek : "",
+    };
+  } catch (error) {
+    return { openai: "", anthropic: "", deepseek: "" };
+  }
+}
+
+async function persistProviderModels() {
+  await fs.mkdir(path.dirname(providerModelsPath()), { recursive: true });
+  await fs.writeFile(
+    providerModelsPath(),
+    JSON.stringify(providerModelsCache, null, 2),
+    { encoding: "utf-8", mode: 0o600 }
+  );
 }
 
 function tryInitKeytar() {
@@ -302,13 +338,18 @@ async function buildTreeAt(directory, depth = 0, maxDepth = 4, virtualPath = nul
   return node;
 }
 
-// Default budget covers chat / run commands (where the user's allowlisted
-// shell command can legitimately take up to `system_exec.run_safe`'s 120s
-// cap). Metadata calls (list/get/save/etc) should never legitimately take
-// this long, so callers pass `BRIDGE_METADATA_TIMEOUT_MS` to surface hangs
-// as a process error within seconds.
+// Default budget covers run commands (where the user's allowlisted shell
+// command can legitimately take up to `system_exec.run_safe`'s 120s cap).
+// Metadata calls (list/get/save/etc) should never legitimately take this
+// long, so callers pass `BRIDGE_METADATA_TIMEOUT_MS` to surface hangs as
+// a process error within seconds. Chat turns get the most generous budget
+// because an agentic turn with several tool calls + provider latency on a
+// slower model (e.g. DeepSeek doing a code review) routinely runs past
+// two minutes; capping that at 120s surfaces as a confusing "Python
+// bridge timed out" error to the user.
 const BRIDGE_DEFAULT_TIMEOUT_MS = 120_000;
 const BRIDGE_METADATA_TIMEOUT_MS = 10_000;
+const BRIDGE_CHAT_TIMEOUT_MS = 600_000;
 
 async function runPythonBridge(payload, { attachApiKeys = false, timeoutMs } = {}) {
   const repoRoot = path.resolve(__dirname, "..");
@@ -762,6 +803,66 @@ ipcMain.handle("casefile:updateLaneAttachments", async (_, args = {}) => {
   return adoptCasefileSnapshot(response.casefile);
 });
 
+// ----- M4.6: lane CRUD + casefile reset -----
+
+ipcMain.handle("casefile:updateLane", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  if (!laneId) throw new Error("laneId is required");
+  // Pass through only the fields that were actually supplied; the bridge
+  // distinguishes "omitted" (leave alone) from "null"/"empty" via key
+  // presence + type checks, so spreading the args object would hand it
+  // bogus keys.
+  const payload = {
+    command: "casefile:updateLane",
+    casefileRoot,
+    laneId,
+  };
+  if (Object.prototype.hasOwnProperty.call(args, "name")) payload.name = args.name;
+  if (Object.prototype.hasOwnProperty.call(args, "kind")) payload.kind = args.kind;
+  if (Object.prototype.hasOwnProperty.call(args, "root")) payload.root = args.root;
+  const response = await runPythonBridgeMeta(payload);
+  // Adopt the snapshot for state-tracking, but return the *full* response so
+  // the renderer can surface `rootConflict` alongside the new snapshot.
+  adoptCasefileSnapshot(response.casefile);
+  return {
+    casefile: response.casefile,
+    rootConflict: response.rootConflict || null,
+  };
+});
+
+ipcMain.handle("casefile:removeLane", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneId = typeof args.laneId === "string" ? args.laneId : "";
+  if (!laneId) throw new Error("laneId is required");
+  const response = await runPythonBridgeMeta({
+    command: "casefile:removeLane",
+    casefileRoot,
+    laneId,
+  });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:hardReset", async () => {
+  const casefileRoot = requireCasefile();
+  const response = await runPythonBridgeMeta({
+    command: "casefile:hardReset",
+    casefileRoot,
+  });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:softReset", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const keepPrompts = args.keepPrompts !== false; // default true
+  const response = await runPythonBridgeMeta({
+    command: "casefile:softReset",
+    casefileRoot,
+    keepPrompts,
+  });
+  return adoptCasefileSnapshot(response.casefile);
+});
+
 ipcMain.handle("casefile:getContext", async () => {
   const casefileRoot = requireCasefile();
   const response = await runPythonBridgeMeta({
@@ -920,12 +1021,18 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
   if (!activeCasefileRoot || !activeLaneId) {
     throw new Error("Open a casefile before sending a chat");
   }
+  const provider = payload.provider || "openai";
+  // Fall back to the user's saved per-provider model if the renderer
+  // didn't explicitly override it. Empty string in the cache means "use
+  // the backend default", which we send as null so the Python side picks
+  // its own default.
+  const savedModel = providerModelsCache[provider] || null;
   const bridgePayload = {
     command: "chat:send",
     casefileRoot: activeCasefileRoot,
     laneId: activeLaneId,
-    provider: payload.provider || "openai",
-    model: payload.model || null,
+    provider,
+    model: payload.model || savedModel,
     messages: Array.isArray(payload.messages) ? payload.messages : [],
     userMessage: payload.userMessage || "",
     allowWriteTools: Boolean(payload.allowWriteTools),
@@ -937,7 +1044,10 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
   if (typeof payload.systemPromptId === "string" && payload.systemPromptId) {
     bridgePayload.systemPromptId = payload.systemPromptId;
   }
-  return runPythonBridge(bridgePayload, { attachApiKeys: true });
+  return runPythonBridge(bridgePayload, {
+    attachApiKeys: true,
+    timeoutMs: BRIDGE_CHAT_TIMEOUT_MS,
+  });
 });
 
 // ----- M4.1: prompt drafts -----
@@ -1198,18 +1308,20 @@ ipcMain.handle("casefile:openComparison", async (_, args = {}) => {
 ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
   const casefileRoot = requireCasefile();
   const laneIds = normalizeLaneIds(payload.laneIds);
+  const provider = payload.provider || "openai";
+  const savedModel = providerModelsCache[provider] || null;
   return runPythonBridge(
     {
       command: "casefile:sendComparisonChat",
       casefileRoot,
       laneIds,
-      provider: payload.provider || "openai",
-      model: payload.model || null,
+      provider,
+      model: payload.model || savedModel,
       messages: Array.isArray(payload.messages) ? payload.messages : [],
       userMessage: payload.userMessage || "",
       resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
     },
-    { attachApiKeys: true }
+    { attachApiKeys: true, timeoutMs: BRIDGE_CHAT_TIMEOUT_MS }
   );
 });
 
@@ -1247,6 +1359,31 @@ ipcMain.handle("keys:save", async (_, payload = {}) => {
   };
 });
 
+// Per-provider preferred model. Stored in plain config (not the keychain)
+// because model ids are not secret. The renderer treats absence as "use the
+// backend default", so an empty string here is meaningful and is what we
+// persist when the user clears the field.
+ipcMain.handle("models:get", async () => {
+  return { ...providerModelsCache };
+});
+
+ipcMain.handle("models:save", async (_, payload = {}) => {
+  const updates = {};
+  for (const provider of PROVIDERS) {
+    const value = payload[provider];
+    if (typeof value === "string") {
+      updates[provider] = value.trim();
+    }
+  }
+  for (const provider of PROVIDERS) {
+    if (provider in updates) {
+      providerModelsCache[provider] = updates[provider];
+    }
+  }
+  await persistProviderModels();
+  return { ...providerModelsCache };
+});
+
 ipcMain.handle("keys:clear", async (_, payload = {}) => {
   const provider = typeof payload.provider === "string" ? payload.provider : "";
   if (!PROVIDERS.includes(provider)) {
@@ -1265,6 +1402,7 @@ ipcMain.handle("keys:clear", async (_, payload = {}) => {
 app.whenReady().then(async () => {
   tryInitKeytar();
   await loadApiKeys();
+  providerModelsCache = await readProviderModels();
   createWindow();
 });
 

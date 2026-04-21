@@ -81,29 +81,97 @@ a {
   white-space: nowrap;
 }
 
+.toolbar .toolbar-model {
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.toolbar .toolbar-model code {
+  background: #111827;
+  border: 1px solid #1f2937;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
 .toolbar .keys-status {
   color: #9ca3af;
   font-size: 12px;
   margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* When the toolbar wraps, drop the auto-margin so the wrapped row hugs
+   the left edge instead of being pushed past the viewport. */
+@media (max-width: 1100px) {
+  .toolbar .keys-status {
+    margin-left: 0;
+    flex-basis: 100%;
+  }
 }
 
 .workbench {
-  display: grid;
-  grid-template-columns: 260px 1fr 420px;
+  display: flex;
+  flex-direction: row;
   height: 100%;
   min-height: 0;
+  width: 100%;
+  overflow: hidden;
 }
 
+/* Side panes carry an inline `width` from React state (M4.7); the
+   center editor pane fills the remaining space. */
 .pane {
   display: flex;
   flex-direction: column;
-  border-right: 1px solid #1f2937;
   min-height: 0;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.pane.editor-pane {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
-.pane:last-child {
-  border-right: 0;
+/* M4.7 splitter: a thin draggable strip between two panes. The hit
+   target is wider than the visible line so users don't have to be
+   pixel-perfect; the visible center line darkens on hover/drag. */
+.splitter {
+  flex: 0 0 6px;
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  user-select: none;
+  align-self: stretch;
+  z-index: 5;
+}
+
+.splitter::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: #1f2937;
+  transition: background 120ms ease;
+}
+
+.splitter:hover::before,
+.splitter:focus-visible::before,
+.splitter:active::before {
+  background: #3b82f6;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35);
+}
+
+.splitter:focus-visible {
+  outline: none;
 }
 
 .pane-header {
@@ -262,12 +330,14 @@ a {
 
 .right-tabs {
   display: flex;
+  flex-wrap: wrap;
   background: #0f172a;
   border-bottom: 1px solid #1f2937;
 }
 
 .right-tab {
-  flex: 1 1 0;
+  flex: 1 1 70px;
+  min-width: 60px;
   text-align: center;
   padding: 8px 6px;
   font-size: 12px;
@@ -278,6 +348,7 @@ a {
   border: none;
   border-radius: 0;
   border-bottom: 2px solid transparent;
+  white-space: nowrap;
 }
 
 .right-tab:hover {
@@ -396,6 +467,64 @@ a {
 .chat-form .row {
   display: flex;
   justify-content: flex-end;
+}
+
+/* Working indicator: shown both as a pill in the controls strip (always
+ * visible, even when the user has scrolled the messages list) and as a
+ * full-width assistant-style row pinned at the bottom of the messages
+ * scroller (so the agent's "I'm thinking" status sits exactly where the
+ * next reply will appear). */
+.chat-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0.8;
+}
+
+.chat-working-text {
+  font-style: italic;
+  color: #cbd5e1;
+}
+
+.chat-working-elapsed {
+  color: #6b7280;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-busy-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-busy-pill .muted {
+  color: #6b7280;
+}
+
+.chat-working-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #334155;
+  border-top-color: #60a5fa;
+  border-radius: 50%;
+  animation: chat-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes chat-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* ---------- Notes tab ---------- */
@@ -569,7 +698,9 @@ a {
   font-size: 11px;
   color: #6b7280;
   margin-top: 4px;
-  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .lane-form {
@@ -590,14 +721,16 @@ a {
 
 .lane-form-row {
   display: grid;
-  grid-template-columns: 70px 1fr auto;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
+  min-width: 0;
 }
 
-.lane-form-row span {
+.lane-form-row > span {
   font-size: 12px;
   color: #9ca3af;
+  min-width: 0;
 }
 
 .lane-form-row input,
@@ -608,6 +741,8 @@ a {
   border-radius: 4px;
   padding: 4px 8px;
   font-size: 13px;
+  min-width: 0;
+  width: 100%;
 }
 
 .lane-form-hint {
@@ -622,7 +757,136 @@ a {
 
 .lane-form-actions {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ----- M4.6: lane edit warnings + destructive actions + reset modal ----- */
+
+.lane-form-warning {
+  font-size: 12px;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.lane-form-spacer {
+  flex: 1;
+}
+
+.lane-form-confirm {
+  font-size: 12px;
+  color: #fbbf24;
+}
+
+button.destructive,
+.casefile-menu-list button.destructive {
+  background: #7f1d1d;
+  color: #fee2e2;
+  border-color: #991b1b;
+}
+
+button.destructive:hover:not(:disabled) {
+  background: #991b1b;
+}
+
+.casefile-menu {
+  position: relative;
+  margin-left: auto;
+}
+
+.casefile-menu-trigger {
+  padding: 2px 8px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.casefile-menu-list {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 30;
+  margin: 4px 0 0;
+  padding: 4px 0;
+  list-style: none;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  min-width: 220px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.casefile-menu-list li {
+  display: block;
+}
+
+.casefile-menu-list button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 6px 12px;
+  color: #e5e7eb;
+  font-size: 12px;
+}
+
+.casefile-menu-list button:hover:not(:disabled) {
+  background: #1f2937;
+}
+
+.casefile-menu-list button.destructive {
+  color: #fca5a5;
+}
+
+.casefile-menu-list button.destructive:hover:not(:disabled) {
+  background: #7f1d1d;
+  color: #fee2e2;
+}
+
+.reset-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.reset-dialog {
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  padding: 16px 20px;
+  width: min(520px, calc(100vw - 32px));
+  color: #e5e7eb;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.reset-dialog h3 {
+  margin: 0;
+  font-size: 15px;
+  color: #f9fafb;
+}
+
+.reset-dialog p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.reset-dialog code {
+  background: #1f2937;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 12px;
 }
 
 /* ----- M3: comparison ----- */
@@ -986,11 +1250,13 @@ a {
 .breadcrumb {
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 0;
   color: #9ca3af;
   font-size: 12px;
+  min-width: 0;
   max-width: 60%;
+  flex: 0 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1067,6 +1333,9 @@ a {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .lane-edit-header {
@@ -1084,6 +1353,7 @@ a {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 .attachment-row {
@@ -1092,12 +1362,22 @@ a {
   gap: 8px;
   font-size: 12px;
   color: #e5e7eb;
+  min-width: 0;
 }
 
 .attachment-row code {
   background: #0b1220;
   padding: 1px 5px;
   border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.attachment-row > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attachment-add {
@@ -1105,16 +1385,24 @@ a {
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  min-width: 0;
+  width: 100%;
 }
 
 .attachment-add input {
   flex: 1 1 120px;
+  min-width: 0;
+  width: auto;
   background: #0b1220;
   color: #e5e7eb;
   border: 1px solid #374151;
   border-radius: 4px;
   padding: 4px 8px;
   font-size: 12px;
+}
+
+.attachment-add button {
+  flex: 0 0 auto;
 }
 
 .context-editor {

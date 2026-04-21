@@ -37,6 +37,7 @@ from assistant_app.casefile.prompts import PromptDraft, PromptSummary
 from assistant_app.chat_service import ChatService
 from assistant_app.filesystem import WorkspaceFilesystem
 from assistant_app.models import ChatMessage
+from assistant_app.prompts import CHARTER_MARKER, build_charter_system_content
 from assistant_app.system_exec import ALLOWED_EXECUTABLES
 
 
@@ -112,6 +113,43 @@ def _history_has_context_marker(history: list[ChatMessage]) -> bool:
         ):
             return True
     return False
+
+
+def _history_has_charter_marker(history: list[ChatMessage]) -> bool:
+    """True if the product-owned assistant charter is already in history.
+
+    Mirrors `_history_has_context_marker` / `_history_has_prompt_marker`
+    so a resumed turn does not stack duplicate charters at the head of
+    the conversation.
+    """
+    for msg in history:
+        if (
+            msg.role == "system"
+            and isinstance(msg.content, str)
+            and msg.content.startswith(CHARTER_MARKER)
+        ):
+            return True
+    return False
+
+
+def _prepend_assistant_charter(history: list[ChatMessage]) -> None:
+    """Prepend the assistant charter at index 0 unless already present.
+
+    Layer 1 of the system-prompt stack (M4.5). Casefile auto-context
+    (M3.5a) and user-selected prompt drafts (M4.1) insert *after* this
+    layer using `_history_has_charter_marker` to compute their offsets,
+    so the on-the-wire ordering is always:
+
+        [charter, context?, prompt?, ...conversation...]
+
+    Each layer narrows the previous one; the charter is the only layer
+    the user cannot override.
+    """
+    if _history_has_charter_marker(history):
+        return
+    history.insert(
+        0, ChatMessage(role="system", content=build_charter_system_content())
+    )
 
 
 def _serialize_message(message: ChatMessage) -> dict[str, Any]:
@@ -279,13 +317,22 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
         read_overlays=read_overlays,
     )
     parsed_history = _parse_messages(history_raw)
+
+    # M4.5: product-owned charter. Always layer 1, regardless of whether a
+    # casefile is open — it frames the assistant's identity for plain
+    # workspace chats too, not just casefile-scoped ones.
+    _prepend_assistant_charter(parsed_history)
+
     if scope is not None:
         context_prompt = _build_context_system_prompt(scope)
         # Only inject when (a) there's actually context to inject and (b) the
         # caller hasn't already placed one (idempotent for resumed turns).
+        # Offset by 1 when the charter is at index 0 so the on-the-wire order
+        # is always `[charter, context, prompt, ...]`.
         if context_prompt and not _history_has_context_marker(parsed_history):
+            ctx_idx = 1 if _history_has_charter_marker(parsed_history) else 0
             parsed_history.insert(
-                0, ChatMessage(role="system", content=context_prompt)
+                ctx_idx, ChatMessage(role="system", content=context_prompt)
             )
 
     # M4.1: optional user-selected prompt draft. Loaded after the auto-context
@@ -304,11 +351,12 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
         except (KeyError, ValueError) as exc:
             raise ValueError(f"systemPromptId {raw_prompt_id!r}: {exc}") from exc
         if not _history_has_prompt_marker(parsed_history, prompt.id):
-            insert_at = 1 if (
-                parsed_history
-                and parsed_history[0].role == "system"
-                and _history_has_context_marker(parsed_history)
-            ) else 0
+            # Insert after charter (M4.5) and context (M3.5a) so the layered
+            # order is preserved even when only some layers are present.
+            insert_at = (
+                (1 if _history_has_charter_marker(parsed_history) else 0)
+                + (1 if _history_has_context_marker(parsed_history) else 0)
+            )
             parsed_history.insert(
                 insert_at,
                 ChatMessage(role="system", content=_build_prompt_system_message(prompt)),
@@ -419,6 +467,121 @@ def handle_casefile_update_lane_attachments(request: dict[str, Any]) -> dict[str
     attachments = parse_attachments(request.get("attachments"))
     service = CasefileService(Path(root))
     snapshot = service.update_lane_attachments(lane_id, attachments)
+    return {"ok": True, "casefile": service.serialize(snapshot)}
+
+
+def handle_casefile_update_lane(request: dict[str, Any]) -> dict[str, Any]:
+    """M4.6: edit a lane's name / kind / root.
+
+    Each of ``name``, ``kind``, ``root`` is independently optional.
+    Omitting a field (or passing ``null``) leaves the existing value
+    unchanged. Parent and attachments are handled by their own
+    dedicated commands (``casefile:setLaneParent`` /
+    ``casefile:updateLaneAttachments``); the lane id is immutable.
+
+    When the resulting lane root matches another lane's root, a
+    non-blocking warning is surfaced via ``rootConflict`` so the
+    renderer can highlight the overlap without aborting the edit.
+    """
+    casefile_root_path = _require_casefile_root(request)
+    lane_id = request.get("laneId")
+    if not isinstance(lane_id, str) or not lane_id.strip():
+        raise ValueError("laneId is required")
+    name_raw = request.get("name")
+    kind_raw = request.get("kind")
+    root_raw = request.get("root")
+    name: str | None
+    if name_raw is None:
+        name = None
+    elif isinstance(name_raw, str):
+        name = name_raw
+    else:
+        raise ValueError("name must be a string or null")
+    kind: str | None
+    if kind_raw is None:
+        kind = None
+    elif isinstance(kind_raw, str):
+        kind = kind_raw
+    else:
+        raise ValueError("kind must be a string or null")
+    new_root: Path | None
+    if root_raw is None:
+        new_root = None
+    elif isinstance(root_raw, str) and root_raw.strip():
+        raw_path = Path(root_raw.strip())
+        new_root = (
+            raw_path.resolve()
+            if raw_path.is_absolute()
+            else (casefile_root_path / raw_path).resolve()
+        )
+        _validate_path_depth(new_root, "root")
+    else:
+        raise ValueError("root must be a non-empty string or null")
+    service = CasefileService(casefile_root_path)
+    snapshot = service.update_lane(
+        lane_id.strip(), name=name, kind=kind, root=new_root,
+    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "casefile": service.serialize(snapshot),
+    }
+    # Only check for conflict when the root was touched. Editing only
+    # name/kind cannot create or remove a conflict.
+    if new_root is not None:
+        conflict = service.find_root_conflict(
+            new_root, exclude_lane_id=lane_id.strip()
+        )
+        if conflict:
+            payload["rootConflict"] = {"conflictingLaneId": conflict}
+    return payload
+
+
+def handle_casefile_remove_lane(request: dict[str, Any]) -> dict[str, Any]:
+    """M4.6: remove a lane from the casefile.
+
+    On-disk per-lane data files (``chats/<id>.jsonl``,
+    ``notes/<id>.md``, findings tagged with this lane) are intentionally
+    preserved so re-registering a lane with the same id resurrects the
+    prior history. The renderer is responsible for surfacing a
+    confirmation dialog before invoking this.
+    """
+    casefile_root_path = _require_casefile_root(request)
+    lane_id = request.get("laneId")
+    if not isinstance(lane_id, str) or not lane_id.strip():
+        raise ValueError("laneId is required")
+    service = CasefileService(casefile_root_path)
+    snapshot = service.remove_lane(lane_id.strip())
+    return {"ok": True, "casefile": service.serialize(snapshot)}
+
+
+def handle_casefile_hard_reset(request: dict[str, Any]) -> dict[str, Any]:
+    """M4.6: nuke ``.casefile/`` and re-initialize it.
+
+    The returned snapshot is the freshly initialized casefile (default
+    ``main`` lane, no chats, no findings, no prompts, etc.). The
+    renderer must gate this behind a confirmation dialog; the bridge
+    does not.
+    """
+    casefile_root_path = _require_casefile_root(request)
+    service = CasefileService(casefile_root_path)
+    snapshot = service.hard_reset()
+    return {"ok": True, "casefile": service.serialize(snapshot)}
+
+
+def handle_casefile_soft_reset(request: dict[str, Any]) -> dict[str, Any]:
+    """M4.6: clear per-task scratch (lanes, chats, findings, notes,
+    runs, exports). Optionally also clear prompts via ``keepPrompts``.
+
+    Preserves ``context.json`` and ``inbox.json`` regardless. Also
+    re-creates the default ``main`` lane so the casefile is immediately
+    usable for a new task.
+    """
+    casefile_root_path = _require_casefile_root(request)
+    keep_prompts_raw = request.get("keepPrompts", True)
+    if not isinstance(keep_prompts_raw, bool):
+        raise ValueError("keepPrompts must be a boolean")
+    service = CasefileService(casefile_root_path)
+    snapshot = service.soft_reset(keep_prompts=keep_prompts_raw)
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
 
@@ -1210,9 +1373,15 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
         enable_writes=False,
     )
     parsed_history = _parse_messages(history_raw)
+    # M4.5: charter applies to comparison sessions too. Comparison chats are
+    # the most likely place for the model to drift into "let me plan this
+    # diff review" if left to its own defaults, so the charter is at least
+    # as important here as in single-lane chat.
+    _prepend_assistant_charter(parsed_history)
     context_prompt = _build_context_system_prompt(scope)
     if context_prompt and not _history_has_context_marker(parsed_history):
-        parsed_history.insert(0, ChatMessage(role="system", content=context_prompt))
+        ctx_idx = 1 if _history_has_charter_marker(parsed_history) else 0
+        parsed_history.insert(ctx_idx, ChatMessage(role="system", content=context_prompt))
     chat.replace_history(parsed_history)
     history_before_count = len(chat.history)
     if resume_pending:
@@ -1284,8 +1453,12 @@ _HANDLERS = {
     "chat:send": handle_chat_send,
     "casefile:open": handle_casefile_open,
     "casefile:registerLane": handle_casefile_register_lane,
+    "casefile:updateLane": handle_casefile_update_lane,
+    "casefile:removeLane": handle_casefile_remove_lane,
     "casefile:updateLaneAttachments": handle_casefile_update_lane_attachments,
     "casefile:setLaneParent": handle_casefile_set_lane_parent,
+    "casefile:hardReset": handle_casefile_hard_reset,
+    "casefile:softReset": handle_casefile_soft_reset,
     "casefile:switchLane": handle_casefile_switch_lane,
     "casefile:getContext": handle_casefile_get_context,
     "casefile:saveContext": handle_casefile_save_context,

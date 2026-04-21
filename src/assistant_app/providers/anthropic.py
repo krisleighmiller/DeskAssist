@@ -15,7 +15,7 @@ class AnthropicProvider(HttpChatProvider):
     def __init__(
         self,
         api_key: str | None = None,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float | None = None,
         max_tokens: int | None = None,
     ) -> None:
         super().__init__(api_key=api_key, timeout_seconds=timeout_seconds)

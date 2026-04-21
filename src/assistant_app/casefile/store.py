@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -294,6 +295,58 @@ class CasefileStore:
         self._write_lanes_file(list(snapshot.lanes), active_lane_id=lane_id)
         return self.load_snapshot()
 
+    def update_lane(
+        self,
+        lane_id: str,
+        *,
+        name: str | None = None,
+        kind: str | None = None,
+        root: Path | None = None,
+    ) -> CasefileSnapshot:
+        """Update a lane's `name` / `kind` / `root` in place.
+
+        Each kwarg is independently optional: ``None`` means "leave the
+        field unchanged". The lane id, parent, and attachments are
+        explicitly *not* editable here — the id is the filename stem for
+        chats / notes and renaming it would require migrating those
+        files; parent + attachments have their own dedicated mutators
+        from M3.5b.
+
+        A new ``root`` is resolved (relative roots are anchored at the
+        casefile root) and must point at an existing directory; the same
+        validation as ``register_lane``.
+        """
+        snapshot = self.load_snapshot()
+        target = snapshot.lane_by_id(lane_id)
+        if name is not None:
+            cleaned = name.strip()
+            if not cleaned:
+                raise ValueError("Lane name cannot be empty")
+            new_name = cleaned
+        else:
+            new_name = target.name
+        new_kind = coerce_lane_kind(kind) if isinstance(kind, str) and kind else target.kind
+        if root is not None:
+            resolved = self._resolve_lane_root(root)
+            if not resolved.exists():
+                raise FileNotFoundError(f"Lane root does not exist: {resolved}")
+            if not resolved.is_dir():
+                raise NotADirectoryError(f"Lane root is not a directory: {resolved}")
+            new_root = resolved
+        else:
+            new_root = target.root
+        replaced = Lane(
+            id=target.id,
+            name=new_name,
+            kind=new_kind,
+            root=new_root,
+            parent_id=target.parent_id,
+            attachments=target.attachments,
+        )
+        new_lanes = [replaced if lane.id == lane_id else lane for lane in snapshot.lanes]
+        self._write_lanes_file(new_lanes, active_lane_id=snapshot.active_lane_id)
+        return self.load_snapshot()
+
     def remove_lane(self, lane_id: str) -> CasefileSnapshot:
         snapshot = self.load_snapshot()
         remaining = [lane for lane in snapshot.lanes if lane.id != lane_id]
@@ -325,6 +378,63 @@ class CasefileStore:
             new_active = re_parented[0].id if re_parented else None
         self._write_lanes_file(re_parented, active_lane_id=new_active)
         return self.load_snapshot()
+
+    # ----- casefile-level reset -----
+
+    def hard_reset(self) -> None:
+        """Delete the entire ``.casefile/`` metadata directory.
+
+        After a hard reset the casefile is indistinguishable from one
+        that was never opened in DeskAssist. The next ``load_snapshot``
+        / ``ensure_initialized`` call will recreate the metadata
+        directory with a fresh default ``main`` lane.
+
+        Used by the ``casefile:hardReset`` bridge command for repeatable
+        testing (M4.6). No backup is taken; callers that want one
+        should snapshot the directory before invoking this.
+        """
+        meta = self.casefile.metadata_dir
+        if meta.exists():
+            shutil.rmtree(meta)
+
+    def soft_reset(self, *, keep_prompts: bool) -> None:
+        """Wipe per-task scratch but preserve durable casefile setup.
+
+        Removes:
+
+        * ``chats/`` (per-lane and ``_compare__*`` logs).
+        * ``findings/`` (all entries).
+        * ``notes/`` (all entries).
+        * ``runs/`` (captured stdout/stderr).
+        * ``exports/`` (rendered review markdown).
+        * ``lanes.json`` — re-initialized to the default single ``main``
+          lane via ``ensure_initialized`` after deletion.
+        * ``prompts/`` if and only if ``keep_prompts`` is False.
+
+        Preserves:
+
+        * ``context.json`` (auto-include manifest).
+        * ``inbox.json`` (configured external sources).
+        * ``prompts/`` if ``keep_prompts`` is True.
+
+        Idempotent: running this on a casefile that's already in the
+        target state succeeds without error.
+        """
+        meta = self.casefile.metadata_dir
+        per_task_subdirs = ["chats", "findings", "notes", "runs", "exports"]
+        if not keep_prompts:
+            per_task_subdirs.append("prompts")
+        for name in per_task_subdirs:
+            path = meta / name
+            if path.exists():
+                shutil.rmtree(path)
+        # Drop lanes.json so ensure_initialized re-creates the default
+        # `main` lane. Writing an empty lanes file would leave the
+        # casefile lane-less, which the renderer can render but is
+        # almost never what a "new task" reset wants.
+        if self.casefile.lanes_file.exists():
+            self.casefile.lanes_file.unlink()
+        self.ensure_initialized()
 
     # ----- chat history per lane -----
 

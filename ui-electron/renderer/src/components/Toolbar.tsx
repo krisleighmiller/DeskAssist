@@ -1,10 +1,22 @@
-import type { ApiKeyStatus, CasefileSnapshot, Lane, Provider } from "../types";
+import {
+  DEFAULT_PROVIDER_MODELS,
+  type ApiKeyStatus,
+  type CasefileSnapshot,
+  type Lane,
+  type Provider,
+  type ProviderModels,
+} from "../types";
 
 interface ToolbarProps {
   casefile: CasefileSnapshot | null;
   provider: Provider;
   onProviderChange: (provider: Provider) => void;
   keyStatus: ApiKeyStatus;
+  /** Per-provider model overrides. Empty string for a provider means
+   * "use the backend default" — the toolbar surfaces the resolved model
+   * (override OR default) so users can see what they'll get without
+   * opening the API Keys & Models dialog. */
+  providerModels: ProviderModels;
   onChooseCasefile: () => void;
   onOpenKeys: () => void;
   onSwitchLane?: (laneId: string) => void;
@@ -37,8 +49,20 @@ function ancestorChain(casefile: CasefileSnapshot, laneId: string | null): Lane[
 }
 
 export function Toolbar(props: ToolbarProps): JSX.Element {
-  const { casefile, provider, onProviderChange, keyStatus, onChooseCasefile, onOpenKeys, onSwitchLane } = props;
+  const {
+    casefile,
+    provider,
+    onProviderChange,
+    keyStatus,
+    providerModels,
+    onChooseCasefile,
+    onOpenKeys,
+    onSwitchLane,
+  } = props;
   const chain = casefile ? ancestorChain(casefile, casefile.activeLaneId) : [];
+  const activeModel =
+    providerModels[provider]?.trim() || DEFAULT_PROVIDER_MODELS[provider];
+  const modelIsDefault = !providerModels[provider]?.trim();
   return (
     <div className="toolbar">
       <button type="button" onClick={onChooseCasefile}>
@@ -91,8 +115,15 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
         <option value="anthropic">Anthropic</option>
         <option value="deepseek">DeepSeek</option>
       </select>
+      <span
+        className="toolbar-model"
+        title={modelIsDefault ? "Backend default — change in API Keys & Models" : "Custom model"}
+      >
+        Model: <code>{activeModel}</code>
+        {modelIsDefault && <span className="muted"> (default)</span>}
+      </span>
       <button type="button" onClick={onOpenKeys}>
-        API Keys
+        API Keys & Models
       </button>
       <span className="keys-status">{describeKeys(keyStatus)}</span>
     </div>
