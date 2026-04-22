@@ -474,15 +474,13 @@ async function buildTreeAt(directory, depth = 0, maxDepth = 4, virtualPath = nul
   return node;
 }
 
-// Default budget covers run commands (where the user's allowlisted shell
-// command can legitimately take up to `system_exec.run_safe`'s 120s cap).
-// Metadata calls (list/get/save/etc) should never legitimately take this
-// long, so callers pass `BRIDGE_METADATA_TIMEOUT_MS` to surface hangs as
-// a process error within seconds. Chat turns get the most generous budget
-// because an agentic turn with several tool calls + provider latency on a
-// slower model (e.g. DeepSeek doing a code review) routinely runs past
-// two minutes; capping that at 120s surfaces as a confusing "Python
-// bridge timed out" error to the user.
+// Default budget for general bridge calls. Chat turns get the most generous
+// budget because an agentic turn with several tool calls + provider latency
+// on a slower model (e.g. DeepSeek doing a code review) routinely runs past
+// two minutes; capping that at 120s surfaces as a confusing "Python bridge
+// timed out" error to the user. Metadata calls (list/get/save/etc) use a
+// tighter cap so a hung Python process surfaces within seconds rather than
+// the two-minute budget.
 const BRIDGE_DEFAULT_TIMEOUT_MS = 120_000;
 const BRIDGE_METADATA_TIMEOUT_MS = 10_000;
 const BRIDGE_CHAT_TIMEOUT_MS = 600_000;
@@ -1340,14 +1338,14 @@ ipcMain.handle("casefile:listInboxItems", async (_, args = {}) => {
 ipcMain.handle("casefile:readInboxItem", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
-  const path = typeof args.path === "string" ? args.path : "";
+  const itemPath = typeof args.path === "string" ? args.path : "";
   if (!sourceId.trim()) throw new Error("sourceId is required");
-  if (!path.trim()) throw new Error("path is required");
+  if (!itemPath.trim()) throw new Error("path is required");
   const payload = {
     command: "casefile:readInboxItem",
     casefileRoot,
     sourceId,
-    path,
+    path: itemPath,
   };
   if (Number.isInteger(args.maxChars) && args.maxChars > 0) {
     payload.maxChars = args.maxChars;
@@ -1604,6 +1602,11 @@ ipcMain.handle("terminal:spawn", async (_event, args = {}) => {
 ipcMain.handle("terminal:write", async (_event, args = {}) => {
   const id = typeof args.id === "string" ? args.id : "";
   const data = typeof args.data === "string" ? args.data : "";
+  // 1 MB per write is already very generous for interactive terminal input;
+  // anything larger is almost certainly accidental and could saturate the PTY.
+  if (data.length > 1_000_000) {
+    throw new Error("terminal:write data exceeds 1 MB limit");
+  }
   const session = ptySessions.get(id);
   if (!session) return false;
   session.pty.write(data);

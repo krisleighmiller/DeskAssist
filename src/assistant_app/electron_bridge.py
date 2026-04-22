@@ -448,14 +448,12 @@ def handle_casefile_register_lane(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_casefile_update_lane_attachments(request: dict[str, Any]) -> dict[str, Any]:
-    root = request.get("casefileRoot")
-    if not isinstance(root, str) or not root.strip():
-        raise ValueError("casefileRoot is required")
+    casefile_root_path = _require_casefile_root(request)
     lane_id = request.get("laneId")
     if not isinstance(lane_id, str) or not lane_id.strip():
         raise ValueError("laneId is required")
     attachments = parse_attachments(request.get("attachments"))
-    service = CasefileService(Path(root))
+    service = CasefileService(casefile_root_path)
     snapshot = service.update_lane_attachments(lane_id, attachments)
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
@@ -576,9 +574,7 @@ def handle_casefile_soft_reset(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_casefile_set_lane_parent(request: dict[str, Any]) -> dict[str, Any]:
-    root = request.get("casefileRoot")
-    if not isinstance(root, str) or not root.strip():
-        raise ValueError("casefileRoot is required")
+    casefile_root_path = _require_casefile_root(request)
     lane_id = request.get("laneId")
     if not isinstance(lane_id, str) or not lane_id.strip():
         raise ValueError("laneId is required")
@@ -590,7 +586,7 @@ def handle_casefile_set_lane_parent(request: dict[str, Any]) -> dict[str, Any]:
         parent_id = raw_parent.strip() or None
     else:
         raise ValueError("parentId must be a string or null")
-    service = CasefileService(Path(root))
+    service = CasefileService(casefile_root_path)
     snapshot = service.set_lane_parent(lane_id, parent_id)
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
@@ -636,25 +632,21 @@ def handle_casefile_resolve_scope(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_casefile_switch_lane(request: dict[str, Any]) -> dict[str, Any]:
-    root = request.get("casefileRoot")
+    casefile_root_path = _require_casefile_root(request)
     lane_id = request.get("laneId")
-    if not isinstance(root, str) or not root.strip():
-        raise ValueError("casefileRoot is required")
     if not isinstance(lane_id, str) or not lane_id.strip():
         raise ValueError("laneId is required")
-    service = CasefileService(Path(root))
+    service = CasefileService(casefile_root_path)
     snapshot = service.set_active_lane(lane_id)
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
 
 def handle_casefile_list_chat(request: dict[str, Any]) -> dict[str, Any]:
-    root = request.get("casefileRoot")
+    casefile_root_path = _require_casefile_root(request)
     lane_id = request.get("laneId")
-    if not isinstance(root, str) or not root.strip():
-        raise ValueError("casefileRoot is required")
     if not isinstance(lane_id, str) or not lane_id.strip():
         raise ValueError("laneId is required")
-    service = CasefileService(Path(root))
+    service = CasefileService(casefile_root_path)
     messages, skipped = service.read_chat(lane_id)
     result: dict[str, Any] = {"ok": True, "messages": messages}
     if skipped:

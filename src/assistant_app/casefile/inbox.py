@@ -314,8 +314,11 @@ class InboxStore:
                 f"inbox item is not a text type: {target.suffix or '(no suffix)'}"
             )
         # Bounded read: read enough bytes to hit the cap then trim.
-        with target.open("r", encoding="utf-8", errors="replace") as fh:
-            content = fh.read(max_chars + 1)
+        try:
+            with target.open("r", encoding="utf-8", errors="strict") as fh:
+                content = fh.read(max_chars + 1)
+        except UnicodeDecodeError:
+            raise ValueError(f"inbox item is not valid UTF-8 text: {relative_path!r}")
         truncated = len(content) > max_chars
         return content[:max_chars], truncated, str(target)
 

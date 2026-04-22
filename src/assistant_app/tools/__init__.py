@@ -50,9 +50,11 @@ def build_default_tool_registry(
     enabled: set[str] = {"list_dir", "read_file"}
     if enable_writes:
         enabled |= {"append_file", "delete_file", "delete_path", "save_file"}
-    # `casefile_root` is intentionally unused at the moment; see the
-    # docstring. It stays in the signature so existing call sites compile.
-    del casefile_root
+    # `casefile_root` is accepted for call-site compatibility but is not
+    # used to register any tools at present (the findings/runs tools that
+    # previously consumed it were removed). Suppress the unused-variable
+    # warning explicitly rather than silently ignoring the parameter.
+    _ = casefile_root
     registry = ToolRegistry(
         workspace_root=workspace_root,
         enabled_commands=enabled,
