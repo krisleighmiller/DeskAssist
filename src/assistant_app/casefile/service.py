@@ -8,7 +8,6 @@ from assistant_app.casefile.context import (
     ContextManifestStore,
     ResolvedContextFile,
 )
-from assistant_app.casefile.findings import Finding, SourceRef
 from assistant_app.casefile.models import CasefileSnapshot, Lane, LaneAttachment
 from assistant_app.casefile.scope import (
     ScopeContext,
@@ -92,10 +91,10 @@ class CasefileService:
         """Remove a lane from the casefile (M4.6).
 
         On-disk per-lane data files (`chats/<id>.jsonl`,
-        `notes/<id>.md`, findings tagged with the lane id) are
-        intentionally **not** deleted. Re-registering a lane with the
-        same id will surface the prior data again. This mirrors the
-        "hidden but recoverable" decision from the M4.6 spec.
+        `notes/<id>.md`) are intentionally **not** deleted.
+        Re-registering a lane with the same id will surface the prior
+        data again. This mirrors the "hidden but recoverable" decision
+        from the M4.6 spec.
         """
         return self.store.remove_lane(lane_id)
 
@@ -279,52 +278,3 @@ def serialize_scope(scope: ScopeContext) -> dict[str, Any]:
         "contextFiles": [serialize_context_file(entry) for entry in scope.context_files],
         "autoIncludeMaxBytes": scope.auto_include_max_bytes,
     }
-
-
-def serialize_finding(finding: Finding) -> dict[str, Any]:
-    """IPC-shaped finding (camelCase) for the renderer."""
-    return {
-        "id": finding.id,
-        "title": finding.title,
-        "body": finding.body,
-        "severity": finding.severity,
-        "createdAt": finding.created_at,
-        "updatedAt": finding.updated_at,
-        "laneIds": list(finding.lane_ids),
-        "sourceRefs": [
-            {
-                "laneId": ref.lane_id,
-                "path": ref.path,
-                "lineStart": ref.line_start,
-                "lineEnd": ref.line_end,
-            }
-            for ref in finding.source_refs
-        ],
-    }
-
-
-def parse_source_refs(raw: Any) -> list[SourceRef]:
-    """Inverse of `serialize_finding`'s sourceRefs field, tolerant of partial input."""
-    if not isinstance(raw, list):
-        return []
-    out: list[SourceRef] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        lane_id = item.get("laneId") or item.get("lane_id")
-        path = item.get("path")
-        if not isinstance(lane_id, str) or not lane_id:
-            continue
-        if not isinstance(path, str) or not path:
-            continue
-        line_start = item.get("lineStart") if "lineStart" in item else item.get("line_start")
-        line_end = item.get("lineEnd") if "lineEnd" in item else item.get("line_end")
-        out.append(
-            SourceRef(
-                lane_id=lane_id,
-                path=path,
-                line_start=int(line_start) if isinstance(line_start, int) else None,
-                line_end=int(line_end) if isinstance(line_end, int) else None,
-            )
-        )
-    return out

@@ -10,27 +10,18 @@ from typing import Any
 from assistant_app.casefile import (
     CasefileService,
     ContextManifest,
-    DEFAULT_RUN_MAX_OUTPUT_CHARS,
-    DEFAULT_RUN_TIMEOUT_SECONDS,
-    FindingsStore,
     InboxItem,
     InboxSource,
     InboxStore,
     NotesStore,
     PromptsStore,
     ResolvedContextFile,
-    RunRecord,
-    RunsStore,
-    RunSummary,
     ScopeContext,
     compare_lanes,
-    export_review,
 )
 from assistant_app.casefile.service import (
     parse_attachments,
-    parse_source_refs,
     serialize_context_manifest,
-    serialize_finding,
     serialize_scope,
 )
 from assistant_app.casefile.prompts import PromptDraft, PromptSummary
@@ -38,7 +29,6 @@ from assistant_app.chat_service import ChatService
 from assistant_app.filesystem import WorkspaceFilesystem
 from assistant_app.models import ChatMessage
 from assistant_app.prompts import CHARTER_MARKER, build_charter_system_content
-from assistant_app.system_exec import ALLOWED_EXECUTABLES
 
 
 # ---------------------------------------------------------------------------
@@ -540,8 +530,8 @@ def handle_casefile_remove_lane(request: dict[str, Any]) -> dict[str, Any]:
     """M4.6: remove a lane from the casefile.
 
     On-disk per-lane data files (``chats/<id>.jsonl``,
-    ``notes/<id>.md``, findings tagged with this lane) are intentionally
-    preserved so re-registering a lane with the same id resurrects the
+    ``notes/<id>.md``) are intentionally preserved so
+    re-registering a lane with the same id resurrects the
     prior history. The renderer is responsible for surfacing a
     confirmation dialog before invoking this.
     """
@@ -558,7 +548,7 @@ def handle_casefile_hard_reset(request: dict[str, Any]) -> dict[str, Any]:
     """M4.6: nuke ``.casefile/`` and re-initialize it.
 
     The returned snapshot is the freshly initialized casefile (default
-    ``main`` lane, no chats, no findings, no prompts, etc.). The
+    ``main`` lane, no chats, no notes, no prompts, etc.). The
     renderer must gate this behind a confirmation dialog; the bridge
     does not.
     """
@@ -569,8 +559,8 @@ def handle_casefile_hard_reset(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_casefile_soft_reset(request: dict[str, Any]) -> dict[str, Any]:
-    """M4.6: clear per-task scratch (lanes, chats, findings, notes,
-    runs, exports). Optionally also clear prompts via ``keepPrompts``.
+    """M4.6: clear per-task scratch (lanes, chats, notes).
+    Optionally also clear prompts via ``keepPrompts``.
 
     Preserves ``context.json`` and ``inbox.json`` regardless. Also
     re-creates the default ``main`` lane so the casefile is immediately
@@ -673,7 +663,7 @@ def handle_casefile_list_chat(request: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# M3 handlers: findings / notes / compare / export / lane-scoped read
+# M3 handlers: notes / compare / lane-scoped read / save chat output
 # ---------------------------------------------------------------------------
 
 
@@ -752,87 +742,6 @@ def _build_sensitive_prefixes() -> tuple[Path, ...]:
 _SENSITIVE_PATH_PREFIXES: tuple[Path, ...] = _build_sensitive_prefixes()
 
 
-def handle_casefile_list_findings(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    raw_lane = request.get("laneId")
-    lane_id = raw_lane if isinstance(raw_lane, str) and raw_lane.strip() else None
-    findings = FindingsStore(root).list(lane_id=lane_id)
-    return {"ok": True, "findings": [serialize_finding(f) for f in findings]}
-
-
-def handle_casefile_get_finding(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    finding_id = request.get("findingId")
-    if not isinstance(finding_id, str) or not finding_id.strip():
-        raise ValueError("findingId is required")
-    finding = FindingsStore(root).get(finding_id)
-    return {"ok": True, "finding": serialize_finding(finding)}
-
-
-def _finding_input(request: dict[str, Any]) -> dict[str, Any]:
-    raw = request.get("finding")
-    if not isinstance(raw, dict):
-        raise ValueError("finding object is required")
-    return raw
-
-
-def handle_casefile_create_finding(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    raw = _finding_input(request)
-    title = raw.get("title")
-    if not isinstance(title, str) or not title.strip():
-        raise ValueError("finding.title is required")
-    body = raw.get("body") if isinstance(raw.get("body"), str) else ""
-    severity = raw.get("severity") if isinstance(raw.get("severity"), str) else "info"
-    raw_lanes = raw.get("laneIds") if "laneIds" in raw else raw.get("lane_ids")
-    if not isinstance(raw_lanes, list) or not raw_lanes:
-        raise ValueError("finding.laneIds must be a non-empty array")
-    lane_ids = [str(item) for item in raw_lanes]
-    source_refs = parse_source_refs(raw.get("sourceRefs") if "sourceRefs" in raw else raw.get("source_refs"))
-    finding = FindingsStore(root).create(
-        title=title,
-        body=body,
-        severity=severity,
-        lane_ids=lane_ids,
-        source_refs=source_refs,
-    )
-    return {"ok": True, "finding": serialize_finding(finding)}
-
-
-def handle_casefile_update_finding(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    finding_id = request.get("findingId")
-    if not isinstance(finding_id, str) or not finding_id.strip():
-        raise ValueError("findingId is required")
-    raw = _finding_input(request)
-    update_kwargs: dict[str, Any] = {}
-    if "title" in raw and isinstance(raw["title"], str):
-        update_kwargs["title"] = raw["title"]
-    if "body" in raw and isinstance(raw["body"], str):
-        update_kwargs["body"] = raw["body"]
-    if "severity" in raw and isinstance(raw["severity"], str):
-        update_kwargs["severity"] = raw["severity"]
-    if "laneIds" in raw or "lane_ids" in raw:
-        raw_lanes = raw.get("laneIds") if "laneIds" in raw else raw.get("lane_ids")
-        if isinstance(raw_lanes, list):
-            update_kwargs["lane_ids"] = [str(item) for item in raw_lanes]
-    if "sourceRefs" in raw or "source_refs" in raw:
-        update_kwargs["source_refs"] = parse_source_refs(
-            raw.get("sourceRefs") if "sourceRefs" in raw else raw.get("source_refs")
-        )
-    finding = FindingsStore(root).update(finding_id, **update_kwargs)
-    return {"ok": True, "finding": serialize_finding(finding)}
-
-
-def handle_casefile_delete_finding(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    finding_id = request.get("findingId")
-    if not isinstance(finding_id, str) or not finding_id.strip():
-        raise ValueError("findingId is required")
-    FindingsStore(root).delete(finding_id)
-    return {"ok": True}
-
-
 def handle_casefile_get_note(request: dict[str, Any]) -> dict[str, Any]:
     root = _require_casefile_root(request)
     lane_id = request.get("laneId")
@@ -889,20 +798,79 @@ def handle_casefile_compare_lanes(request: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "comparison": comparison.to_json()}
 
 
-def handle_casefile_export(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    raw_lanes = request.get("laneIds")
-    if not isinstance(raw_lanes, list) or not raw_lanes:
-        raise ValueError("laneIds must be a non-empty array")
-    lane_ids = [str(item) for item in raw_lanes if isinstance(item, str)]
-    service = CasefileService(root)
-    snapshot = service.snapshot()
-    output_path, markdown = export_review(
-        casefile_root=root,
-        lanes=snapshot.lanes,
-        selected_lane_ids=lane_ids,
-    )
-    return {"ok": True, "path": str(output_path), "markdown": markdown}
+def handle_chat_save_output(request: dict[str, Any]) -> dict[str, Any]:
+    """Write a chat message body to ``<destinationDir>/<filename>`` as text.
+
+    This is the single shared mechanism for the renderer's "Save..." action
+    on assistant messages. It accepts an *absolute* destination directory
+    so the picker can target lane attachments, the active lane root, or
+    any directory the user chooses via the system file dialog — all
+    without going through the lane-scoped filesystem (which would refuse
+    writes outside the active lane).
+
+    Validation:
+
+    * ``destinationDir`` must be an absolute path that already exists and
+      is a directory. We deliberately do **not** auto-create it; if the
+      target is missing, the user picked the wrong place.
+    * ``filename`` must be a single path component (no separators, no
+      ``..``) and end in an allowed text suffix (``.md`` is the default
+      we suggest, but ``.txt`` is also accepted for users who don't want
+      the markdown convention). The suffix check is permissive on
+      purpose — the chat body is plain text either way.
+    * ``body`` must be a string; an empty string is allowed (the user
+      may want to create a placeholder).
+
+    Returns ``{ok: True, path: <full path>}``. Refuses to overwrite an
+    existing file — the picker prompts for a unique name client-side.
+    """
+    raw_dir = request.get("destinationDir")
+    if not isinstance(raw_dir, str) or not raw_dir.strip():
+        raise ValueError("destinationDir is required")
+    destination = Path(raw_dir).expanduser()
+    if not destination.is_absolute():
+        raise ValueError("destinationDir must be an absolute path")
+    destination = destination.resolve()
+    _validate_path_depth(destination, "destinationDir")
+    if not destination.exists():
+        raise FileNotFoundError(f"destinationDir does not exist: {destination}")
+    if not destination.is_dir():
+        raise NotADirectoryError(f"destinationDir is not a directory: {destination}")
+
+    raw_name = request.get("filename")
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        raise ValueError("filename is required")
+    filename = raw_name.strip()
+    # Reject anything that could escape the chosen directory. We require
+    # a single path component; the renderer slugifies its default name
+    # before sending so this should only fail on hand-crafted payloads.
+    if "/" in filename or "\\" in filename or filename in {".", ".."}:
+        raise ValueError("filename must be a single path component")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".md", ".txt"}:
+        raise ValueError("filename must end in .md or .txt")
+
+    body = request.get("body")
+    if not isinstance(body, str):
+        raise ValueError("body must be a string")
+
+    target = destination / filename
+    if target.exists():
+        raise FileExistsError(f"Refusing to overwrite existing file: {target}")
+    # Atomic-ish write via a sibling temp file; mirrors the pattern used by
+    # NotesStore / PromptsStore so a crash mid-write doesn't leave a
+    # half-written file behind.
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(target)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return {"ok": True, "path": str(target)}
 
 
 def handle_casefile_read_overlay_file(request: dict[str, Any]) -> dict[str, Any]:
@@ -1023,148 +991,6 @@ def handle_casefile_delete_prompt(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("promptId is required")
     PromptsStore(root).delete(prompt_id.strip())
     return {"ok": True}
-
-
-# ---------------------------------------------------------------------------
-# M4.2: runs handlers
-# ---------------------------------------------------------------------------
-
-
-def _serialize_run_summary(summary: RunSummary) -> dict[str, Any]:
-    return {
-        "id": summary.id,
-        "command": summary.command,
-        "laneId": summary.lane_id,
-        "startedAt": summary.started_at,
-        "exitCode": summary.exit_code,
-        "error": summary.error,
-    }
-
-
-def _serialize_run(record: RunRecord) -> dict[str, Any]:
-    return {
-        "id": record.id,
-        "command": record.command,
-        "laneId": record.lane_id,
-        "cwd": record.cwd,
-        "startedAt": record.started_at,
-        "finishedAt": record.finished_at,
-        "exitCode": record.exit_code,
-        "stdout": record.stdout,
-        "stderr": record.stderr,
-        "stdoutTruncated": record.stdout_truncated,
-        "stderrTruncated": record.stderr_truncated,
-        "timeoutSeconds": record.timeout_seconds,
-        "maxOutputChars": record.max_output_chars,
-        "error": record.error,
-    }
-
-
-def handle_casefile_list_runs(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    raw_lane = request.get("laneId")
-    lane_id = raw_lane.strip() if isinstance(raw_lane, str) and raw_lane.strip() else None
-    summaries = RunsStore(root).list(lane_id=lane_id)
-    return {"ok": True, "runs": [_serialize_run_summary(s) for s in summaries]}
-
-
-def handle_casefile_get_run(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    run_id = request.get("runId")
-    if not isinstance(run_id, str) or not run_id.strip():
-        raise ValueError("runId is required")
-    record = RunsStore(root).get(run_id.strip())
-    return {"ok": True, "run": _serialize_run(record)}
-
-
-def handle_casefile_delete_run(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    run_id = request.get("runId")
-    if not isinstance(run_id, str) or not run_id.strip():
-        raise ValueError("runId is required")
-    RunsStore(root).delete(run_id.strip())
-    return {"ok": True}
-
-
-def handle_runs_get_allowed_executables(_request: dict[str, Any]) -> dict[str, Any]:
-    """Return the safe-allowlist for the renderer's Runs tab.
-
-    The frontend used to maintain its own copy of this list; routing the
-    canonical set through the bridge means a backend allowlist change can
-    never silently desync from the UI hint.
-    """
-    return {"ok": True, "executables": sorted(ALLOWED_EXECUTABLES)}
-
-
-def handle_casefile_run_command(request: dict[str, Any]) -> dict[str, Any]:
-    """Execute one safe-allowlisted command and persist the result.
-
-    The cwd resolves to the lane root when ``laneId`` is supplied, otherwise
-    the casefile root itself — same as how findings/notes scope. We never
-    fall back to an arbitrary directory: the lane root is the only path
-    surface the user has explicitly registered as workspace-writable.
-
-    Validation/permission/timeout failures are recorded *into* the run
-    record (with ``exit_code: null`` and a populated ``error`` field) rather
-    than raised, so the renderer can render the failed run alongside
-    successful ones from the list endpoint without two error paths.
-    """
-    root = _require_casefile_root(request)
-    # The dispatch envelope already uses "command" for the bridge command
-    # name (e.g. "casefile:runCommand"), so the shell command lives under
-    # a separate "commandLine" field. Renaming once here keeps the public
-    # IPC surface unambiguous.
-    command_line = request.get("commandLine")
-    if not isinstance(command_line, str) or not command_line.strip():
-        raise ValueError("commandLine is required")
-    raw_lane = request.get("laneId")
-    lane_id = raw_lane.strip() if isinstance(raw_lane, str) and raw_lane.strip() else None
-    if lane_id is not None:
-        snapshot = CasefileService(root).snapshot()
-        # `lane_by_id` raises KeyError on miss; translate into a ValueError
-        # with a descriptive message so the bridge `error` field is human-
-        # readable (otherwise `str(KeyError('x'))` becomes the unhelpful
-        # quoted string `"'x'"`). Mirrors the pattern in findings/prompts.
-        try:
-            lane = snapshot.lane_by_id(lane_id)
-        except KeyError as exc:
-            raise ValueError(f"Unknown laneId: {lane_id!r}") from exc
-        cwd = lane.root
-    else:
-        cwd = root
-
-    # Range-check at the bridge level so out-of-range inputs surface as
-    # plain validation errors rather than being baked into a persisted
-    # run record (which is what would happen if we let `run_safe` raise
-    # downstream from `RunsStore.start`).
-    timeout_raw = request.get("timeoutSeconds")
-    if timeout_raw is None:
-        timeout_seconds = DEFAULT_RUN_TIMEOUT_SECONDS
-    elif isinstance(timeout_raw, int) and not isinstance(timeout_raw, bool):
-        if timeout_raw < 1 or timeout_raw > 120:
-            raise ValueError("timeoutSeconds must be between 1 and 120")
-        timeout_seconds = timeout_raw
-    else:
-        raise ValueError("timeoutSeconds must be an integer")
-
-    max_chars_raw = request.get("maxOutputChars")
-    if max_chars_raw is None:
-        max_output_chars = DEFAULT_RUN_MAX_OUTPUT_CHARS
-    elif isinstance(max_chars_raw, int) and not isinstance(max_chars_raw, bool):
-        if max_chars_raw < 1 or max_chars_raw > 200_000:
-            raise ValueError("maxOutputChars must be between 1 and 200000")
-        max_output_chars = max_chars_raw
-    else:
-        raise ValueError("maxOutputChars must be an integer")
-
-    record = RunsStore(root).start(
-        command=command_line,
-        cwd=cwd,
-        lane_id=lane_id,
-        timeout_seconds=timeout_seconds,
-        max_output_chars=max_output_chars,
-    )
-    return {"ok": True, "run": _serialize_run(record)}
 
 
 # ---------------------------------------------------------------------------
@@ -1464,15 +1290,10 @@ _HANDLERS = {
     "casefile:saveContext": handle_casefile_save_context,
     "casefile:resolveScope": handle_casefile_resolve_scope,
     "casefile:listChat": handle_casefile_list_chat,
-    "casefile:listFindings": handle_casefile_list_findings,
-    "casefile:getFinding": handle_casefile_get_finding,
-    "casefile:createFinding": handle_casefile_create_finding,
-    "casefile:updateFinding": handle_casefile_update_finding,
-    "casefile:deleteFinding": handle_casefile_delete_finding,
     "casefile:getNote": handle_casefile_get_note,
     "casefile:saveNote": handle_casefile_save_note,
     "casefile:compareLanes": handle_casefile_compare_lanes,
-    "casefile:exportFindings": handle_casefile_export,
+    "chat:saveOutput": handle_chat_save_output,
     "lane:readFile": handle_lane_read_file,
     "casefile:readOverlayFile": handle_casefile_read_overlay_file,
     "casefile:openComparison": handle_casefile_open_comparison,
@@ -1482,11 +1303,6 @@ _HANDLERS = {
     "casefile:createPrompt": handle_casefile_create_prompt,
     "casefile:savePrompt": handle_casefile_save_prompt,
     "casefile:deletePrompt": handle_casefile_delete_prompt,
-    "casefile:getAllowedExecutables": handle_runs_get_allowed_executables,
-    "casefile:listRuns": handle_casefile_list_runs,
-    "casefile:getRun": handle_casefile_get_run,
-    "casefile:deleteRun": handle_casefile_delete_run,
-    "casefile:runCommand": handle_casefile_run_command,
     "casefile:listInboxSources": handle_casefile_list_inbox_sources,
     "casefile:addInboxSource": handle_casefile_add_inbox_source,
     "casefile:updateInboxSource": handle_casefile_update_inbox_source,

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
 import type {
-  FindingDraft,
   InboxItemContent,
   InboxItemDto,
   InboxSourceDto,
@@ -9,9 +8,6 @@ import type {
 
 interface InboxTabProps {
   hasCasefile: boolean;
-  hasActiveLane: boolean;
-  activeLaneId: string | null;
-  activeLaneName: string | null;
   sources: InboxSourceDto[];
   loading: boolean;
   error: string | null;
@@ -25,8 +21,6 @@ interface InboxTabProps {
   // time and we re-list when they switch.
   onListItems: (sourceId: string) => Promise<InboxItemDto[]>;
   onReadItem: (sourceId: string, path: string) => Promise<InboxItemContent>;
-  // Create finding from a virtual `_inbox/<source_id>/<path>` ref.
-  onCreateFinding: (draft: FindingDraft) => Promise<void>;
 }
 
 interface AddFormState {
@@ -38,13 +32,6 @@ interface AddFormState {
 
 const EMPTY_ADD: AddFormState = { name: "", root: "", busy: false, error: null };
 
-function virtualInboxPath(sourceId: string, relativePath: string): string {
-  // The renderer constructs the virtual path so the server side stays
-  // dumb about inbox semantics and we don't have to add another
-  // bridge/store coupling. Findings persist this verbatim.
-  return `_inbox/${sourceId}/${relativePath}`;
-}
-
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -53,9 +40,6 @@ function formatSize(bytes: number): string {
 
 export function InboxTab({
   hasCasefile,
-  hasActiveLane,
-  activeLaneId,
-  activeLaneName,
   sources,
   loading,
   error,
@@ -64,7 +48,6 @@ export function InboxTab({
   onChooseRoot,
   onListItems,
   onReadItem,
-  onCreateFinding,
 }: InboxTabProps): JSX.Element {
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
   const [items, setItems] = useState<InboxItemDto[]>([]);
@@ -77,9 +60,6 @@ export function InboxTab({
   const [contentError, setContentError] = useState<string | null>(null);
 
   const [addForm, setAddForm] = useState<AddFormState>(EMPTY_ADD);
-  const [linkBusy, setLinkBusy] = useState(false);
-  const [linkError, setLinkError] = useState<string | null>(null);
-  const [linkOk, setLinkOk] = useState<string | null>(null);
 
   // Default the selection to the first source so the items pane has
   // something to show when the user lands on the tab.
@@ -140,8 +120,6 @@ export function InboxTab({
     setContent(null);
     setContentError(null);
     setContentLoading(true);
-    setLinkOk(null);
-    setLinkError(null);
     try {
       const result = await onReadItem(selectedSourceId, path);
       setContent(result);
@@ -203,31 +181,6 @@ export function InboxTab({
     }
   };
 
-  const linkAsFinding = async () => {
-    if (!selectedSourceId || !selectedItemPath || !activeLaneId) return;
-    if (linkBusy) return;
-    const source = sources.find((s) => s.id === selectedSourceId);
-    if (!source) return;
-    const refPath = virtualInboxPath(selectedSourceId, selectedItemPath);
-    setLinkBusy(true);
-    setLinkError(null);
-    setLinkOk(null);
-    try {
-      await onCreateFinding({
-        title: `Inbox: ${selectedItemPath}`,
-        body: `Captured from inbox source "${source.name}" (${source.root}).`,
-        severity: "info",
-        laneIds: [activeLaneId],
-        sourceRefs: [{ laneId: activeLaneId, path: refPath }],
-      });
-      setLinkOk("Finding created.");
-    } catch (err) {
-      setLinkError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLinkBusy(false);
-    }
-  };
-
   const sortedItems = useMemo(() => {
     return [...items].sort((a, b) => a.path.localeCompare(b.path));
   }, [items]);
@@ -286,9 +239,8 @@ export function InboxTab({
         </div>
         {addForm.error && <span className="inbox-error">{addForm.error}</span>}
         <span className="hint">
-          Inbox sources are read-only references — files stay in place on disk and
-          are surfaced under the virtual path <code>_inbox/&lt;source&gt;/&lt;path&gt;</code>{" "}
-          when linked to a finding.
+          Inbox sources are read-only references — files stay in place on disk
+          and are surfaced for browsing here.
         </span>
       </form>
 
@@ -350,25 +302,9 @@ export function InboxTab({
             ) : (
               <span className="hint">Pick an item to view its contents.</span>
             )}
-            {selectedItemPath && (
-              <button
-                type="button"
-                disabled={!hasActiveLane || linkBusy}
-                onClick={() => void linkAsFinding()}
-                title={
-                  hasActiveLane
-                    ? `Create a finding on lane "${activeLaneName ?? activeLaneId}"`
-                    : "Activate a lane to link inbox items as findings"
-                }
-              >
-                {linkBusy ? "Linking..." : "Create finding"}
-              </button>
-            )}
           </header>
           {contentLoading && <span className="hint">Loading...</span>}
           {contentError && <span className="inbox-error">{contentError}</span>}
-          {linkError && <span className="inbox-error">{linkError}</span>}
-          {linkOk && <span className="inbox-ok">{linkOk}</span>}
           {content && (
             <>
               {content.truncated && (

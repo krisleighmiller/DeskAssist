@@ -403,10 +403,7 @@ class CasefileStore:
         Removes:
 
         * ``chats/`` (per-lane and ``_compare__*`` logs).
-        * ``findings/`` (all entries).
         * ``notes/`` (all entries).
-        * ``runs/`` (captured stdout/stderr).
-        * ``exports/`` (rendered review markdown).
         * ``lanes.json`` — re-initialized to the default single ``main``
           lane via ``ensure_initialized`` after deletion.
         * ``prompts/`` if and only if ``keep_prompts`` is False.
@@ -421,7 +418,7 @@ class CasefileStore:
         target state succeeds without error.
         """
         meta = self.casefile.metadata_dir
-        per_task_subdirs = ["chats", "findings", "notes", "runs", "exports"]
+        per_task_subdirs = ["chats", "notes"]
         if not keep_prompts:
             per_task_subdirs.append("prompts")
         for name in per_task_subdirs:

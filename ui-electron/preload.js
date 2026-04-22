@@ -20,19 +20,17 @@ contextBridge.exposeInMainWorld("assistantApi", {
   listWorkspace: (maxDepth = 4) => ipcRenderer.invoke("workspace:list", { maxDepth }),
   readFile: (path, maxChars = 200000) => ipcRenderer.invoke("file:read", { path, maxChars }),
   saveFile: (path, content) => ipcRenderer.invoke("file:save", { path, content }),
+  renameFile: (path, newName) => ipcRenderer.invoke("file:rename", { path, newName }),
 
-  // Findings, notes, comparison, export (M3).
-  listFindings: (laneId) => ipcRenderer.invoke("casefile:listFindings", { laneId }),
-  getFinding: (findingId) => ipcRenderer.invoke("casefile:getFinding", { findingId }),
-  createFinding: (finding) => ipcRenderer.invoke("casefile:createFinding", { finding }),
-  updateFinding: (findingId, finding) =>
-    ipcRenderer.invoke("casefile:updateFinding", { findingId, finding }),
-  deleteFinding: (findingId) => ipcRenderer.invoke("casefile:deleteFinding", { findingId }),
+  // Notes, comparison (M3).
   getNote: (laneId) => ipcRenderer.invoke("casefile:getNote", { laneId }),
   saveNote: (laneId, content) => ipcRenderer.invoke("casefile:saveNote", { laneId, content }),
   compareLanes: (leftLaneId, rightLaneId) =>
     ipcRenderer.invoke("casefile:compareLanes", { leftLaneId, rightLaneId }),
-  exportFindings: (laneIds) => ipcRenderer.invoke("casefile:exportFindings", { laneIds }),
+  // Persist a chat message body to a user-chosen directory (lane attachment
+  // or anywhere else). The directory must already exist; the bridge refuses
+  // to overwrite an existing file.
+  saveChatOutput: (payload) => ipcRenderer.invoke("chat:saveOutput", payload),
   readLaneFile: (laneId, path, maxChars) =>
     ipcRenderer.invoke("lane:readFile", { laneId, path, maxChars }),
 
@@ -56,16 +54,6 @@ contextBridge.exposeInMainWorld("assistantApi", {
   savePrompt: (promptId, prompt) =>
     ipcRenderer.invoke("casefile:savePrompt", { promptId, prompt }),
   deletePrompt: (promptId) => ipcRenderer.invoke("casefile:deletePrompt", { promptId }),
-
-  // M4.2: command runs (casefile-scoped, optionally lane-scoped).
-  listRuns: (laneId) => ipcRenderer.invoke("casefile:listRuns", { laneId }),
-  getRun: (runId) => ipcRenderer.invoke("casefile:getRun", { runId }),
-  runCommand: (payload) => ipcRenderer.invoke("casefile:runCommand", payload),
-  deleteRun: (runId) => ipcRenderer.invoke("casefile:deleteRun", { runId }),
-  // Single source of truth for the safe-allowlist; the renderer used to
-  // hard-code a copy of `system_exec.ALLOWED_EXECUTABLES` and could
-  // silently desync on backend changes.
-  getAllowedExecutables: () => ipcRenderer.invoke("casefile:getAllowedExecutables"),
 
   // M4.3: external local-directory inboxes.
   listInboxSources: () => ipcRenderer.invoke("casefile:listInboxSources"),
@@ -103,5 +91,49 @@ contextBridge.exposeInMainWorld("assistantApi", {
     const wrapped = () => handler();
     ipcRenderer.on("app:open-api-keys", wrapped);
     return () => ipcRenderer.removeListener("app:open-api-keys", wrapped);
+  },
+
+  // Filesystem-watcher events from main: emitted whenever the active
+  // casefile root or any of its overlay roots is mutated (by the user
+  // via the editor, by the assistant via tools, or by an external
+  // program). Renderer subscribes once and reacts by re-listing the
+  // file tree.
+  onWorkspaceChanged: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("workspace:changed", wrapped);
+    return () => ipcRenderer.removeListener("workspace:changed", wrapped);
+  },
+  // Tell main about overlay roots that live *outside* the casefile so
+  // their changes also fire `workspace:changed`. Roots inside the
+  // casefile root are already covered and may be passed safely — main
+  // dedupes them.
+  registerWatchRoots: (roots) =>
+    ipcRenderer.invoke("workspace:registerWatchRoots", { roots }),
+
+  // -----------------------------------------------------------------------
+  // Integrated terminal (PTY-backed shell)
+  // -----------------------------------------------------------------------
+  // Each session has an opaque renderer-chosen id used for both the
+  // invoke channels and the streaming events. The data/exit listeners
+  // return an unsubscribe function so the caller can detach when the
+  // React component unmounts.
+  terminalAvailable: () => ipcRenderer.invoke("terminal:available"),
+  terminalSpawn: (opts) => ipcRenderer.invoke("terminal:spawn", opts),
+  terminalWrite: (id, data) => ipcRenderer.invoke("terminal:write", { id, data }),
+  terminalResize: (id, cols, rows) =>
+    ipcRenderer.invoke("terminal:resize", { id, cols, rows }),
+  terminalKill: (id) => ipcRenderer.invoke("terminal:kill", { id }),
+  terminalList: () => ipcRenderer.invoke("terminal:list"),
+  onTerminalData: (id, handler) => {
+    const channel = `terminal:data:${id}`;
+    const wrapped = (_event, data) => handler(data);
+    ipcRenderer.on(channel, wrapped);
+    return () => ipcRenderer.removeListener(channel, wrapped);
+  },
+  onTerminalExit: (id, handler) => {
+    const channel = `terminal:exit:${id}`;
+    const wrapped = (_event, payload) => handler(payload);
+    ipcRenderer.on(channel, wrapped);
+    return () => ipcRenderer.removeListener(channel, wrapped);
   },
 });

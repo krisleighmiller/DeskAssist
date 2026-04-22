@@ -60,16 +60,21 @@ specify, around the dimensions implied by the rubrics in `_context/`).
 
 ## Where outputs live
 
-Substantive analysis belongs on disk in the casefile, not buried in chat
-scrollback that the user will lose:
+Substantive analysis belongs on disk in a place the user can find later,
+not buried in chat scrollback. Two main places:
 
-- Structured findings → `.casefile/findings/` (via the findings tools).
-- Free-form notes → `.casefile/notes/<lane_id>.md` (via the notes tools).
-- Reviews and exports → produced via the export tooling.
+- Free-form per-lane notes → `.casefile/notes/<lane_id>.md` (via the notes
+  tools). Use this for working notes that belong to the casefile itself.
+- Saved chat output → each chat message has a **Save...** button in the
+  UI that writes the message body to a directory the user picks
+  (typically a lane attachment). You don't need to invoke a tool for
+  this — just produce the analysis as the assistant message and the user
+  decides where to save it.
 
 If the user asks you for analysis without saying where it should land,
-produce the analysis in chat *and* offer to save it to the right place. If
-they ask you to "write up" or "capture" something, save it.
+produce the analysis in chat. If they ask you to "write up" or "capture"
+something to a specific location, write it there directly with the file
+tools.
 
 ## Tool posture
 

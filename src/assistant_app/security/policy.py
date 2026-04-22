@@ -17,10 +17,11 @@ class _InternalCapability:
     reaches an internal-only command is *explicit* and *auditable*":
 
     * ``authorize()`` logs every use via ``audit()``.
-    * There is currently *one* internal command (``sys_exec``) and *zero*
-      bridge handlers that invoke it via ``INTERNAL_CAPABILITY``.  The only
-      safety guarantee is structural: no current code path threads the
-      capability from an untrusted IPC message to ``execute_tool_command``.
+    * There are currently *no* internal-only commands and *zero* bridge
+      handlers that invoke ``execute_tool_command`` with
+      ``INTERNAL_CAPABILITY``.  The only safety guarantee is structural:
+      no current code path threads the capability from an untrusted IPC
+      message to ``execute_tool_command``.
 
     If you add a handler that calls ``execute_tool_command(...,
     capability=INTERNAL_CAPABILITY)``, you are bypassing the external-caller

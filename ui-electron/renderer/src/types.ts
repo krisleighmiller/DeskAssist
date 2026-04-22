@@ -179,36 +179,6 @@ export interface OverlayTreeDto {
   error?: string;
 }
 
-export type Severity = "info" | "low" | "medium" | "high" | "critical";
-
-export const SEVERITIES: readonly Severity[] = ["info", "low", "medium", "high", "critical"];
-
-export interface SourceRefDto {
-  laneId: string;
-  path: string;
-  lineStart: number | null;
-  lineEnd: number | null;
-}
-
-export interface FindingDto {
-  id: string;
-  title: string;
-  body: string;
-  severity: Severity;
-  createdAt: string;
-  updatedAt: string;
-  laneIds: string[];
-  sourceRefs: SourceRefDto[];
-}
-
-export interface FindingDraft {
-  title: string;
-  body: string;
-  severity: Severity;
-  laneIds: string[];
-  sourceRefs?: { laneId: string; path: string; lineStart?: number; lineEnd?: number }[];
-}
-
 export interface ChangedFileDto {
   path: string;
   leftSha256: string;
@@ -289,35 +259,6 @@ export interface InboxSourceUpdate {
   root?: string;
 }
 
-// M4.2: command runs (user-initiated, persisted under .casefile/runs).
-
-export interface RunSummaryDto {
-  id: string;
-  command: string;
-  laneId: string | null;
-  startedAt: string;
-  exitCode: number | null;
-  error: string | null;
-}
-
-export interface RunRecordDto extends RunSummaryDto {
-  cwd: string;
-  finishedAt: string;
-  stdout: string;
-  stderr: string;
-  stdoutTruncated: boolean;
-  stderrTruncated: boolean;
-  timeoutSeconds: number;
-  maxOutputChars: number;
-}
-
-export interface RunCommandPayload {
-  commandLine: string;
-  laneId?: string | null;
-  timeoutSeconds?: number;
-  maxOutputChars?: number;
-}
-
 // M4.1: prompt drafts (casefile-scoped, lightweight markdown bodies).
 
 export interface PromptSummaryDto {
@@ -338,9 +279,18 @@ export interface PromptInputDto {
   id?: string;
 }
 
-export interface ExportResult {
+/** Payload for `chat:saveOutput`. The destination is an *absolute* directory
+ * the user picked (typically a lane attachment, optionally any other
+ * directory via the system folder dialog). The bridge writes
+ * `<destinationDir>/<filename>` and refuses to overwrite. */
+export interface SaveChatOutputPayload {
+  destinationDir: string;
+  filename: string;
+  body: string;
+}
+
+export interface SaveChatOutputResult {
   path: string;
-  markdown: string;
 }
 
 export interface AssistantApi {
@@ -356,21 +306,22 @@ export interface AssistantApi {
   listWorkspace: (maxDepth?: number) => Promise<FileTreeNode>;
   readFile: (path: string, maxChars?: number) => Promise<FileReadResult>;
   saveFile: (path: string, content: string) => Promise<FileSaveResult>;
-
-  // Findings (M3).
-  listFindings: (laneId?: string) => Promise<FindingDto[]>;
-  getFinding: (findingId: string) => Promise<FindingDto>;
-  createFinding: (finding: FindingDraft) => Promise<FindingDto>;
-  updateFinding: (findingId: string, finding: Partial<FindingDraft>) => Promise<FindingDto>;
-  deleteFinding: (findingId: string) => Promise<true>;
+  /** Rename a single file or directory inside the active lane.
+   * `newName` is a basename only (no path separators); the bridge
+   * refuses to overwrite an existing entry. */
+  renameFile: (
+    path: string,
+    newName: string
+  ) => Promise<{ oldPath: string; newPath: string; renamed: boolean }>;
 
   // Notes (M3).
   getNote: (laneId: string) => Promise<string>;
   saveNote: (laneId: string, content: string) => Promise<true>;
 
-  // Compare + export + lane-scoped read (M3).
+  // Compare + lane-scoped read (M3).
   compareLanes: (leftLaneId: string, rightLaneId: string) => Promise<LaneComparisonDto>;
-  exportFindings: (laneIds: string[]) => Promise<ExportResult>;
+  // Save a chat message body to a user-chosen directory.
+  saveChatOutput: (payload: SaveChatOutputPayload) => Promise<SaveChatOutputResult>;
   readLaneFile: (
     laneId: string,
     path: string,
@@ -410,13 +361,6 @@ export interface AssistantApi {
   savePrompt: (promptId: string, prompt: PromptInputDto) => Promise<PromptDraftDto>;
   deletePrompt: (promptId: string) => Promise<true>;
 
-  // M4.2: command runs (casefile-scoped, optionally lane-scoped).
-  listRuns: (laneId?: string | null) => Promise<RunSummaryDto[]>;
-  getRun: (runId: string) => Promise<RunRecordDto>;
-  runCommand: (payload: RunCommandPayload) => Promise<RunRecordDto>;
-  deleteRun: (runId: string) => Promise<true>;
-  getAllowedExecutables: () => Promise<string[]>;
-
   // M4.3: inbox sources + item access (read-only).
   listInboxSources: () => Promise<InboxSourceDto[]>;
   addInboxSource: (input: InboxSourceInput) => Promise<InboxSourceDto>;
@@ -455,6 +399,56 @@ export interface AssistantApi {
   getProviderModels: () => Promise<ProviderModels>;
   saveProviderModels: (payload: Partial<ProviderModels>) => Promise<ProviderModels>;
   onOpenApiKeys: (handler: () => void) => () => void;
+
+  /** Subscribe to filesystem-change notifications for the active
+   * casefile root and any overlay roots registered via
+   * `registerWatchRoots`. Handler is invoked (debounced) on any
+   * create/rename/delete/modify within those directories. Returns an
+   * unsubscribe function. */
+  onWorkspaceChanged: (handler: () => void) => () => void;
+  /** Tell main about overlay roots that live outside the casefile so
+   * their changes also fire `workspace:changed`. Safe to include
+   * roots that are already inside the casefile — main dedupes. */
+  registerWatchRoots: (roots: string[]) => Promise<{ watching: string[] }>;
+
+  /** Integrated terminal API. Each session corresponds to one PTY-backed
+   * shell process owned by the main process. The renderer addresses
+   * sessions by an opaque id of its choosing (typically derived from a
+   * lane id) and consumes streaming output via `onTerminalData`. */
+  terminalAvailable: () => Promise<{ available: boolean; error: string | null }>;
+  terminalSpawn: (opts: TerminalSpawnOptions) => Promise<TerminalSpawnResult>;
+  terminalWrite: (id: string, data: string) => Promise<boolean>;
+  terminalResize: (id: string, cols: number, rows: number) => Promise<boolean>;
+  terminalKill: (id: string) => Promise<boolean>;
+  terminalList: () => Promise<TerminalSessionDescriptor[]>;
+  onTerminalData: (id: string, handler: (data: string) => void) => () => void;
+  onTerminalExit: (
+    id: string,
+    handler: (payload: { exitCode: number; signal: number | null }) => void
+  ) => () => void;
+}
+
+export interface TerminalSpawnOptions {
+  id: string;
+  cwd?: string | null;
+  cols?: number;
+  rows?: number;
+  laneId?: string | null;
+}
+
+export interface TerminalSpawnResult {
+  id: string;
+  cwd: string;
+  shell: string;
+  pid: number;
+}
+
+export interface TerminalSessionDescriptor {
+  id: string;
+  cwd: string;
+  shell: string;
+  laneId: string | null;
+  pid: number;
 }
 
 declare global {

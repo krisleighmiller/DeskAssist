@@ -115,13 +115,197 @@ a {
   }
 }
 
-.workbench {
+/* Vertical container that stacks the side-by-side workbench above the
+   integrated terminal pane (M4.8). Without this wrapper the terminal
+   would be a sibling of the toolbar grid row and we'd lose the natural
+   "fill remaining height" behaviour for the editor. */
+.workbench-column {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
   width: 100%;
   overflow: hidden;
+}
+
+.workbench {
+  display: flex;
+  flex-direction: row;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* Integrated terminal pane (M4.8). Height is owned by React state and
+   pushed in via inline style; the resize handle above it is rendered by
+   <HorizontalSplitter>. */
+.terminal-pane {
+  display: flex;
+  flex: 0 0 auto;
+  min-height: 0;
+  width: 100%;
+  background: #0b1220;
+  border-top: 1px solid #1f2937;
+  overflow: hidden;
+}
+
+.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.terminal-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 0 0 auto;
+  background: #111827;
+  border-bottom: 1px solid #1f2937;
+  height: 28px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.terminal-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 12px;
+  font-size: 12px;
+  color: #9ca3af;
+  border-right: 1px solid #1f2937;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.terminal-tab:hover {
+  color: #e5e7eb;
+  background: #0f172a;
+}
+
+.terminal-tab.active {
+  color: #e5e7eb;
+  background: #0b1220;
+  box-shadow: inset 0 -2px 0 #3b82f6;
+}
+
+.terminal-tab.exited .terminal-tab-label {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.terminal-tab-label {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-tab-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.terminal-tab-close:hover {
+  background: #374151;
+  color: #f9fafb;
+}
+
+.terminal-tab-new,
+.terminal-panel-action {
+  background: transparent;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 10px;
+}
+
+.terminal-tab-new:hover,
+.terminal-panel-action:hover {
+  color: #e5e7eb;
+  background: #0f172a;
+}
+
+.terminal-tabs-spacer {
+  flex: 1 1 auto;
+}
+
+.terminal-views {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  background: #0b1220;
+}
+
+.terminal-view {
+  position: absolute;
+  inset: 0;
+  padding: 6px 8px;
+}
+
+.terminal-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #9ca3af;
+  font-size: 13px;
+  gap: 12px;
+}
+
+.terminal-empty-new {
+  background: #1f2937;
+  color: #e5e7eb;
+  border: 1px solid #374151;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.terminal-empty-new:hover {
+  background: #374151;
+}
+
+.terminal-panel-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 16px;
+  color: #f87171;
+  font-size: 13px;
+}
+
+.terminal-panel-error-body {
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: center;
+}
+
+.terminal-panel-error .hint {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.terminal-panel-error code {
+  background: #1f2937;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
 }
 
 /* Side panes carry an inline `width` from React state (M4.7); the
@@ -548,7 +732,7 @@ a {
   font-size: 11px;
 }
 
-/* ---------- Findings / Lanes placeholder ---------- */
+/* ---------- Lanes / generic placeholder ---------- */
 
 .placeholder {
   padding: 16px;
@@ -725,6 +909,23 @@ a {
   gap: 8px;
   align-items: center;
   min-width: 0;
+}
+
+/* When the right pane is narrow the 70px label + input + trailing button
+   stops fitting on one line and the input gets clipped (the symptom the
+   user circled in the screenshot). Below ~360px container width we
+   stack the label above the input so the input always has the full
+   pane width to grow into. */
+@container lane-edit (max-width: 360px) {
+  .lane-form-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .lane-form-row > span {
+    margin-bottom: -4px;
+  }
+  .lane-form-actions {
+    justify-content: flex-start;
+  }
 }
 
 .lane-form-row > span {
@@ -1006,162 +1207,104 @@ button.destructive:hover:not(:disabled) {
   color: #f87171;
 }
 
-/* ----- M3: findings ----- */
+/* ----- Unified Chat tab: session list + per-message save picker ----- */
 
-.findings {
+.chat-tab {
   display: flex;
   flex-direction: column;
   height: 100%;
-  gap: 8px;
+  min-height: 0;
 }
 
-.findings-header {
+.chat-session-list {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  border-bottom: 1px solid #1f2937;
-  gap: 8px;
-}
-
-.findings-filter {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #9ca3af;
-}
-
-.findings-filter select {
-  background: #111827;
-  color: #e5e7eb;
-  border: 1px solid #374151;
-  border-radius: 4px;
-  padding: 2px 6px;
-  font-size: 12px;
-}
-
-.findings-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.export-banner {
-  margin: 0 12px;
-  padding: 6px 8px;
-  background: #064e3b;
-  color: #d1fae5;
-  border-radius: 4px;
-  font-size: 12px;
-}
-
-.findings-body {
-  flex: 1;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding-bottom: 12px;
-}
-
-.findings-list {
-  list-style: none;
-  margin: 0;
-  padding: 0 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.findings-empty {
-  color: #6b7280;
-  font-size: 12px;
-  padding: 8px 0;
-}
-
-.finding-row {
-  background: #0b1220;
-  border: 1px solid #1f2937;
-  border-radius: 6px;
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 4px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #1f2937;
+  background: #0b1220;
 }
 
-.finding-row-head {
-  display: flex;
+.chat-session,
+.chat-session-main {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  background: #111827;
+  color: #cbd5e1;
+  border: 1px solid #1f2937;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
 }
 
-.finding-title {
-  flex: 1;
-  cursor: pointer;
-  font-weight: 600;
+.chat-session.compare {
+  padding: 0 4px 0 10px;
+}
+
+.chat-session.compare .chat-session-main {
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+}
+
+.chat-session:hover,
+.chat-session-main:hover {
+  border-color: #374151;
   color: #e5e7eb;
 }
 
-.finding-title:hover {
+.chat-session.active,
+.chat-session.compare.active {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+  color: #dbeafe;
+}
+
+.chat-session-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+}
+
+.chat-session.active .chat-session-kind {
   color: #93c5fd;
 }
 
-.finding-actions {
-  display: flex;
-  gap: 4px;
-}
-
-.finding-actions button {
-  background: #1f2937;
-  color: #e5e7eb;
-  border: 1px solid #374151;
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 11px;
+.chat-session-close {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
   cursor: pointer;
 }
 
-.finding-row-meta {
+.chat-session-close:hover {
+  color: #f87171;
+}
+
+/* Per-message Save... affordance + inline picker. */
+.msg {
+  position: relative;
+}
+
+.msg-actions {
+  margin-top: 4px;
   display: flex;
-  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
   font-size: 11px;
-  color: #9ca3af;
+  color: #94a3b8;
 }
 
-.finding-body-preview {
-  font-size: 12px;
-  color: #d1d5db;
-  white-space: pre-wrap;
-  max-height: 6em;
-  overflow: hidden;
-}
-
-.finding-refs {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  font-size: 11px;
-  color: #a5b4fc;
-}
-
-.finding-severity {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-weight: 700;
-}
-
-.sev-info { background: #1e3a8a; color: #dbeafe; }
-.sev-low { background: #064e3b; color: #d1fae5; }
-.sev-medium { background: #78350f; color: #fed7aa; }
-.sev-high { background: #7f1d1d; color: #fee2e2; }
-.sev-critical { background: #4c0519; color: #fecdd3; }
-
-.finding-form {
-  margin: 0 12px;
-  padding: 10px 12px;
+.chat-save-output-picker {
+  margin-top: 6px;
+  padding: 8px 10px;
   background: #0b1220;
   border: 1px solid #1f2937;
   border-radius: 6px;
@@ -1170,28 +1313,100 @@ button.destructive:hover:not(:disabled) {
   gap: 8px;
 }
 
-.finding-form h4 {
-  margin: 0;
-  color: #e5e7eb;
-  font-size: 13px;
-}
-
-.finding-form-row {
-  display: grid;
-  grid-template-columns: 70px 1fr;
-  gap: 8px;
-  align-items: start;
-}
-
-.finding-form-row > span {
+.chat-save-output-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-size: 12px;
-  color: #9ca3af;
-  padding-top: 4px;
 }
 
-.finding-form-row input,
-.finding-form-row select,
-.finding-form-row textarea {
+.chat-save-output-destinations {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.chat-save-output-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 4px;
+  border-bottom: 1px dashed #1f2937;
+}
+
+.chat-save-output-lane-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+}
+
+.chat-save-output-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+  background: #111827;
+  color: #e5e7eb;
+  border: 1px solid #1f2937;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.chat-save-output-row:hover {
+  border-color: #3b82f6;
+}
+
+.chat-save-output-row-name {
+  font-weight: 600;
+}
+
+.chat-save-output-row-path {
+  font-size: 11px;
+  color: #94a3b8;
+  word-break: break-all;
+}
+
+.chat-save-output-other {
+  border-style: dashed;
+}
+
+.chat-save-output-empty {
+  font-size: 11px;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.chat-save-output-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-save-output-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: #cbd5e1;
+}
+
+.chat-save-output-target code {
+  background: #111827;
+  border: 1px solid #1f2937;
+  padding: 1px 5px;
+  border-radius: 3px;
+  word-break: break-all;
+  font-size: 11px;
+}
+
+.chat-save-output-form input[type="text"] {
   background: #111827;
   color: #e5e7eb;
   border: 1px solid #374151;
@@ -1201,48 +1416,9 @@ button.destructive:hover:not(:disabled) {
   font-family: inherit;
 }
 
-.finding-form-lanes {
-  border: 1px solid #1f2937;
-  border-radius: 4px;
-  padding: 6px 10px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
-  color: #e5e7eb;
-}
-
-.finding-form-lanes legend {
-  color: #9ca3af;
-  font-size: 11px;
-  padding: 0 4px;
-}
-
-.finding-form-lanes label {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.finding-form-error {
+.chat-save-output-error {
   color: #f87171;
-  font-size: 12px;
-}
-
-.finding-form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.finding-form-actions button {
-  background: #1f2937;
-  color: #e5e7eb;
-  border: 1px solid #374151;
-  border-radius: 4px;
-  padding: 4px 10px;
-  font-size: 12px;
-  cursor: pointer;
+  font-size: 11px;
 }
 
 /* ---------- M3.5: breadcrumb, lane tree, attachments, context, overlays ---------- */
@@ -1336,6 +1512,10 @@ button.destructive:hover:not(:disabled) {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  /* Establish an inline-size container so the form rows below can
+     respond to the panel's actual width instead of the viewport. */
+  container-type: inline-size;
+  container-name: lane-edit;
 }
 
 .lane-edit-header {
@@ -1491,7 +1671,33 @@ button.destructive:hover:not(:disabled) {
   padding: 4px 8px;
   font-size: 11px;
   color: #9ca3af;
+}
+
+.file-tree-toolbar {
+  display: flex;
+  flex-direction: column;
   border-bottom: 1px solid #1f2937;
+}
+
+.file-tree-toolbar .overlay-toggle {
+  /* Toolbar provides the bottom border now; kill the duplicate. */
+  border-bottom: none;
+}
+
+.file-tree-refresh {
+  align-self: flex-start;
+  margin: 4px 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #d1d5db;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.file-tree-refresh:hover {
+  background: #374151;
 }
 
 .overlay-section {
@@ -1506,6 +1712,34 @@ button.destructive:hover:not(:disabled) {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: #6b7280;
+}
+
+.overlay-group {
+  margin-top: 4px;
+}
+
+.overlay-group-header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: 10px;
+  color: #94a3b8;
+  background: #0b1220;
+  border-top: 1px solid #1f2937;
+}
+
+.overlay-group-prefix {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #93c5fd;
+}
+
+.overlay-group-label {
+  color: #6b7280;
+  font-style: italic;
+}
+.overlay-group-label::before {
+  content: "— ";
 }
 
 /* ----- M3.5c+: file-tree right-click + drop targets ----- */
@@ -1713,185 +1947,6 @@ button.destructive:hover:not(:disabled) {
 
 .chat-prompt-clear:hover {
   color: #ffffff;
-}
-
-/* ----- M4.2: runs tab ----- */
-
-.runs-tab {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  gap: 8px;
-  padding: 8px;
-  min-height: 0;
-}
-
-.runs-form {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.runs-form-row {
-  display: flex;
-  gap: 6px;
-}
-
-.runs-form-row select {
-  flex: 0 0 auto;
-}
-
-.runs-form-row input {
-  flex: 1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
-.runs-error {
-  color: #f87171;
-}
-
-.runs-body {
-  flex: 1;
-  display: grid;
-  grid-template-columns: minmax(180px, 280px) 1fr;
-  gap: 8px;
-  min-height: 0;
-}
-
-.runs-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  overflow-y: auto;
-  border: 1px solid #1f2937;
-  border-radius: 6px;
-  background: #0f172a;
-}
-
-.runs-empty {
-  padding: 8px;
-  color: #6b7280;
-  font-style: italic;
-}
-
-.runs-list-item {
-  border-bottom: 1px solid #111827;
-}
-
-.runs-list-item:last-child {
-  border-bottom: none;
-}
-
-.runs-list-button {
-  width: 100%;
-  text-align: left;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  cursor: pointer;
-}
-
-.runs-list-button:hover {
-  background: #111827;
-}
-
-.runs-list-item.open .runs-list-button {
-  background: #1f2937;
-}
-
-.runs-list-item.failed .runs-list-cmd {
-  color: #fca5a5;
-}
-
-.runs-list-cmd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: #e5e7eb;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.runs-list-meta {
-  font-size: 11px;
-  color: #9ca3af;
-}
-
-.runs-detail {
-  overflow-y: auto;
-  border: 1px solid #1f2937;
-  border-radius: 6px;
-  background: #0f172a;
-  padding: 8px;
-}
-
-.run-detail header {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 8px;
-}
-
-.run-detail-cmd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: #e5e7eb;
-  word-break: break-all;
-}
-
-.run-detail-meta {
-  font-size: 11px;
-  color: #9ca3af;
-}
-
-.run-detail-error {
-  background: #7f1d1d;
-  color: #fee2e2;
-  padding: 6px 8px;
-  border-radius: 4px;
-  margin-bottom: 8px;
-  font-size: 12px;
-}
-
-.run-detail section {
-  margin-bottom: 8px;
-}
-
-.run-detail h4 {
-  font-size: 11px;
-  font-weight: 600;
-  color: #9ca3af;
-  margin: 0 0 4px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.run-detail pre {
-  background: #111827;
-  border: 1px solid #1f2937;
-  border-radius: 4px;
-  padding: 6px 8px;
-  margin: 0;
-  max-height: 220px;
-  overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.run-detail-actions {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.run-detail-actions .danger {
-  background: #7f1d1d;
-  border-color: #991b1b;
 }
 
 /* M4.3: Inbox tab */

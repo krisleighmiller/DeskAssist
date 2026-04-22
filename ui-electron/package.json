@@ -6,6 +6,8 @@
   "scripts": {
     "build:renderer": "vite build",
     "dev:renderer": "vite",
+    "rebuild:native": "electron-rebuild -f -o node-pty -m .",
+    "postinstall": "electron-rebuild -f -o node-pty -m . || true",
     "start": "npm run build:renderer && electron .",
     "start:dev": "concurrently -k -s first \"npm run dev:renderer\" \"wait-on http://localhost:5173 && DESKASSIST_RENDERER_URL=http://localhost:5173 electron .\""
   },
@@ -14,11 +16,15 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "monaco-editor": "^0.52.0",
+    "node-pty": "^1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

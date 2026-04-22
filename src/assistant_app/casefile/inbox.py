@@ -8,12 +8,8 @@ reading their contents.
 
 Inbox content is intentionally *not* mounted as a lane: lanes are
 write-scoped and carry their own chat history, while inbox sources are
-read-only references that several lanes (or comparison chats, or
-findings) might point at without owning. To link an inbox item to a
-finding, the renderer composes a virtual path of the form
-``_inbox/<source_id>/<relative-path>`` and uses it as the
-``source_ref.path`` on a finding owned by a real lane — no schema change
-is required.
+read-only references that several lanes (or comparison chats) might
+point at without owning.
 """
 
 from __future__ import annotations
@@ -140,8 +136,8 @@ class InboxStore:
     """File-backed configuration + read helpers for inbox sources.
 
     We keep the configuration in one JSON file (rather than one file per
-    source like prompts/runs/findings) because it's a small, frequently
-    re-read list and atomic rewrites are cheap. Items themselves live on
+    source like prompts) because it's a small, frequently re-read
+    list and atomic rewrites are cheap. Items themselves live on
     disk under the user's chosen directories; we never copy them into the
     casefile.
     """

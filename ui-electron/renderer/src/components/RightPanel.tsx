@@ -4,9 +4,6 @@ import type {
   ChatMessage,
   ComparisonSession,
   ContextManifestDto,
-  ExportResult,
-  FindingDraft,
-  FindingDto,
   InboxItemContent,
   InboxItemDto,
   InboxSourceDto,
@@ -21,45 +18,54 @@ import type {
   PromptSummaryDto,
   Provider,
   RegisterLaneInput,
-  RunCommandPayload,
-  RunRecordDto,
-  RunSummaryDto,
   ToolCall,
 } from "../types";
-import { ChatTab } from "./ChatTab";
+import { ChatTab, type ChatSessionId } from "./ChatTab";
 import { NotesTab } from "./NotesTab";
-import { FindingsTab } from "./FindingsTab";
 import { LanesTab } from "./LanesTab";
-import { ComparisonChatTab } from "./ComparisonChatTab";
 import { InboxTab } from "./InboxTab";
 import { PromptsTab } from "./PromptsTab";
-import { RunsTab } from "./RunsTab";
 
 export type RightTabKey =
   | "chat"
   | "notes"
-  | "findings"
   | "lanes"
-  | "compare"
   | "prompts"
-  | "runs"
   | "inbox";
 
 interface RightPanelProps {
   activeTab: RightTabKey;
   onTabChange: (tab: RightTabKey) => void;
   chat: {
-    provider: Provider;
-    keyStatus: ApiKeyStatus;
-    messages: ChatMessage[];
-    pendingApprovals: ToolCall[];
-    busy: boolean;
-    hasActiveLane: boolean;
-    activePromptName: string | null;
-    onClearActivePrompt: () => void;
-    onSend: (text: string) => void;
-    onApproveTools: () => void;
-    onDenyTools: () => void;
+    casefile: CasefileSnapshot | null;
+    comparisonSessions: ComparisonSession[];
+    activeSessionId: ChatSessionId | null;
+    onSelectSession: (id: ChatSessionId) => void;
+    onCloseCompareSession: (comparisonId: string) => void;
+    laneChat: {
+      provider: Provider;
+      keyStatus: ApiKeyStatus;
+      messages: ChatMessage[];
+      pendingApprovals: ToolCall[];
+      busy: boolean;
+      hasActiveLane: boolean;
+      activeLane: Lane | null;
+      activePromptName: string | null;
+      onClearActivePrompt: () => void;
+      onSend: (text: string) => void;
+      onApproveTools: () => void;
+      onDenyTools: () => void;
+    };
+    compareChat: {
+      provider: Provider;
+      keyStatus: ApiKeyStatus;
+      session: ComparisonSession | null;
+      busy: boolean;
+      onSend: (text: string) => void;
+    };
+    /** Optional: parent is told when SaveOutputPicker writes a chat
+     * message to disk so it can refresh the file tree. */
+    onAfterSaveOutput?: (path: string) => void;
   };
   notes: {
     value: string;
@@ -68,16 +74,6 @@ interface RightPanelProps {
     saving: boolean;
     error: string | null;
     onChange: (value: string) => void;
-  };
-  findings: {
-    casefile: CasefileSnapshot | null;
-    findings: FindingDto[];
-    busy: boolean;
-    lastExport: ExportResult | null;
-    onCreate: (draft: FindingDraft) => Promise<void>;
-    onUpdate: (id: string, draft: Partial<FindingDraft>) => Promise<void>;
-    onDelete: (id: string) => Promise<void>;
-    onExport: (laneIds: string[]) => Promise<void>;
   };
   lanes: {
     casefile: CasefileSnapshot | null;
@@ -109,14 +105,6 @@ interface RightPanelProps {
     onHardResetCasefile: () => Promise<void>;
     onSoftResetCasefile: (keepPrompts: boolean) => Promise<void>;
   };
-  compareChat: {
-    provider: Provider;
-    keyStatus: ApiKeyStatus;
-    session: ComparisonSession | null;
-    busy: boolean;
-    onSend: (text: string) => void;
-    onClose: () => void;
-  };
   prompts: {
     hasCasefile: boolean;
     hasActiveLane: boolean;
@@ -130,26 +118,8 @@ interface RightPanelProps {
     onDelete: (promptId: string) => Promise<void>;
     onLoad: (promptId: string) => Promise<PromptDraftDto>;
   };
-  runs: {
-    hasCasefile: boolean;
-    hasActiveLane: boolean;
-    activeLaneId: string | null;
-    lanes: Lane[];
-    runs: RunSummaryDto[];
-    loading: boolean;
-    error: string | null;
-    // Sourced from the backend (`casefile:getAllowedExecutables`) so the
-    // renderer never holds a stale copy of `system_exec.ALLOWED_EXECUTABLES`.
-    allowedExecutables: readonly string[];
-    onRun: (payload: RunCommandPayload) => Promise<RunRecordDto>;
-    onLoadRun: (runId: string) => Promise<RunRecordDto>;
-    onDelete: (runId: string) => Promise<void>;
-  };
   inbox: {
     hasCasefile: boolean;
-    hasActiveLane: boolean;
-    activeLaneId: string | null;
-    activeLaneName: string | null;
     sources: InboxSourceDto[];
     loading: boolean;
     error: string | null;
@@ -158,18 +128,14 @@ interface RightPanelProps {
     onChooseRoot: () => Promise<string | null>;
     onListItems: (sourceId: string) => Promise<InboxItemDto[]>;
     onReadItem: (sourceId: string, path: string) => Promise<InboxItemContent>;
-    onCreateFinding: (draft: FindingDraft) => Promise<void>;
   };
 }
 
 const TABS: { key: RightTabKey; label: string }[] = [
   { key: "chat", label: "Chat" },
   { key: "notes", label: "Notes" },
-  { key: "findings", label: "Findings" },
   { key: "lanes", label: "Lanes" },
-  { key: "compare", label: "Compare" },
   { key: "prompts", label: "Prompts" },
-  { key: "runs", label: "Runs" },
   { key: "inbox", label: "Inbox" },
 ];
 
@@ -178,11 +144,8 @@ export function RightPanel({
   onTabChange,
   chat,
   notes,
-  findings,
   lanes,
-  compareChat,
   prompts,
-  runs,
   inbox,
 }: RightPanelProps): JSX.Element {
   return (
@@ -202,17 +165,14 @@ export function RightPanel({
       <div className="right-body">
         {activeTab === "chat" && (
           <ChatTab
-            provider={chat.provider}
-            keyStatus={chat.keyStatus}
-            messages={chat.messages}
-            pendingApprovals={chat.pendingApprovals}
-            busy={chat.busy}
-            hasActiveLane={chat.hasActiveLane}
-            activePromptName={chat.activePromptName}
-            onClearActivePrompt={chat.onClearActivePrompt}
-            onSend={chat.onSend}
-            onApproveTools={chat.onApproveTools}
-            onDenyTools={chat.onDenyTools}
+            casefile={chat.casefile}
+            comparisonSessions={chat.comparisonSessions}
+            activeSessionId={chat.activeSessionId}
+            onSelectSession={chat.onSelectSession}
+            onCloseCompareSession={chat.onCloseCompareSession}
+            laneChat={chat.laneChat}
+            compareChat={chat.compareChat}
+            onAfterSaveOutput={chat.onAfterSaveOutput}
           />
         )}
         {activeTab === "notes" && (
@@ -223,18 +183,6 @@ export function RightPanel({
             saving={notes.saving}
             error={notes.error}
             onChange={notes.onChange}
-          />
-        )}
-        {activeTab === "findings" && (
-          <FindingsTab
-            casefile={findings.casefile}
-            findings={findings.findings}
-            busy={findings.busy}
-            lastExport={findings.lastExport}
-            onCreate={findings.onCreate}
-            onUpdate={findings.onUpdate}
-            onDelete={findings.onDelete}
-            onExport={findings.onExport}
           />
         )}
         {activeTab === "lanes" && (
@@ -262,37 +210,9 @@ export function RightPanel({
             onSoftResetCasefile={lanes.onSoftResetCasefile}
           />
         )}
-        {activeTab === "compare" && (
-          <ComparisonChatTab
-            provider={compareChat.provider}
-            keyStatus={compareChat.keyStatus}
-            session={compareChat.session}
-            busy={compareChat.busy}
-            onSend={compareChat.onSend}
-            onClose={compareChat.onClose}
-          />
-        )}
-        {activeTab === "runs" && (
-          <RunsTab
-            hasCasefile={runs.hasCasefile}
-            hasActiveLane={runs.hasActiveLane}
-            activeLaneId={runs.activeLaneId}
-            lanes={runs.lanes}
-            runs={runs.runs}
-            loading={runs.loading}
-            error={runs.error}
-            allowedExecutables={runs.allowedExecutables}
-            onRun={runs.onRun}
-            onLoadRun={runs.onLoadRun}
-            onDelete={runs.onDelete}
-          />
-        )}
         {activeTab === "inbox" && (
           <InboxTab
             hasCasefile={inbox.hasCasefile}
-            hasActiveLane={inbox.hasActiveLane}
-            activeLaneId={inbox.activeLaneId}
-            activeLaneName={inbox.activeLaneName}
             sources={inbox.sources}
             loading={inbox.loading}
             error={inbox.error}
@@ -301,7 +221,6 @@ export function RightPanel({
             onChooseRoot={inbox.onChooseRoot}
             onListItems={inbox.onListItems}
             onReadItem={inbox.onReadItem}
-            onCreateFinding={inbox.onCreateFinding}
           />
         )}
         {activeTab === "prompts" && (

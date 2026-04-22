@@ -8,9 +8,9 @@ Covers:
   per-lane on-disk data; the M4.6 service wrapper does too.
 * `CasefileStore.hard_reset` deletes `.casefile/` outright; subsequent
   `load_snapshot` re-initializes a fresh casefile.
-* `CasefileStore.soft_reset` wipes per-task scratch (chats / findings /
-  notes / runs / exports), conditionally wipes prompts, preserves
-  context.json + inbox.json, and re-creates the default `main` lane.
+* `CasefileStore.soft_reset` wipes per-task scratch (chats / notes),
+  conditionally wipes prompts, preserves context.json + inbox.json,
+  and re-creates the default `main` lane.
 * Both resets are idempotent.
 * `CasefileService.find_root_conflict` detects overlap and respects
   `exclude_lane_id`.
@@ -186,12 +186,12 @@ def test_soft_reset_wipes_per_task_scratch(tmp_path: Path) -> None:
     casefile_root, _, _ = _bootstrap(tmp_path)
     meta = casefile_root / ".casefile"
     # Plant artifacts in every directory soft-reset is supposed to wipe.
-    for sub in ("chats", "findings", "notes", "runs", "exports", "prompts"):
+    for sub in ("chats", "notes", "prompts"):
         (meta / sub).mkdir(parents=True, exist_ok=True)
         (meta / sub / "leftover.txt").write_text("x", encoding="utf-8")
     service = CasefileService(casefile_root)
     service.soft_reset(keep_prompts=False)
-    for sub in ("chats", "findings", "notes", "runs", "exports", "prompts"):
+    for sub in ("chats", "notes", "prompts"):
         assert not (meta / sub / "leftover.txt").exists(), sub
 
 

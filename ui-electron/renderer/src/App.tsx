@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ApiKeyStatus,
   ProviderModels,
@@ -6,9 +6,6 @@ import type {
   ChatMessage,
   ComparisonSession,
   ContextManifestDto,
-  ExportResult,
-  FindingDraft,
-  FindingDto,
   FileTreeNode,
   InboxSourceDto,
   InboxSourceInput,
@@ -22,9 +19,6 @@ import type {
   PromptSummaryDto,
   Provider,
   RegisterLaneInput,
-  RunCommandPayload,
-  RunRecordDto,
-  RunSummaryDto,
   ToolCall,
 } from "./types";
 import { api } from "./lib/api";
@@ -32,8 +26,14 @@ import { Toolbar } from "./components/Toolbar";
 import { FileTree } from "./components/FileTree";
 import { EditorPane, type OpenTab } from "./components/EditorPane";
 import { RightPanel, type RightTabKey } from "./components/RightPanel";
+import { compareSessionId, laneSessionId } from "./components/ChatTab";
 import { ApiKeysDialog } from "./components/ApiKeysDialog";
-import { Splitter } from "./components/Splitter";
+import { Splitter, HorizontalSplitter } from "./components/Splitter";
+import {
+  TerminalsPanel,
+  disposeTerminalSession,
+  type TerminalSession,
+} from "./components/TerminalsPanel";
 import { languageFromPath } from "./lib/language";
 
 const PROVIDER_STORAGE_KEY = "deskassist.selectedProvider";
@@ -102,6 +102,20 @@ const WORKBENCH_RIGHT_MIN = 280;
 const WORKBENCH_RIGHT_MAX = 900;
 const LEFT_WIDTH_STORAGE_KEY = "deskassist:workbench:leftWidth";
 const RIGHT_WIDTH_STORAGE_KEY = "deskassist:workbench:rightWidth";
+const TERMINAL_HEIGHT_STORAGE_KEY = "deskassist:terminal:height";
+const TERMINAL_OPEN_STORAGE_KEY = "deskassist:terminal:open";
+const TERMINAL_HEIGHT_DEFAULT = 240;
+const TERMINAL_HEIGHT_MIN = 120;
+const TERMINAL_HEIGHT_MAX = 800;
+// Reserve at least this many pixels for the center editor pane so the
+// side panes can never push the editor to zero width when the window
+// is narrow (or when a previously persisted width was captured on a
+// wider monitor and is now too large for the current viewport).
+const WORKBENCH_EDITOR_MIN = 240;
+// Splitters + workbench horizontal padding budget. Two splitters at 6px
+// each plus a small fudge factor to keep one pixel of headroom — this
+// matches the `.splitter { flex: 0 0 6px }` size in styles.css.
+const WORKBENCH_GUTTER = 16;
 
 function readPersistedWidth(
   key: string,
@@ -159,6 +173,88 @@ export function App(): JSX.Element {
       // ignore
     }
   }, [rightPaneWidth]);
+
+  // ----- Integrated terminal (M4.8) -----
+  //
+  // State here only tracks what the renderer knows about each session;
+  // the actual shell process lives in the Electron main process and
+  // outlives both tab switches and (intentionally) full toggles of the
+  // terminal pane visibility.
+  const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(TERMINAL_OPEN_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [terminalHeight, setTerminalHeight] = useState<number>(() =>
+    readPersistedWidth(
+      TERMINAL_HEIGHT_STORAGE_KEY,
+      TERMINAL_HEIGHT_DEFAULT,
+      TERMINAL_HEIGHT_MIN,
+      TERMINAL_HEIGHT_MAX
+    )
+  );
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        TERMINAL_HEIGHT_STORAGE_KEY,
+        String(terminalHeight)
+      );
+    } catch {
+      // ignore
+    }
+  }, [terminalHeight]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TERMINAL_OPEN_STORAGE_KEY, terminalOpen ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [terminalOpen]);
+
+  // Viewport-aware clamp: previously the side pane widths were only
+  // bounded by their own min/max, so a width persisted on a 1920px
+  // monitor (e.g. right pane = 700px) would silently push the editor
+  // off-screen on a 1024px laptop, and the right-pane content (lane
+  // edit form, compare controls) ended up clipped at the window edge.
+  // We now subtract the splitter + editor budget from the live
+  // viewport and shrink either pane that no longer fits, in priority
+  // order: shrink the right pane first, then the left.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const reflow = () => {
+      const vw = window.innerWidth;
+      const available = vw - WORKBENCH_GUTTER - WORKBENCH_EDITOR_MIN;
+      // Each pane gets at least its own minimum, even if that means
+      // the editor falls below WORKBENCH_EDITOR_MIN — that case only
+      // happens on absurdly narrow windows and is preferable to
+      // collapsing a pane below the legibility floor.
+      setRightPaneWidth((prev) => {
+        const cap = Math.max(WORKBENCH_RIGHT_MIN, available - WORKBENCH_LEFT_MIN);
+        return prev > cap ? cap : prev;
+      });
+      setLeftPaneWidth((prev) => {
+        // Read the (possibly just-clamped) right width via state from
+        // the next reflow tick; for the synchronous path we re-read
+        // the persisted value from localStorage as a best-effort.
+        const rightLive = readPersistedWidth(
+          RIGHT_WIDTH_STORAGE_KEY,
+          WORKBENCH_RIGHT_DEFAULT,
+          WORKBENCH_RIGHT_MIN,
+          WORKBENCH_RIGHT_MAX
+        );
+        const cap = Math.max(WORKBENCH_LEFT_MIN, available - rightLive);
+        return prev > cap ? cap : prev;
+      });
+    };
+    reflow();
+    window.addEventListener("resize", reflow);
+    return () => window.removeEventListener("resize", reflow);
+  }, []);
 
   const [casefile, setCasefile] = useState<CasefileSnapshot | null>(null);
   const activeLaneId = casefile?.activeLaneId ?? null;
@@ -275,26 +371,6 @@ export function App(): JSX.Element {
     [activeLaneId, sessionKey, scheduleNoteSave, updateNote]
   );
 
-  // ----- Findings (per-casefile) -----
-
-  const [findings, setFindings] = useState<FindingDto[]>([]);
-  const [findingsBusy, setFindingsBusy] = useState(false);
-  const [lastExport, setLastExport] = useState<ExportResult | null>(null);
-
-  const reloadFindings = useCallback(async () => {
-    if (!casefile) {
-      setFindings([]);
-      return;
-    }
-    try {
-      // Pull all findings; the FindingsTab does its own client-side filter.
-      const list = await api().listFindings();
-      setFindings(list);
-    } catch (error) {
-      console.warn("listFindings failed", error);
-    }
-  }, [casefile]);
-
   // ----- M4.1: prompt drafts (casefile-scoped) + per-lane selection -----
   // The list itself is stored once per casefile; the "which prompt is
   // currently injected into chat" selection is per-lane (so lane A can
@@ -383,70 +459,6 @@ export function App(): JSX.Element {
     ? prompts.find((p) => p.id === selectedPromptId)?.name ?? null
     : null;
 
-  // ----- M4.2: command runs (casefile-scoped) -----
-
-  const [runs, setRuns] = useState<RunSummaryDto[]>([]);
-  const [runsLoading, setRunsLoading] = useState(false);
-  const [runsError, setRunsError] = useState<string | null>(null);
-  // Allowlist comes from the backend (`system_exec.ALLOWED_EXECUTABLES`)
-  // rather than a hard-coded mirror in the renderer. Fetched once at
-  // mount; the set is small and effectively immutable across a session.
-  const [allowedExecutables, setAllowedExecutables] = useState<readonly string[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    api()
-      .getAllowedExecutables()
-      .then((list) => {
-        if (!cancelled) setAllowedExecutables(list);
-      })
-      .catch(() => {
-        // Non-fatal: the placeholder hint just won't list commands.
-        if (!cancelled) setAllowedExecutables([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const reloadRuns = useCallback(async () => {
-    if (!casefile) {
-      setRuns([]);
-      return;
-    }
-    setRunsLoading(true);
-    try {
-      const list = await api().listRuns();
-      setRuns(list);
-      setRunsError(null);
-    } catch (error) {
-      setRunsError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setRunsLoading(false);
-    }
-  }, [casefile]);
-
-  const handleRunCommand = useCallback(
-    async (payload: RunCommandPayload): Promise<RunRecordDto> => {
-      const created = await api().runCommand(payload);
-      await reloadRuns();
-      return created;
-    },
-    [reloadRuns]
-  );
-
-  const handleLoadRun = useCallback(
-    async (runId: string) => api().getRun(runId),
-    []
-  );
-
-  const handleDeleteRun = useCallback(
-    async (runId: string) => {
-      await api().deleteRun(runId);
-      await reloadRuns();
-    },
-    [reloadRuns]
-  );
-
   // ----- M4.3: external inbox sources (casefile-scoped) -----
   // Source list lives at the App level so the badge / future cross-tab
   // surfaces can read it without wiring a context. Items + content are
@@ -510,10 +522,27 @@ export function App(): JSX.Element {
   const [comparison, setComparison] = useState<LaneComparisonDto | null>(null);
   const [comparisonBusy, setComparisonBusy] = useState(false);
 
-  // ----- M3.5c: comparison chat session (read-only multi-lane) -----
-  const [comparisonSession, setComparisonSession] =
-    useState<ComparisonSession | null>(null);
+  // ----- M3.5c: comparison chat sessions (read-only multi-lane) -----
+  // We allow multiple comparison sessions to coexist. The unified Chat
+  // tab lists them alongside lane chats; the user clicks a session in
+  // the list (or "Open compare chat" in Lanes) to focus it.
+  const [comparisonSessions, setComparisonSessions] = useState<
+    ComparisonSession[]
+  >([]);
+  /** id of the comparison session driving the Chat tab, or null when
+   * a lane chat is in focus. */
+  const [activeComparisonId, setActiveComparisonId] = useState<string | null>(
+    null
+  );
   const [comparisonChatBusy, setComparisonChatBusy] = useState(false);
+
+  const focusedComparisonSession = useMemo<ComparisonSession | null>(
+    () =>
+      activeComparisonId
+        ? comparisonSessions.find((s) => s.id === activeComparisonId) ?? null
+        : null,
+    [activeComparisonId, comparisonSessions]
+  );
 
   // ----- M3.5: casefile context manifest + ancestor-files overlays -----
 
@@ -671,6 +700,13 @@ export function App(): JSX.Element {
   const reloadOverlays = useCallback(async () => {
     if (!casefile || !activeLaneId || !showOverlays) {
       setOverlayTrees([]);
+      // No overlays visible → tell main it can drop any extra watch
+      // roots it had registered for them. Safe to ignore failures.
+      try {
+        await api().registerWatchRoots?.([]);
+      } catch {
+        // ignore
+      }
       return;
     }
     setOverlaysLoading(true);
@@ -678,6 +714,17 @@ export function App(): JSX.Element {
       const overlays = await api().listOverlayTrees(activeLaneId, 4);
       setOverlayTrees(overlays);
       setOverlaysError(null);
+      // Forward overlay roots to main so its fs.watch covers any
+      // attachment / context root that lives outside the casefile.
+      // Roots inside the casefile are deduped main-side.
+      const roots = overlays
+        .map((o) => o.root)
+        .filter((r): r is string => typeof r === "string" && r.length > 0);
+      try {
+        await api().registerWatchRoots?.(roots);
+      } catch {
+        // ignore — watching is a nice-to-have, manual refresh works.
+      }
     } catch (error) {
       setOverlaysError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -814,11 +861,6 @@ export function App(): JSX.Element {
     void loadLaneNotes(activeLaneId, key);
   }, [casefile, activeLaneId, refreshTree, loadLaneChatHistory, loadLaneNotes]);
 
-  // Reload findings whenever the casefile changes.
-  useEffect(() => {
-    void reloadFindings();
-  }, [reloadFindings]);
-
   // Reload context manifest whenever the casefile changes.
   useEffect(() => {
     void reloadContext();
@@ -828,13 +870,6 @@ export function App(): JSX.Element {
   useEffect(() => {
     void reloadPrompts();
   }, [reloadPrompts]);
-
-  // Reload runs whenever the casefile changes. (Per-lane filtering happens
-  // client-side: the list is small, and refetching on every lane switch
-  // is unnecessary churn.)
-  useEffect(() => {
-    void reloadRuns();
-  }, [reloadRuns]);
 
   // Reload inbox sources whenever the casefile changes.
   useEffect(() => {
@@ -858,8 +893,12 @@ export function App(): JSX.Element {
       const snapshot = await api().chooseCasefile();
       if (snapshot) {
         setCasefile(snapshot);
-        // Switching casefile invalidates any prior comparison.
+        // Switching casefile invalidates any prior comparison + open
+        // comparison-chat sessions (their lane ids are scoped to the
+        // previous casefile).
         setComparison(null);
+        setComparisonSessions([]);
+        setActiveComparisonId(null);
       }
     } catch (error) {
       setTreeError(error instanceof Error ? error.message : String(error));
@@ -872,6 +911,9 @@ export function App(): JSX.Element {
       try {
         const snapshot = await api().switchLane(laneId);
         setCasefile(snapshot);
+        // Switching to a lane chat is the explicit "leave the
+        // comparison view" gesture inside the unified Chat tab.
+        setActiveComparisonId(null);
       } catch (error) {
         setTreeError(error instanceof Error ? error.message : String(error));
       }
@@ -1005,6 +1047,166 @@ export function App(): JSX.Element {
     updateSession((prev) => ({ ...prev, tabs: fresh }));
   }, [session.tabs, updateSession]);
 
+  // External-change watcher: main.js installs an fs.watch on the active
+  // casefile root and emits `workspace:changed` whenever something
+  // inside it is created / renamed / deleted / modified. The renderer
+  // reacts by re-listing the file tree, the overlay trees, and any
+  // open tabs that match their on-disk content (so an external
+  // `git pull` shows up without requiring a manual refresh). We
+  // deliberately skip `refreshOpenTabsFromDisk` for *dirty* tabs —
+  // that's already handled upstream — to avoid clobbering the user's
+  // in-progress edits.
+  useEffect(() => {
+    const subscribe = api().onWorkspaceChanged;
+    if (typeof subscribe !== "function") return;
+    return subscribe(() => {
+      void refreshTree();
+      // Overlays are loaded from a separate IPC; if we don't refresh
+      // them here, an external rename in an `_ancestors/...` or
+      // `_attachments/...` directory leaves the inherited-context
+      // pane showing stale names (the bug from the user's screenshot
+      // where Ratings.md still appeared under its original chat
+      // filename).
+      void reloadOverlays();
+      void refreshOpenTabsFromDisk();
+    });
+  }, [refreshTree, reloadOverlays, refreshOpenTabsFromDisk]);
+
+  // Rename a file from the file-tree right-click menu. We perform the
+  // bridge call, then re-list the tree so the new name is visible, then
+  // patch any open tabs that pointed at the old path so the editor
+  // doesn't keep a "dirty" tab attached to a non-existent file.
+  const handleRenameFile = useCallback(
+    async (oldPath: string, newName: string) => {
+      const result = await api().renameFile(oldPath, newName);
+      const newPath = result.newPath;
+      // Patch open tabs in every lane session, not just the active one,
+      // so a rename done while looking at lane A doesn't surface a
+      // stale path the next time the user switches to lane B.
+      setLaneSessions((prev) => {
+        const next = new Map(prev);
+        let mutated = false;
+        for (const [key, sess] of prev.entries()) {
+          let touched = false;
+          const tabs = sess.tabs.map((t) => {
+            if (t.kind === "file" && t.path === oldPath) {
+              touched = true;
+              return { ...t, path: newPath, key: newPath };
+            }
+            return t;
+          });
+          if (touched) {
+            mutated = true;
+            const activeTabKey =
+              sess.activeTabKey === oldPath ? newPath : sess.activeTabKey;
+            next.set(key, { ...sess, tabs, activeTabKey });
+          }
+        }
+        return mutated ? next : prev;
+      });
+      await refreshTree();
+      // Also rebuild overlays — the renamed file may live inside an
+      // ancestor / attachment overlay, in which case refreshTree alone
+      // wouldn't update its display.
+      await reloadOverlays();
+    },
+    [refreshTree, reloadOverlays]
+  );
+
+  // ----- Integrated terminal handlers (M4.8) -----
+  //
+  // The "id" of each session is independent from the lane id so a single
+  // lane can host multiple shells (`<lane>-<n>`). This keeps the IPC
+  // channel name unique even when the user opens several terminals
+  // pointed at the same lane root.
+  const handleNewTerminal = useCallback(() => {
+    const lane = activeLane;
+    const cwd = lane?.root || casefile?.root || null;
+    const stamp = Date.now().toString(36);
+    const baseLabel = lane?.name || "shell";
+    const id = lane ? `lane:${lane.id}:${stamp}` : `shell:${stamp}`;
+    setTerminalSessions((prev) => {
+      // De-duplicate label numbering so two consecutive "main" tabs
+      // become "main", "main 2", etc., matching what's familiar from
+      // VS Code / iTerm.
+      const sameBase = prev.filter((s) => s.label.startsWith(baseLabel));
+      const label = sameBase.length === 0 ? baseLabel : `${baseLabel} ${sameBase.length + 1}`;
+      return [
+        ...prev,
+        {
+          id,
+          label,
+          cwd: cwd || "",
+          laneId: lane?.id ?? null,
+        },
+      ];
+    });
+    setActiveTerminalId(id);
+    setTerminalOpen(true);
+  }, [activeLane, casefile]);
+
+  const handleSelectTerminal = useCallback((id: string) => {
+    setActiveTerminalId(id);
+  }, []);
+
+  const handleCloseTerminal = useCallback(
+    (id: string) => {
+      // Order matters: kill the PTY first so any final exit chunk lands
+      // before we tear down the xterm instance, then dispose the
+      // renderer-side state.
+      void api()
+        .terminalKill(id)
+        .catch(() => {
+          // The PTY may have already exited; nothing to do.
+        });
+      disposeTerminalSession(id);
+      setTerminalSessions((prev) => {
+        const next = prev.filter((s) => s.id !== id);
+        if (activeTerminalId === id) {
+          // Snap to the previously-adjacent tab if there is one,
+          // otherwise leave the active id null and let the empty-state
+          // view take over.
+          const fallback = next[next.length - 1] ?? null;
+          setActiveTerminalId(fallback ? fallback.id : null);
+        }
+        return next;
+      });
+    },
+    [activeTerminalId]
+  );
+
+  const toggleTerminalOpen = useCallback(() => {
+    setTerminalOpen((prev) => {
+      const next = !prev;
+      if (next && terminalSessions.length === 0) {
+        // First-open ergonomics: spawn a default shell so the user
+        // doesn't have to click "+" before they can type anything.
+        // Defer to a microtask so React doesn't bail out on calling
+        // another setState inside this updater.
+        queueMicrotask(() => handleNewTerminal());
+      }
+      return next;
+    });
+  }, [handleNewTerminal, terminalSessions.length]);
+
+  // Global keyboard shortcut: Ctrl+` (or ⌘+` on macOS) toggles the
+  // terminal pane. Mirrors the well-known shortcut from VS Code.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "`") return;
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod) return;
+      // Don't steal the keystroke if the focused element is itself
+      // the terminal — the shell may want to receive a backtick.
+      const target = event.target as HTMLElement | null;
+      if (target && target.closest && target.closest(".terminal-view")) return;
+      event.preventDefault();
+      toggleTerminalOpen();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [toggleTerminalOpen]);
+
   // ----- Compare flow -----
 
   const handleCompareLanes = useCallback(
@@ -1026,14 +1228,30 @@ export function App(): JSX.Element {
   const handleClearComparison = useCallback(() => setComparison(null), []);
 
   // ----- Comparison chat (M3.5c) -----
+  // Comparison chats live in the unified Chat tab as a separate session
+  // type; the user picks them from the session list at the top. Opening
+  // a comparison both registers the session (so it appears in the list)
+  // *and* focuses it (so the chat body switches over).
 
   const handleOpenComparisonChat = useCallback(
     async (laneIds: string[]) => {
       if (!casefile || laneIds.length < 2) return;
       try {
         const session = await api().openComparison(laneIds);
-        setComparisonSession(session);
-        setRightTab("compare");
+        setComparisonSessions((prev) => {
+          // Replace by id so re-opening a comparison rehydrates its
+          // persisted messages instead of pushing a duplicate row.
+          const existing = prev.findIndex((s) => s.id === session.id);
+          if (existing >= 0) {
+            const next = prev.slice();
+            next[existing] = session;
+            return next;
+          }
+          return [...prev, session];
+        });
+        setActiveComparisonId(session.id);
+        // The comparison chat lives inside the unified Chat tab now.
+        setRightTab("chat");
       } catch (error) {
         setTreeError(error instanceof Error ? error.message : String(error));
       }
@@ -1041,26 +1259,35 @@ export function App(): JSX.Element {
     [casefile]
   );
 
-  const handleCloseComparisonChat = useCallback(() => {
-    setComparisonSession(null);
+  const handleCloseComparisonChat = useCallback((comparisonId: string) => {
+    setComparisonSessions((prev) => prev.filter((s) => s.id !== comparisonId));
+    setActiveComparisonId((prev) => (prev === comparisonId ? null : prev));
   }, []);
 
   const sendComparisonChat = useCallback(
     async (text: string) => {
       const value = text.trim();
-      if (!value || comparisonChatBusy || !comparisonSession || !casefile) return;
+      const target = focusedComparisonSession;
+      if (!value || comparisonChatBusy || !target || !casefile) return;
       setComparisonChatBusy(true);
-      const historyBeforeTurn = comparisonSession.messages;
+      const historyBeforeTurn = target.messages;
       // Optimistically render the user's message; the bridge will replace
       // history with the canonical delta on success.
-      setComparisonSession((prev) =>
-        prev
-          ? { ...prev, messages: [...prev.messages, { role: "user", content: value }] }
-          : prev
-      );
+      const targetId = target.id;
+      const replaceMessages = (
+        produce: (prev: ComparisonSession) => ComparisonSession
+      ) => {
+        setComparisonSessions((prev) =>
+          prev.map((s) => (s.id === targetId ? produce(s) : s))
+        );
+      };
+      replaceMessages((prev) => ({
+        ...prev,
+        messages: [...prev.messages, { role: "user", content: value }],
+      }));
       try {
         const response = await api().sendComparisonChat({
-          laneIds: comparisonSession.laneIds,
+          laneIds: target.laneIds,
           provider,
           model: providerModels[provider] || null,
           messages: historyBeforeTurn,
@@ -1068,42 +1295,34 @@ export function App(): JSX.Element {
           resumePendingToolCalls: false,
         });
         const delta = Array.isArray(response.messages) ? response.messages : [];
-        setComparisonSession((prev) =>
-          prev
-            ? {
-                ...prev,
-                messages:
-                  delta.length > 0
-                    ? [...historyBeforeTurn, ...delta]
-                    : response.message
-                      ? [
-                          ...historyBeforeTurn,
-                          { role: "user", content: value },
-                          response.message,
-                        ]
-                      : prev.messages,
-              }
-            : prev
-        );
+        replaceMessages((prev) => ({
+          ...prev,
+          messages:
+            delta.length > 0
+              ? [...historyBeforeTurn, ...delta]
+              : response.message
+                ? [
+                    ...historyBeforeTurn,
+                    { role: "user", content: value },
+                    response.message,
+                  ]
+                : prev.messages,
+        }));
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
-        setComparisonSession((prev) =>
-          prev
-            ? {
-                ...prev,
-                messages: [
-                  ...historyBeforeTurn,
-                  { role: "user", content: value },
-                  { role: "assistant", content: `Error: ${errMsg}` },
-                ],
-              }
-            : prev
-        );
+        replaceMessages((prev) => ({
+          ...prev,
+          messages: [
+            ...historyBeforeTurn,
+            { role: "user", content: value },
+            { role: "assistant", content: `Error: ${errMsg}` },
+          ],
+        }));
       } finally {
         setComparisonChatBusy(false);
       }
     },
-    [casefile, comparisonChatBusy, comparisonSession, provider, providerModels]
+    [casefile, comparisonChatBusy, focusedComparisonSession, provider, providerModels]
   );
 
   const handleOpenDiff = useCallback(
@@ -1224,59 +1443,6 @@ export function App(): JSX.Element {
     [casefile, session.tabs, updateSession]
   );
 
-  // ----- Findings ops -----
-
-  const handleCreateFinding = useCallback(
-    async (draft: FindingDraft) => {
-      setFindingsBusy(true);
-      try {
-        await api().createFinding(draft);
-        await reloadFindings();
-      } finally {
-        setFindingsBusy(false);
-      }
-    },
-    [reloadFindings]
-  );
-
-  const handleUpdateFinding = useCallback(
-    async (id: string, draft: Partial<FindingDraft>) => {
-      setFindingsBusy(true);
-      try {
-        await api().updateFinding(id, draft);
-        await reloadFindings();
-      } finally {
-        setFindingsBusy(false);
-      }
-    },
-    [reloadFindings]
-  );
-
-  const handleDeleteFinding = useCallback(
-    async (id: string) => {
-      setFindingsBusy(true);
-      try {
-        await api().deleteFinding(id);
-        await reloadFindings();
-      } finally {
-        setFindingsBusy(false);
-      }
-    },
-    [reloadFindings]
-  );
-
-  const handleExportFindings = useCallback(async (laneIds: string[]) => {
-    setFindingsBusy(true);
-    try {
-      const result = await api().exportFindings(laneIds);
-      setLastExport(result);
-    } catch (error) {
-      setTreeError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setFindingsBusy(false);
-    }
-  }, []);
-
   // ----- Chat -----
 
   // We keep the latest user-typed text outside of state to make sendMessage
@@ -1327,11 +1493,6 @@ export function App(): JSX.Element {
         }));
         await refreshTree();
         await refreshOpenTabsFromDisk();
-        // The model may have created findings via a write tool we don't
-        // expose yet, but findings_list/_read are read-only — refresh to
-        // catch any out-of-band changes (e.g. user editing a JSON file
-        // directly under .casefile/findings/).
-        await reloadFindings();
       } catch (error) {
         const errMsg = error instanceof Error ? error.message : String(error);
         updateSession((prev) => ({
@@ -1357,7 +1518,6 @@ export function App(): JSX.Element {
       selectedPromptId,
       refreshTree,
       refreshOpenTabsFromDisk,
-      reloadFindings,
     ]
   );
 
@@ -1383,7 +1543,6 @@ export function App(): JSX.Element {
       }));
       await refreshTree();
       await refreshOpenTabsFromDisk();
-      await reloadFindings();
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
       updateSession((prev) => ({
@@ -1408,7 +1567,6 @@ export function App(): JSX.Element {
     updateSession,
     refreshTree,
     refreshOpenTabsFromDisk,
-    reloadFindings,
   ]);
 
   const denyTools = useCallback(() => {
@@ -1439,6 +1597,7 @@ export function App(): JSX.Element {
         onOpenKeys={() => setKeysOpen(true)}
         onSwitchLane={handleSwitchLane}
       />
+      <div className="workbench-column">
       <div className="workbench">
         <section className="pane" style={{ width: leftPaneWidth }}>
           <header className="pane-header">{activeLane ? activeLane.name : "Workspace"}</header>
@@ -1458,6 +1617,15 @@ export function App(): JSX.Element {
               onOpenOverlayFile={handleOpenOverlayFile}
               casefileRoot={casefile?.root ?? null}
               onAddToContext={casefile ? handleAddToContext : undefined}
+              onRename={activeLane ? handleRenameFile : undefined}
+              onRefresh={
+                activeLane
+                  ? () => {
+                      void refreshTree();
+                      void reloadOverlays();
+                    }
+                  : undefined
+              }
             />
           </div>
         </section>
@@ -1494,17 +1662,55 @@ export function App(): JSX.Element {
             activeTab={rightTab}
             onTabChange={setRightTab}
             chat={{
-              provider,
-              keyStatus,
-              messages: session.messages,
-              pendingApprovals: session.pendingApprovals,
-              busy: chatBusy,
-              hasActiveLane: Boolean(activeLane),
-              activePromptName,
-              onClearActivePrompt: () => handleSelectPromptForChat(null),
-              onSend: sendMessage,
-              onApproveTools: approveTools,
-              onDenyTools: denyTools,
+              casefile,
+              comparisonSessions,
+              activeSessionId: focusedComparisonSession
+                ? compareSessionId(focusedComparisonSession.id)
+                : activeLaneId
+                  ? laneSessionId(activeLaneId)
+                  : null,
+              onSelectSession: (id) => {
+                if (id.startsWith("compare:")) {
+                  setActiveComparisonId(id.slice("compare:".length));
+                } else if (id.startsWith("lane:")) {
+                  void handleSwitchLane(id.slice("lane:".length));
+                }
+              },
+              onCloseCompareSession: handleCloseComparisonChat,
+              laneChat: {
+                provider,
+                keyStatus,
+                messages: session.messages,
+                pendingApprovals: session.pendingApprovals,
+                busy: chatBusy,
+                hasActiveLane: Boolean(activeLane),
+                activeLane,
+                activePromptName,
+                onClearActivePrompt: () => handleSelectPromptForChat(null),
+                onSend: sendMessage,
+                onApproveTools: approveTools,
+                onDenyTools: denyTools,
+              },
+              compareChat: {
+                provider,
+                keyStatus,
+                session: focusedComparisonSession,
+                busy: comparisonChatBusy,
+                onSend: sendComparisonChat,
+              },
+              // SaveOutputPicker writes the chat message into a lane
+              // attachment / arbitrary directory, but the bridge call
+              // bypasses our normal save-tab flow so the file tree
+              // wouldn't otherwise re-list. Fire a refresh so the new
+              // file appears immediately in the workspace pane.
+              // Reload overlays too: the destination is often an
+              // ancestor lane's attachment (e.g. the chat picker's
+              // "ash_notes" row), which is rendered in the inherited-
+              // context section, not the main lane tree.
+              onAfterSaveOutput: () => {
+                void refreshTree();
+                void reloadOverlays();
+              },
             }}
             notes={{
               value: noteState.content,
@@ -1513,16 +1719,6 @@ export function App(): JSX.Element {
               saving: noteState.saving,
               error: noteState.error,
               onChange: handleNoteChange,
-            }}
-            findings={{
-              casefile,
-              findings,
-              busy: findingsBusy,
-              lastExport,
-              onCreate: handleCreateFinding,
-              onUpdate: handleUpdateFinding,
-              onDelete: handleDeleteFinding,
-              onExport: handleExportFindings,
             }}
             lanes={{
               casefile,
@@ -1547,14 +1743,6 @@ export function App(): JSX.Element {
               onHardResetCasefile: handleHardResetCasefile,
               onSoftResetCasefile: handleSoftResetCasefile,
             }}
-            compareChat={{
-              provider,
-              keyStatus,
-              session: comparisonSession,
-              busy: comparisonChatBusy,
-              onSend: sendComparisonChat,
-              onClose: handleCloseComparisonChat,
-            }}
             prompts={{
               hasCasefile: Boolean(casefile),
               hasActiveLane: Boolean(activeLane),
@@ -1568,24 +1756,8 @@ export function App(): JSX.Element {
               onDelete: handleDeletePrompt,
               onLoad: handleLoadPrompt,
             }}
-            runs={{
-              hasCasefile: Boolean(casefile),
-              hasActiveLane: Boolean(activeLane),
-              activeLaneId,
-              lanes: casefile?.lanes ?? [],
-              runs,
-              loading: runsLoading,
-              error: runsError,
-              allowedExecutables,
-              onRun: handleRunCommand,
-              onLoadRun: handleLoadRun,
-              onDelete: handleDeleteRun,
-            }}
             inbox={{
               hasCasefile: Boolean(casefile),
-              hasActiveLane: Boolean(activeLane),
-              activeLaneId,
-              activeLaneName: activeLane?.name ?? null,
               sources: inboxSources,
               loading: inboxLoading,
               error: inboxError,
@@ -1594,10 +1766,32 @@ export function App(): JSX.Element {
               onChooseRoot: handleChooseInboxRoot,
               onListItems: handleListInboxItems,
               onReadItem: handleReadInboxItem,
-              onCreateFinding: handleCreateFinding,
             }}
           />
         </section>
+      </div>
+      {terminalOpen && (
+        <>
+          <HorizontalSplitter
+            height={terminalHeight}
+            min={TERMINAL_HEIGHT_MIN}
+            max={TERMINAL_HEIGHT_MAX}
+            defaultHeight={TERMINAL_HEIGHT_DEFAULT}
+            onResize={setTerminalHeight}
+            ariaLabel="Resize terminal pane"
+          />
+          <div className="terminal-pane" style={{ height: terminalHeight }}>
+            <TerminalsPanel
+              sessions={terminalSessions}
+              activeSessionId={activeTerminalId}
+              onSelect={handleSelectTerminal}
+              onNew={handleNewTerminal}
+              onClose={handleCloseTerminal}
+              onClear={() => setTerminalOpen(false)}
+            />
+          </div>
+        </>
+      )}
       </div>
       {keysOpen && (
         <ApiKeysDialog

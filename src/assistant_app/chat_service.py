@@ -224,11 +224,6 @@ class ChatService:
                 "Delete a workspace file or directory. Set recursive=true for directories. "
                 "Requires user write approval."
             ),
-            "findings_list": (
-                "List findings recorded in the casefile. Optional 'lane_id' filters to one lane. "
-                "Read-only."
-            ),
-            "findings_read": "Read a single finding by id. Read-only.",
         }
         definitions: list[dict[str, object]] = []
         for spec in self.list_tool_specs():

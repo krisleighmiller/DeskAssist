@@ -29,6 +29,16 @@ interface FileTreeProps {
    * drop target — the FileTree just sets up the dataTransfer payload).
    * The path passed is the casefile-relative POSIX path. */
   onAddToContext?: (relativePath: string) => void;
+  /** Invoked when the user picks "Rename..." from the context menu.
+   * The parent is responsible for performing the rename via the bridge
+   * (which validates and may reject) and refreshing the tree. The
+   * current path is the absolute on-disk path; `newName` is a basename
+   * the user typed (no path separators — the prompt enforces that). */
+  onRename?: (path: string, newName: string) => Promise<void> | void;
+  /** Invoked when the user clicks the toolbar "Refresh" button. The
+   * parent should re-fetch the workspace tree (and overlays, if open).
+   * The button is hidden when this prop is omitted. */
+  onRefresh?: () => void;
 }
 
 function compareNodes(a: FileTreeNode, b: FileTreeNode): number {
@@ -282,6 +292,8 @@ export function FileTree({
   onOpenOverlayFile,
   casefileRoot,
   onAddToContext,
+  onRename,
+  onRefresh,
 }: FileTreeProps): JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -560,6 +572,50 @@ export function FileTree({
             },
           ]
         : []),
+      // Rename is intentionally single-target only: bulk rename is a
+      // distinct UX (templates, find/replace, ...) and would be more
+      // confusing than useful as a menu entry. Overlay nodes (virtual
+      // paths) and the lane root itself are not renameable from here —
+      // overlays live outside the lane and the root rename is a
+      // casefile-level operation handled in the toolbar.
+      ...(onRename
+        ? [
+            {
+              label: "Rename…",
+              onSelect: () => {
+                const target = menu.node;
+                const currentName = target.name;
+                const proposed = window.prompt(
+                  `Rename "${currentName}" to:`,
+                  currentName
+                );
+                if (proposed == null) return;
+                const trimmed = proposed.trim();
+                if (!trimmed || trimmed === currentName) return;
+                if (trimmed.includes("/") || trimmed.includes("\\")) {
+                  window.alert(
+                    "Name must not contain path separators ('/' or '\\')."
+                  );
+                  return;
+                }
+                void Promise.resolve(onRename(target.path, trimmed)).catch(
+                  (err) => {
+                    window.alert(
+                      `Rename failed: ${err instanceof Error ? err.message : String(err)}`
+                    );
+                  }
+                );
+              },
+              disabled:
+                multi ||
+                menu.node.path.startsWith("_") ||
+                // Don't let the user rename the workspace root from the
+                // tree — that's a casefile-level decision.
+                (root != null && menu.node.path === root.path),
+              separator: true,
+            },
+          ]
+        : []),
     ];
   })();
 
@@ -577,16 +633,31 @@ export function FileTree({
         }
       }}
     >
-      {canShowOverlays && onToggleOverlays && (
-        <label className="overlay-toggle">
-          <input
-            type="checkbox"
-            checked={Boolean(showOverlays)}
-            onChange={onToggleOverlays}
-          />
-          <span>Show ancestor / attachment / context files</span>
-          {overlaysLoading && <span className="muted"> (loading…)</span>}
-        </label>
+      {(onRefresh || (canShowOverlays && onToggleOverlays)) && (
+        <div className="file-tree-toolbar">
+          {onRefresh && (
+            <button
+              type="button"
+              className="file-tree-refresh"
+              onClick={onRefresh}
+              title="Refresh file tree"
+              aria-label="Refresh file tree"
+            >
+              ⟳ Refresh
+            </button>
+          )}
+          {canShowOverlays && onToggleOverlays && (
+            <label className="overlay-toggle">
+              <input
+                type="checkbox"
+                checked={Boolean(showOverlays)}
+                onChange={onToggleOverlays}
+              />
+              <span>Show ancestor / attachment / context files</span>
+              {overlaysLoading && <span className="muted"> (loading…)</span>}
+            </label>
+          )}
+        </div>
       )}
       <TreeNode
         node={root}
@@ -602,26 +673,38 @@ export function FileTree({
       {showOverlays && overlays && overlays.length > 0 && (
         <div className="overlay-section">
           <div className="overlay-section-title">Inherited context</div>
-          {overlays.map((overlay) =>
-            overlay.tree ? (
-              <TreeNode
-                key={overlay.prefix}
-                node={overlay.tree}
-                expanded={expanded}
-                toggle={toggle}
-                activePath={activePath}
-                selected={selected}
-                depth={0}
-                onRowClick={handleRowClick}
-                onContextMenu={handleContextMenu}
-                onDragStartNode={handleDragStartNode}
-              />
-            ) : (
-              <div key={overlay.prefix} className="empty">
-                {overlay.prefix}: {overlay.error || "unavailable"}
+          {overlays.map((overlay) => (
+            <div key={overlay.prefix} className="overlay-group">
+              {/* Per-overlay header so the user can tell at a glance
+                  whether a directory called "notes" is the active
+                  lane's `_attachments/notes` (a configured attachment)
+                  or an ancestor lane named "notes" (an `_ancestors/...`
+                  root). Without this label every overlay tree just
+                  rendered as its basename, which made it impossible to
+                  tell where a given file actually lived. */}
+              <div className="overlay-group-header" title={overlay.root}>
+                <span className="overlay-group-prefix">{overlay.prefix}</span>
+                {overlay.label && overlay.label !== overlay.prefix && (
+                  <span className="overlay-group-label">{overlay.label}</span>
+                )}
               </div>
-            )
-          )}
+              {overlay.tree ? (
+                <TreeNode
+                  node={overlay.tree}
+                  expanded={expanded}
+                  toggle={toggle}
+                  activePath={activePath}
+                  selected={selected}
+                  depth={0}
+                  onRowClick={handleRowClick}
+                  onContextMenu={handleContextMenu}
+                  onDragStartNode={handleDragStartNode}
+                />
+              ) : (
+                <div className="empty">{overlay.error || "unavailable"}</div>
+              )}
+            </div>
+          ))}
         </div>
       )}
       {showOverlays && overlaysError && (

@@ -16,15 +16,15 @@ import { LANE_KINDS } from "../types";
 import { ContextEditor } from "./ContextEditor";
 import { FILETREE_DRAG_MIME, parseDragPayload } from "./FileTree";
 
-/** Drop handler for the attachment-root inputs. The lane attachment store
- * needs a *real* on-disk path; when the user drags an overlay-tree node
+/** Drop handler for the lane-root and attachment-root inputs. Both stores
+ * need a *real* on-disk path; when the user drags an overlay-tree node
  * (e.g. an ancestor directory shown as `_ancestors/<lane>/<sub>`), the
  * structured payload's `absolutePath` already carries the resolved real
  * path — we read it from the FileTree drag MIME instead of letting the
  * browser insert the plain-text fallback (which would be the virtual
- * path and then fail server-side with "Attachment root does not exist").
- * Returns true if the drop was handled. */
-function handleAttachmentRootDrop(
+ * path and then fail server-side with "Lane root does not exist" or the
+ * matching attachment-root error). Returns true if the drop was handled. */
+function handleLanePathDrop(
   event: React.DragEvent<HTMLInputElement>,
   setRoot: (value: string) => void
 ): boolean {
@@ -42,7 +42,7 @@ function handleAttachmentRootDrop(
   }
 }
 
-function handleAttachmentRootDragOver(event: React.DragEvent<HTMLInputElement>): void {
+function handleLanePathDragOver(event: React.DragEvent<HTMLInputElement>): void {
   if (event.dataTransfer.types.includes(FILETREE_DRAG_MIME)) {
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
@@ -302,7 +302,7 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
 
       {casefile.lanes.length >= 2 && (
         <div className="compare-controls">
-          <span className="lanes-title">Compare</span>
+          <span className="lanes-title">Diff lanes</span>
           <select
             value={effectiveLeft}
             onChange={(event) => setCompareLeft(event.target.value)}
@@ -339,8 +339,9 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
                 void onCompare(effectiveLeft, effectiveRight);
               }
             }}
+            title="Compare two lanes' file trees side by side"
           >
-            {comparisonBusy ? "Comparing..." : "Compare"}
+            {comparisonBusy ? "Diffing..." : "Diff files"}
           </button>
           {comparison && (
             <button type="button" onClick={onClearComparison} className="link-button">
@@ -357,7 +358,7 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
                 void onOpenComparisonChat([effectiveLeft, effectiveRight]);
               }
             }}
-            title="Open a read-only chat that can read both lanes at once"
+            title="Open a read-only chat that can read both lanes at once (appears in the Chat tab)"
           >
             Open compare chat
           </button>
@@ -750,6 +751,8 @@ function LaneEditPanel({
           type="text"
           value={laneRoot}
           onChange={(event) => setLaneRoot(event.target.value)}
+          onDragOver={handleLanePathDragOver}
+          onDrop={(event) => handleLanePathDrop(event, setLaneRoot)}
           placeholder="absolute or casefile-relative path"
         />
         <button
@@ -817,8 +820,8 @@ function LaneEditPanel({
           placeholder="absolute or casefile-relative path"
           value={newRoot}
           onChange={(event) => setNewRoot(event.target.value)}
-          onDragOver={handleAttachmentRootDragOver}
-          onDrop={(event) => handleAttachmentRootDrop(event, setNewRoot)}
+          onDragOver={handleLanePathDragOver}
+          onDrop={(event) => handleLanePathDrop(event, setNewRoot)}
         />
         <button
           type="button"
@@ -841,8 +844,8 @@ function LaneEditPanel({
         <span className="lane-form-spacer" />
         {/* M4.6: removal is gated by a two-step "click → confirm" so a stray
             click on the lane edit panel cannot delete a lane outright.
-            The chat log / notes / findings remain on disk and can be
-            recovered by re-registering the lane with the same id. */}
+            The chat log / notes remain on disk and can be recovered by
+            re-registering the lane with the same id. */}
         {!confirmRemove ? (
           <button
             type="button"
@@ -856,8 +859,7 @@ function LaneEditPanel({
         ) : (
           <>
             <span className="lane-form-confirm">
-              Remove <strong>{lane.name}</strong>? Chat / notes / findings
-              stay on disk.
+              Remove <strong>{lane.name}</strong>? Chat / notes stay on disk.
             </span>
             <button
               type="button"
@@ -913,17 +915,17 @@ function ResetCasefileDialog({
         {isHard ? (
           <p>
             This deletes the entire <code>.casefile/</code> directory: all
-            lanes, chat history, findings, notes, prompts, command runs,
-            and saved context. The casefile will look as if it had never
-            been opened in DeskAssist.{" "}
+            lanes, chat history, notes, prompts, and saved context. The
+            casefile will look as if it had never been opened in
+            DeskAssist.{" "}
             <strong>This cannot be undone.</strong>
           </p>
         ) : (
           <>
             <p>
-              This clears chat history, findings, notes, and command runs,
-              and restores a fresh default <code>main</code> lane. Your
-              casefile context manifest and inbox sources are preserved.
+              This clears chat history and notes, and restores a fresh
+              default <code>main</code> lane. Your casefile context
+              manifest and inbox sources are preserved.
             </p>
             <label className="lane-form-row">
               <input
@@ -1063,6 +1065,8 @@ function RegisterLaneForm({
           type="text"
           value={root}
           onChange={(event) => setRoot(event.target.value)}
+          onDragOver={handleLanePathDragOver}
+          onDrop={(event) => handleLanePathDrop(event, setRoot)}
           placeholder="absolute path or relative-to-casefile"
         />
         <button
@@ -1111,8 +1115,8 @@ function RegisterLaneForm({
           placeholder="absolute or casefile-relative path"
           value={newRoot}
           onChange={(event) => setNewRoot(event.target.value)}
-          onDragOver={handleAttachmentRootDragOver}
-          onDrop={(event) => handleAttachmentRootDrop(event, setNewRoot)}
+          onDragOver={handleLanePathDragOver}
+          onDrop={(event) => handleLanePathDrop(event, setNewRoot)}
         />
         <button
           type="button"

@@ -1,8 +1,24 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
+const fsSync = require("fs");
+const os = require("os");
 const { spawn } = require("child_process");
 const { TextDecoder } = require("util");
+
+// node-pty is a native module compiled against Electron's ABI by the
+// `electron-rebuild` postinstall step. We require it lazily so that a
+// missing/broken native binding doesn't prevent the rest of the app from
+// starting — the terminal feature simply degrades to "unavailable" if
+// the load fails.
+let ptyLib = null;
+let ptyLoadError = null;
+try {
+  ptyLib = require("node-pty");
+} catch (err) {
+  ptyLoadError = err && err.message ? err.message : String(err);
+  console.error("[pty] failed to load node-pty:", ptyLoadError);
+}
 
 // `activeLaneRoot` is the directory that the file-tree IPC and editor IO are
 // currently scoped to. Before M2 it was set by "Choose Workspace" and pointed
@@ -14,6 +30,126 @@ const { TextDecoder } = require("util");
 let activeCasefileRoot = null;
 let activeLaneId = null;
 let activeLaneRoot = null;
+
+// Filesystem watcher for the active casefile + extra overlay roots.
+// We notify the renderer any time something inside one of the watched
+// directories changes so the file tree, the inherited-context overlay
+// section, and any other workspace-derived UI can re-list.
+//
+// Why the casefile root, not just the active lane root? Lanes are
+// typically siblings under the casefile root, and ancestor lanes are
+// surfaced to the renderer as `_ancestors/<id>/...` overlays. If we
+// only watched the active lane, an external rename in a sibling
+// (== ancestor) lane wouldn't refresh the inherited-context pane —
+// which was the bug from the user's screenshot where Ratings.md still
+// showed under its original chat-output filename inside an overlay.
+//
+// `extraWatchRoots` covers attachment / context roots that live
+// *outside* the casefile root (uncommon but supported). The renderer
+// reports those via the `workspace:registerWatchRoots` IPC after each
+// `listOverlayTrees` call.
+//
+// fs.watch on Linux uses inotify which (unlike kqueue / ReadDirectoryChangesW)
+// is not recursive. We pass `{ recursive: true }` anyway: Node falls back
+// to a per-directory walk on Linux internally, which is fine for typical
+// casefile sizes (lanes hold notes + small attachments, not a node_modules
+// tree). If a future user opens a giant casefile and the watcher becomes
+// expensive, we can swap this for chokidar with a `depth: 4` cap.
+const activeWatchers = new Map(); // path -> fs.FSWatcher
+let extraWatchRoots = []; // overlay roots outside the casefile, set by renderer
+let workspaceChangeNotifyTimer = null;
+const WORKSPACE_CHANGE_DEBOUNCE_MS = 150;
+
+function notifyWorkspaceChanged() {
+  // Coalesce bursts of inotify events (e.g. a `cp -r` of a directory
+  // fires per-file) into one renderer message per debounce window.
+  if (workspaceChangeNotifyTimer) return;
+  workspaceChangeNotifyTimer = setTimeout(() => {
+    workspaceChangeNotifyTimer = null;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("workspace:changed");
+    }
+  }, WORKSPACE_CHANGE_DEBOUNCE_MS);
+}
+
+function stopAllWatchers() {
+  for (const watcher of activeWatchers.values()) {
+    try {
+      watcher.close();
+    } catch {
+      // Closing an already-closed watcher throws on some platforms; ignore.
+    }
+  }
+  activeWatchers.clear();
+  if (workspaceChangeNotifyTimer) {
+    clearTimeout(workspaceChangeNotifyTimer);
+    workspaceChangeNotifyTimer = null;
+  }
+}
+
+function watchOne(root) {
+  if (!root || activeWatchers.has(root)) return;
+  try {
+    const watcher = fsSync.watch(
+      root,
+      { recursive: true, persistent: false },
+      // We don't care about which file changed — the renderer always
+      // re-fetches the whole subtree. So just fire the debounced
+      // notifier on every event.
+      () => notifyWorkspaceChanged()
+    );
+    watcher.on("error", (err) => {
+      // Don't crash the main process if the watch breaks (e.g. user
+      // deleted the directory from the shell). Log, drop the entry, and
+      // let the next reconcileWatchers() call re-attach if appropriate.
+      console.warn("[main] watcher error on", root, ":", err && err.message);
+      try {
+        watcher.close();
+      } catch {
+        // Ignore — already in the process of dying.
+      }
+      activeWatchers.delete(root);
+    });
+    activeWatchers.set(root, watcher);
+  } catch (err) {
+    // ENOENT / EACCES on the root — surface as a single warning,
+    // don't keep retrying. The user can refresh manually if needed.
+    console.warn("[main] failed to watch", root, ":", err && err.message);
+  }
+}
+
+function reconcileWatchers() {
+  // Compute the desired set of roots from the current state and bring
+  // the live watcher map in line — start any missing watchers, stop
+  // any that are no longer needed. Called whenever the casefile root
+  // or the extra overlay roots change.
+  const desired = new Set();
+  if (activeCasefileRoot) desired.add(activeCasefileRoot);
+  for (const root of extraWatchRoots) {
+    if (!root) continue;
+    // Skip roots already covered by the casefile-root recursive watch
+    // — Node would happily start a redundant watcher otherwise.
+    if (
+      activeCasefileRoot &&
+      (root === activeCasefileRoot ||
+        root.startsWith(`${activeCasefileRoot}${path.sep}`))
+    ) {
+      continue;
+    }
+    desired.add(root);
+  }
+  for (const existing of Array.from(activeWatchers.keys())) {
+    if (!desired.has(existing)) {
+      try {
+        activeWatchers.get(existing).close();
+      } catch {
+        // Ignore close-time errors, same rationale as stopAllWatchers.
+      }
+      activeWatchers.delete(existing);
+    }
+  }
+  for (const root of desired) watchOne(root);
+}
 let apiKeysCache = {
   openai: "",
   anthropic: "",
@@ -539,6 +675,11 @@ function adoptCasefileSnapshot(snapshot) {
   const lanes = Array.isArray(snapshot.lanes) ? snapshot.lanes : [];
   const activeLane = lanes.find((lane) => lane && lane.id === activeLaneId);
   activeLaneRoot = activeLane && typeof activeLane.root === "string" ? activeLane.root : null;
+  // Re-bind the filesystem watchers to the (possibly new) casefile +
+  // overlay roots so the renderer's file tree picks up external
+  // changes (`git checkout`, `cp` from another terminal, the
+  // assistant writing via tools, etc.).
+  reconcileWatchers();
   return snapshot;
 }
 
@@ -640,7 +781,7 @@ ipcMain.handle("casefile:listChat", async (_, args = {}) => {
   return Array.isArray(response.messages) ? response.messages : [];
 });
 
-// ----- M3: findings, notes, compare, export, lane-scoped read -----
+// ----- M3: notes, compare, lane-scoped read, save chat output -----
 
 function requireCasefile() {
   if (!activeCasefileRoot) {
@@ -648,62 +789,6 @@ function requireCasefile() {
   }
   return activeCasefileRoot;
 }
-
-ipcMain.handle("casefile:listFindings", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" && args.laneId ? args.laneId : null;
-  const payload = { command: "casefile:listFindings", casefileRoot };
-  if (laneId) payload.laneId = laneId;
-  const response = await runPythonBridgeMeta(payload);
-  return Array.isArray(response.findings) ? response.findings : [];
-});
-
-ipcMain.handle("casefile:getFinding", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const findingId = typeof args.findingId === "string" ? args.findingId : "";
-  if (!findingId) throw new Error("findingId is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:getFinding",
-    casefileRoot,
-    findingId,
-  });
-  return response.finding;
-});
-
-ipcMain.handle("casefile:createFinding", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const finding = args.finding && typeof args.finding === "object" ? args.finding : null;
-  if (!finding) throw new Error("finding is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:createFinding",
-    casefileRoot,
-    finding,
-  });
-  return response.finding;
-});
-
-ipcMain.handle("casefile:updateFinding", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const findingId = typeof args.findingId === "string" ? args.findingId : "";
-  const finding = args.finding && typeof args.finding === "object" ? args.finding : null;
-  if (!findingId) throw new Error("findingId is required");
-  if (!finding) throw new Error("finding is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:updateFinding",
-    casefileRoot,
-    findingId,
-    finding,
-  });
-  return response.finding;
-});
-
-ipcMain.handle("casefile:deleteFinding", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const findingId = typeof args.findingId === "string" ? args.findingId : "";
-  if (!findingId) throw new Error("findingId is required");
-  await runPythonBridgeMeta({ command: "casefile:deleteFinding", casefileRoot, findingId });
-  return true;
-});
 
 ipcMain.handle("casefile:getNote", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
@@ -742,16 +827,23 @@ ipcMain.handle("casefile:compareLanes", async (_, args = {}) => {
   return response.comparison;
 });
 
-ipcMain.handle("casefile:exportFindings", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneIds = Array.isArray(args.laneIds) ? args.laneIds.filter((x) => typeof x === "string") : [];
-  if (laneIds.length === 0) throw new Error("laneIds is required");
-  const response = await runPythonBridge({
-    command: "casefile:exportFindings",
-    casefileRoot,
-    laneIds,
+ipcMain.handle("chat:saveOutput", async (_, args = {}) => {
+  // The destination directory is an *absolute* path picked by the user
+  // via the lane attachment list or the system folder dialog. It is not
+  // necessarily inside the active lane root, so we pass it straight to
+  // the Python bridge instead of resolving against `activeCasefileRoot`.
+  const destinationDir = typeof args.destinationDir === "string" ? args.destinationDir : "";
+  const filename = typeof args.filename === "string" ? args.filename : "";
+  const body = typeof args.body === "string" ? args.body : "";
+  if (!destinationDir) throw new Error("destinationDir is required");
+  if (!filename) throw new Error("filename is required");
+  const response = await runPythonBridgeMeta({
+    command: "chat:saveOutput",
+    destinationDir,
+    filename,
+    body,
   });
-  return { path: response.path, markdown: response.markdown };
+  return { path: response.path };
 });
 
 ipcMain.handle("lane:readFile", async (_, args = {}) => {
@@ -896,6 +988,27 @@ ipcMain.handle("casefile:resolveScope", async (_, args = {}) => {
   return response.scope;
 });
 
+// Renderer-side hint: after `listOverlayTrees` resolves, the renderer
+// pushes the set of overlay roots back to main so we can extend the
+// filesystem watch to any directory that lives *outside* the casefile
+// (uncommon but supported — e.g. an attachment pointing at a folder
+// elsewhere on disk). Roots inside the casefile are ignored because
+// the casefile-level recursive watch already covers them.
+ipcMain.handle("workspace:registerWatchRoots", async (_, args = {}) => {
+  const incoming = Array.isArray(args.roots) ? args.roots : [];
+  // Defensive: drop non-strings, normalise, dedupe.
+  const cleaned = Array.from(
+    new Set(
+      incoming
+        .filter((r) => typeof r === "string" && r.length > 0)
+        .map((r) => path.resolve(r))
+    )
+  );
+  extraWatchRoots = cleaned;
+  reconcileWatchers();
+  return { watching: Array.from(activeWatchers.keys()) };
+});
+
 ipcMain.handle("casefile:listOverlayTrees", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
   const laneId = typeof args.laneId === "string" ? args.laneId : "";
@@ -1017,6 +1130,49 @@ ipcMain.handle("file:save", async (_, args = {}) => {
   return { path: filePath, saved: true };
 });
 
+// Rename a file or directory inside the active lane. The renderer
+// supplies the source absolute path (already inside the lane root,
+// validated via ensureInWorkspace) and a *new basename* — we
+// intentionally don't accept an arbitrary destination path so this
+// can't be used to move files into a different overlay or escape the
+// lane. Refuses to clobber an existing entry; the caller should
+// prompt the user if they really want that.
+ipcMain.handle("file:rename", async (_, args = {}) => {
+  const sourcePath = ensureInWorkspace(args.path || "");
+  const newName = typeof args.newName === "string" ? args.newName.trim() : "";
+  if (!newName) {
+    throw new Error("newName must be a non-empty string");
+  }
+  // Disallow path separators in the new name — rename is a same-dir
+  // operation, not a move. Also block leading dots that hide the file
+  // and the conventional reserved names ".", "..".
+  if (
+    newName.includes("/") ||
+    newName.includes("\\") ||
+    newName === "." ||
+    newName === ".."
+  ) {
+    throw new Error("newName must be a single filename without path separators");
+  }
+  const parentDir = path.dirname(sourcePath);
+  const destinationPath = ensureInWorkspace(path.join(parentDir, newName));
+  if (destinationPath === sourcePath) {
+    return { oldPath: sourcePath, newPath: destinationPath, renamed: false };
+  }
+  // Race-y but good enough: check then rename. An attacker who can
+  // write to the lane already has full control, so TOCTOU here is
+  // not a security issue, only a UX guard against accidental
+  // overwrite.
+  try {
+    await fs.access(destinationPath);
+    throw new Error(`A file named "${newName}" already exists in this folder`);
+  } catch (err) {
+    if (err && err.code !== "ENOENT") throw err;
+  }
+  await fs.rename(sourcePath, destinationPath);
+  return { oldPath: sourcePath, newPath: destinationPath, renamed: true };
+});
+
 ipcMain.handle("chat:send", async (_, payload = {}) => {
   if (!activeCasefileRoot || !activeLaneId) {
     throw new Error("Open a casefile before sending a chat");
@@ -1108,70 +1264,6 @@ ipcMain.handle("casefile:deletePrompt", async (_, args = {}) => {
     command: "casefile:deletePrompt",
     casefileRoot,
     promptId,
-  });
-  return true;
-});
-
-// ----- M4.2: command runs -----
-
-ipcMain.handle("casefile:listRuns", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const payload = { command: "casefile:listRuns", casefileRoot };
-  if (typeof args.laneId === "string" && args.laneId) payload.laneId = args.laneId;
-  const response = await runPythonBridgeMeta(payload);
-  return Array.isArray(response.runs) ? response.runs : [];
-});
-
-ipcMain.handle("casefile:getRun", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const runId = typeof args.runId === "string" ? args.runId : "";
-  if (!runId) throw new Error("runId is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:getRun",
-    casefileRoot,
-    runId,
-  });
-  return response.run;
-});
-
-ipcMain.handle("casefile:getAllowedExecutables", async () => {
-  // Routed through the bridge so the renderer's Runs tab cannot
-  // desync from `system_exec.ALLOWED_EXECUTABLES`. Cached at the
-  // renderer to avoid a roundtrip per render.
-  const response = await runPythonBridgeMeta({
-    command: "casefile:getAllowedExecutables",
-  });
-  return Array.isArray(response.executables) ? response.executables : [];
-});
-
-ipcMain.handle("casefile:runCommand", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const commandLine = typeof args.commandLine === "string" ? args.commandLine : "";
-  if (!commandLine.trim()) throw new Error("commandLine is required");
-  const payload = {
-    command: "casefile:runCommand",
-    casefileRoot,
-    commandLine,
-  };
-  if (typeof args.laneId === "string" && args.laneId) payload.laneId = args.laneId;
-  if (Number.isInteger(args.timeoutSeconds) && args.timeoutSeconds > 0) {
-    payload.timeoutSeconds = args.timeoutSeconds;
-  }
-  if (Number.isInteger(args.maxOutputChars) && args.maxOutputChars > 0) {
-    payload.maxOutputChars = args.maxOutputChars;
-  }
-  const response = await runPythonBridge(payload);
-  return response.run;
-});
-
-ipcMain.handle("casefile:deleteRun", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const runId = typeof args.runId === "string" ? args.runId : "";
-  if (!runId) throw new Error("runId is required");
-  await runPythonBridgeMeta({
-    command: "casefile:deleteRun",
-    casefileRoot,
-    runId,
   });
   return true;
 });
@@ -1399,6 +1491,160 @@ ipcMain.handle("keys:clear", async (_, payload = {}) => {
   };
 });
 
+// ---------------------------------------------------------------------------
+// Terminal (PTY) sessions
+// ---------------------------------------------------------------------------
+//
+// One renderer can host multiple terminals (one per lane, plus optional
+// extras). Each terminal corresponds to a long-lived shell process owned
+// by the main process. The renderer addresses sessions by an opaque
+// string id it chose when it called `terminal:spawn`. The main process
+// pipes shell stdout/stderr back via `terminal:data:<id>` events and
+// forwards keyboard input + resize events via the corresponding
+// invoke channels.
+//
+// Sessions outlive lane / tab switches: closing a tab in the UI does
+// NOT kill the shell. The shell is killed when the renderer explicitly
+// calls `terminal:kill` or when it disappears (window close).
+
+const ptySessions = new Map(); // id -> { pty, cwd, shell, laneId }
+
+function pickShell() {
+  if (process.platform === "win32") {
+    // PowerShell is a saner default than cmd.exe when available; node-pty
+    // accepts either. We don't probe for pwsh.exe here — the launcher
+    // can always be overridden later.
+    return process.env.COMSPEC || "powershell.exe";
+  }
+  return process.env.SHELL || "/bin/bash";
+}
+
+function killPtySession(id) {
+  const session = ptySessions.get(id);
+  if (!session) return false;
+  ptySessions.delete(id);
+  try {
+    session.pty.kill();
+  } catch {
+    // pty.kill() throws if the child already exited; ignore.
+  }
+  return true;
+}
+
+function killAllPtySessions() {
+  for (const id of Array.from(ptySessions.keys())) {
+    killPtySession(id);
+  }
+}
+
+ipcMain.handle("terminal:spawn", async (_event, args = {}) => {
+  if (!ptyLib) {
+    throw new Error(
+      `Terminal unavailable: node-pty failed to load (${ptyLoadError || "unknown error"}). ` +
+        `Run \`npm run rebuild:native\` in ui-electron/.`
+    );
+  }
+  const id = typeof args.id === "string" && args.id ? args.id : null;
+  if (!id) throw new Error("terminal:spawn requires an id");
+  if (ptySessions.has(id)) {
+    throw new Error(`terminal session already exists: ${id}`);
+  }
+  const requestedCwd = typeof args.cwd === "string" && args.cwd ? args.cwd : null;
+  let cwd = requestedCwd || activeLaneRoot || activeCasefileRoot || os.homedir();
+  // Don't trust the renderer; fall back to homedir if the requested cwd
+  // doesn't exist or isn't a directory.
+  try {
+    const stat = fsSync.statSync(cwd);
+    if (!stat.isDirectory()) cwd = os.homedir();
+  } catch {
+    cwd = os.homedir();
+  }
+  const cols = Number.isInteger(args.cols) && args.cols > 0 ? args.cols : 80;
+  const rows = Number.isInteger(args.rows) && args.rows > 0 ? args.rows : 24;
+  const shell = pickShell();
+  // node-pty's spawn signature is (file, args, opts). We pass an empty
+  // arg list so we get a normal interactive shell — login behavior is
+  // controlled by SHELL and the user's rc files.
+  const env = { ...process.env, TERM: "xterm-256color" };
+  // Strip ELECTRON_*/NODE_* leakage that confuses subprocess shells
+  // (e.g. ELECTRON_RUN_AS_NODE forces children into Node mode).
+  delete env.ELECTRON_RUN_AS_NODE;
+  let ptyProc;
+  try {
+    ptyProc = ptyLib.spawn(shell, [], {
+      name: "xterm-256color",
+      cols,
+      rows,
+      cwd,
+      env,
+    });
+  } catch (err) {
+    throw new Error(
+      `Failed to spawn shell '${shell}': ${err && err.message ? err.message : String(err)}`
+    );
+  }
+
+  const session = { pty: ptyProc, cwd, shell, laneId: args.laneId || null };
+  ptySessions.set(id, session);
+
+  ptyProc.onData((data) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send(`terminal:data:${id}`, data);
+  });
+  ptyProc.onExit(({ exitCode, signal }) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(`terminal:exit:${id}`, { exitCode, signal });
+    }
+    ptySessions.delete(id);
+  });
+
+  return { id, cwd, shell, pid: ptyProc.pid };
+});
+
+ipcMain.handle("terminal:write", async (_event, args = {}) => {
+  const id = typeof args.id === "string" ? args.id : "";
+  const data = typeof args.data === "string" ? args.data : "";
+  const session = ptySessions.get(id);
+  if (!session) return false;
+  session.pty.write(data);
+  return true;
+});
+
+ipcMain.handle("terminal:resize", async (_event, args = {}) => {
+  const id = typeof args.id === "string" ? args.id : "";
+  const session = ptySessions.get(id);
+  if (!session) return false;
+  const cols = Number.isInteger(args.cols) && args.cols > 0 ? args.cols : 80;
+  const rows = Number.isInteger(args.rows) && args.rows > 0 ? args.rows : 24;
+  try {
+    session.pty.resize(cols, rows);
+  } catch {
+    // pty already exited — surface as a no-op rather than throwing,
+    // because the renderer's resize observer can race the exit event.
+    return false;
+  }
+  return true;
+});
+
+ipcMain.handle("terminal:kill", async (_event, args = {}) => {
+  const id = typeof args.id === "string" ? args.id : "";
+  return killPtySession(id);
+});
+
+ipcMain.handle("terminal:list", async () => {
+  return Array.from(ptySessions.entries()).map(([id, s]) => ({
+    id,
+    cwd: s.cwd,
+    shell: s.shell,
+    laneId: s.laneId,
+    pid: s.pty.pid,
+  }));
+});
+
+ipcMain.handle("terminal:available", async () => {
+  return { available: Boolean(ptyLib), error: ptyLoadError };
+});
+
 app.whenReady().then(async () => {
   tryInitKeytar();
   await loadApiKeys();
@@ -1407,7 +1653,14 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
+  stopAllWatchers();
+  killAllPtySessions();
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("will-quit", () => {
+  stopAllWatchers();
+  killAllPtySessions();
 });

@@ -9,12 +9,7 @@ from assistant_app.tools.file_tools import (
     make_read_file_tool,
     make_save_file_tool,
 )
-from assistant_app.tools.findings_tools import (
-    make_findings_list_tool,
-    make_findings_read_tool,
-)
 from assistant_app.tools.registry import ToolRegistry, ToolSpec
-from assistant_app.tools.system_tools import make_sys_exec_tool
 
 
 def build_default_tool_registry(
@@ -22,27 +17,20 @@ def build_default_tool_registry(
     *,
     casefile_root: Path | None = None,
     read_overlays: Mapping[str, Path] | None = None,
-    register_system_exec: bool = False,
     enable_writes: bool = True,
 ) -> ToolRegistry:
     """Build the standard tool registry rooted at `workspace_root`.
 
-    `casefile_root` is optional. When provided, casefile-aware read-only
-    tools (`findings_list`, `findings_read`) are registered and enabled so
-    the chat model can cite findings that exist in the casefile. The tools
-    only ever read; they cannot create or delete findings.
+    `casefile_root` is currently accepted for API compatibility with
+    bridge call sites that still pass it; no casefile-aware tools are
+    registered today (the previous read-only ``findings_list`` /
+    ``findings_read`` tools were removed along with the findings store).
 
     `read_overlays` (M3.5) layers additional read-only roots on top of the
     write root, addressed by virtual path prefix. Writes still go only to
     `workspace_root`. The overlays are propagated to the file tools so
     `read_file("_ancestors/foo/bar.md")` resolves into the right ancestor
     without exposing absolute paths to the model.
-
-    `register_system_exec` controls whether the ``sys_exec`` tool is
-    registered at all.  It defaults to ``False`` so the registry never
-    exposes it to the model unless explicitly opted in.  No currently
-    shipped bridge handler sets this flag; the tool exists for future
-    trusted-automation use cases only.
 
     `enable_writes` (M3.5c) controls whether the write-permission tools
     (``save_file``, ``append_file``, ``delete_file``, ``delete_path``) are
@@ -62,8 +50,9 @@ def build_default_tool_registry(
     enabled: set[str] = {"list_dir", "read_file"}
     if enable_writes:
         enabled |= {"append_file", "delete_file", "delete_path", "save_file"}
-    if casefile_root is not None:
-        enabled |= {"findings_list", "findings_read"}
+    # `casefile_root` is intentionally unused at the moment; see the
+    # docstring. It stays in the signature so existing call sites compile.
+    del casefile_root
     registry = ToolRegistry(
         workspace_root=workspace_root,
         enabled_commands=enabled,
@@ -110,30 +99,6 @@ def build_default_tool_registry(
             input_schema={"path": str, "recursive": bool},
             required_params={"path"},
             permission="workspace_write",
-        )
-    if casefile_root is not None:
-        registry.register(
-            "findings_list",
-            make_findings_list_tool(casefile_root),
-            input_schema={"lane_id": str},
-            required_params=set(),
-            permission="workspace_read",
-        )
-        registry.register(
-            "findings_read",
-            make_findings_read_tool(casefile_root),
-            input_schema={"id": str},
-            required_params={"id"},
-            permission="workspace_read",
-        )
-    if register_system_exec:
-        registry.register(
-            "sys_exec",
-            make_sys_exec_tool(workspace_root),
-            input_schema={"command": str, "confirm": bool, "timeout_seconds": int, "max_output_chars": int},
-            required_params={"command", "confirm"},
-            permission="system_exec",
-            internal_enabled=True,
         )
     return registry
 

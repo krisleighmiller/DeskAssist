@@ -8,8 +8,6 @@ These tests exercise the multi-lane comparison-chat surface area:
   history.
 * ``casefile:sendComparisonChat`` builds a *write-disabled* tool registry and
   appends to the comparison-specific log path.
-* The findings store accepts the synthetic ``laneIds`` (M3 already supports
-  multi-lane findings; we just confirm the wiring).
 """
 
 from __future__ import annotations
@@ -306,40 +304,6 @@ def test_send_comparison_chat_requires_user_message(
                 "messages": [],
             }
         )
-
-
-def test_findings_created_via_comparison_lane_ids_round_trip(tmp_path: Path) -> None:
-    """Findings authored from a comparison session keep both lane ids."""
-    casefile_root = _bootstrap(tmp_path)
-    create = bridge.dispatch(
-        {
-            "command": "casefile:createFinding",
-            "casefileRoot": str(casefile_root),
-            "finding": {
-                "title": "Diverged behaviour",
-                "body": "a and b disagree on shared.txt",
-                "severity": "medium",
-                "laneIds": ["a", "b"],
-            },
-        }
-    )
-    finding_id = create["finding"]["id"]
-    listed_a = bridge.dispatch(
-        {
-            "command": "casefile:listFindings",
-            "casefileRoot": str(casefile_root),
-            "laneId": "a",
-        }
-    )
-    listed_b = bridge.dispatch(
-        {
-            "command": "casefile:listFindings",
-            "casefileRoot": str(casefile_root),
-            "laneId": "b",
-        }
-    )
-    assert finding_id in {f["id"] for f in listed_a["findings"]}
-    assert finding_id in {f["id"] for f in listed_b["findings"]}
 
 
 def test_resolve_comparison_scope_directly(tmp_path: Path) -> None:

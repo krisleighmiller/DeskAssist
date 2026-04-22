@@ -236,8 +236,8 @@ def test_chat_log_round_trip(tmp_path: Path):
 
 def test_chat_log_corruption_skips_bad_lines(tmp_path: Path):
     """A corrupt line in the chat log is skipped (with a warning) rather than
-    aborting the entire read.  The policy deliberately matches FindingsStore
-    behaviour: one bad write must not make the whole history unreadable."""
+    aborting the entire read.  Policy: one bad write must not make the
+    whole history unreadable."""
     store = CasefileStore(tmp_path)
     store.ensure_initialized()
     log = store.chat_log_path("main")
