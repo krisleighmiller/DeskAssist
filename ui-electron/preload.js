@@ -92,6 +92,11 @@ contextBridge.exposeInMainWorld("assistantApi", {
     ipcRenderer.on("app:open-api-keys", wrapped);
     return () => ipcRenderer.removeListener("app:open-api-keys", wrapped);
   },
+  onToggleTerminal: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:toggle-terminal", wrapped);
+    return () => ipcRenderer.removeListener("app:toggle-terminal", wrapped);
+  },
 
   // Filesystem-watcher events from main: emitted whenever the active
   // casefile root or any of its overlay roots is mutated (by the user

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 from assistant_app.casefile.models import Casefile
+
+_logger = logging.getLogger(__name__)
 
 # Bumped when the schema changes. Loader treats unknown future versions as
 # fatal but tolerates missing fields in the current version.
@@ -165,7 +168,25 @@ class ContextManifestStore:
         if any(ch in pattern for ch in "*?["):
             try:
                 return list(root.glob(pattern))
-            except (ValueError, OSError):
+            except ValueError as exc:
+                # `Path.glob` raises ValueError for genuinely malformed
+                # patterns (e.g. one containing a NUL). Silently dropping
+                # them hides manifest misconfiguration; surface a warning
+                # so it shows up in the application log.
+                _logger.warning(
+                    "Invalid context-manifest glob %r under %s: %s",
+                    pattern,
+                    root,
+                    exc,
+                )
+                return []
+            except OSError as exc:
+                _logger.warning(
+                    "OS error while expanding context-manifest glob %r under %s: %s",
+                    pattern,
+                    root,
+                    exc,
+                )
                 return []
         candidate = root / pattern
         return [candidate] if candidate.exists() else []

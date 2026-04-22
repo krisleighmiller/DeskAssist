@@ -782,6 +782,14 @@ export function App(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Bridge the main-process menu's "Toggle Integrated Terminal" command
+  // (and its CmdOrCtrl+` accelerator) into the same handler used by the
+  // toolbar button and the renderer-side keyboard shortcut. Wired here
+  // rather than near `toggleTerminalOpen` because the function is
+  // declared further below; we read it from a ref captured by the
+  // dedicated effect that follows.
+  const toggleTerminalRef = useRef<() => void>(() => {});
+
   // ----- File tree -----
 
   const refreshTree = useCallback(async () => {
@@ -1189,15 +1197,37 @@ export function App(): JSX.Element {
     });
   }, [handleNewTerminal, terminalSessions.length]);
 
-  // Global keyboard shortcut: Ctrl+` (or ⌘+` on macOS) toggles the
-  // terminal pane. Mirrors the well-known shortcut from VS Code.
+  // Keep the ref in sync so the menu-driven IPC subscription below
+  // (registered exactly once) can always call the *current* toggle
+  // closure without re-subscribing on every keystroke / state change.
+  useEffect(() => {
+    toggleTerminalRef.current = toggleTerminalOpen;
+  }, [toggleTerminalOpen]);
+
+  // Bridge the main-process menu accelerator (CmdOrCtrl+`) into the
+  // same toggle action used by the toolbar button. The accelerator
+  // works even when focus is in the integrated terminal, because
+  // Electron consumes the keystroke at the menu layer before xterm
+  // sees it.
+  useEffect(() => {
+    const remove = api().onToggleTerminal(() => {
+      toggleTerminalRef.current();
+    });
+    return () => {
+      remove();
+    };
+  }, []);
+
+  // Renderer-side fallback for the same shortcut. Useful when the
+  // application menu is hidden (some Linux WMs auto-hide it) or when a
+  // future build ships without the menu accelerator. The terminal
+  // itself still receives the keystroke first because we bail out when
+  // focus is inside `.terminal-view`.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "`") return;
       const mod = event.ctrlKey || event.metaKey;
       if (!mod) return;
-      // Don't steal the keystroke if the focused element is itself
-      // the terminal — the shell may want to receive a backtick.
       const target = event.target as HTMLElement | null;
       if (target && target.closest && target.closest(".terminal-view")) return;
       event.preventDefault();
@@ -1596,6 +1626,8 @@ export function App(): JSX.Element {
         onChooseCasefile={handleChooseCasefile}
         onOpenKeys={() => setKeysOpen(true)}
         onSwitchLane={handleSwitchLane}
+        onToggleTerminal={toggleTerminalOpen}
+        terminalOpen={terminalOpen}
       />
       <div className="workbench-column">
       <div className="workbench">

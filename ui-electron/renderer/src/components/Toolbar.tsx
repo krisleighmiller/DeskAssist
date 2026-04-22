@@ -20,6 +20,14 @@ interface ToolbarProps {
   onChooseCasefile: () => void;
   onOpenKeys: () => void;
   onSwitchLane?: (laneId: string) => void;
+  /** Show/hide the integrated-terminal pane. Mirrors the View →
+   * Toggle Integrated Terminal menu item and the CmdOrCtrl+`
+   * accelerator. */
+  onToggleTerminal: () => void;
+  /** Whether the integrated-terminal pane is currently visible.
+   * Drives the pressed/aria-pressed state on the toolbar button so
+   * the user can see at a glance whether the pane is open. */
+  terminalOpen: boolean;
 }
 
 function describeKeys(status: ApiKeyStatus): string {
@@ -58,7 +66,13 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     onChooseCasefile,
     onOpenKeys,
     onSwitchLane,
+    onToggleTerminal,
+    terminalOpen,
   } = props;
+  const terminalShortcutHint =
+    typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
+      ? "⌘`"
+      : "Ctrl+`";
   const chain = casefile ? ancestorChain(casefile, casefile.activeLaneId) : [];
   const activeModel =
     providerModels[provider]?.trim() || DEFAULT_PROVIDER_MODELS[provider];
@@ -124,6 +138,15 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
       </span>
       <button type="button" onClick={onOpenKeys}>
         API Keys & Models
+      </button>
+      <button
+        type="button"
+        className={`toolbar-terminal-toggle${terminalOpen ? " active" : ""}`}
+        onClick={onToggleTerminal}
+        aria-pressed={terminalOpen}
+        title={`Toggle integrated terminal (${terminalShortcutHint})`}
+      >
+        Terminal
       </button>
       <span className="keys-status">{describeKeys(keyStatus)}</span>
     </div>

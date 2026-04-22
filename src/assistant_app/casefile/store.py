@@ -134,7 +134,9 @@ class CasefileStore:
             self.ensure_initialized()
         raw = self._read_lanes_file()
         version = raw.get("version")
-        if not isinstance(version, int) or version > LANES_FILE_VERSION:
+        # `bool` is a subclass of `int`; explicitly reject booleans so a
+        # tampered `"version": true` cannot impersonate version 1.
+        if not isinstance(version, int) or isinstance(version, bool) or version > LANES_FILE_VERSION:
             raise LanesFileError(
                 f"Unsupported lanes.json version: {version!r} (this build understands <= {LANES_FILE_VERSION})"
             )
@@ -168,14 +170,22 @@ class CasefileStore:
                 cleaned.append(lane)
         active = raw.get("active_lane_id")
         active_lane_id: str | None = None
+        skipped_active_lane_id: str | None = None
         if isinstance(active, str) and active in seen_ids:
             active_lane_id = active
-        elif cleaned:
-            active_lane_id = cleaned[0].id
+        else:
+            # If the stored active id is a non-empty string but does not
+            # correspond to any current lane, surface it so the caller can
+            # warn the user that the active selection was implicitly moved.
+            if isinstance(active, str) and active.strip():
+                skipped_active_lane_id = active
+            if cleaned:
+                active_lane_id = cleaned[0].id
         return CasefileSnapshot(
             casefile=self.casefile,
             lanes=tuple(cleaned),
             active_lane_id=active_lane_id,
+            skipped_active_lane_id=skipped_active_lane_id,
         )
 
     def register_lane(
@@ -353,11 +363,10 @@ class CasefileStore:
         if len(remaining) == len(snapshot.lanes):
             raise KeyError(f"Unknown lane id: {lane_id!r}")
         # Re-parent any direct children to the deleted lane's parent so we
-        # never leave dangling references on disk.
-        deleted_parent = next(
-            (lane.parent_id for lane in snapshot.lanes if lane.id == lane_id),
-            None,
-        )
+        # never leave dangling references on disk. The lane id is known to
+        # exist (the `len(remaining) == len(snapshot.lanes)` guard above
+        # would have raised otherwise), so a direct lookup is sufficient.
+        deleted_parent = snapshot.lane_by_id(lane_id).parent_id
         re_parented: list[Lane] = []
         for lane in remaining:
             if lane.parent_id == lane_id:
@@ -694,10 +703,21 @@ class CasefileStore:
             attachments=attachments,
         )
 
-    def _resolve_lane_root(self, root: Path) -> Path:
+    def resolve_lane_root(self, root: Path) -> Path:
+        """Resolve `root` against the casefile root.
+
+        Absolute paths are resolved as-is; relative paths are anchored at
+        the casefile root. This is the public counterpart to the internal
+        helper used during lane registration / update.
+        """
         if root.is_absolute():
             return root.resolve()
         return (self.casefile.root / root).resolve()
+
+    # Internal alias preserved for backward compatibility with call sites
+    # that already reach in by the underscored name. New callers should
+    # use `resolve_lane_root`.
+    _resolve_lane_root = resolve_lane_root
 
     def _normalize_attachments(
         self, attachments: Iterable[LaneAttachment] | None

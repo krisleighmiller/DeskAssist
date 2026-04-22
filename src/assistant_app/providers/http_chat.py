@@ -79,6 +79,33 @@ class OpenAICompatibleMixin(HttpChatProvider):
 
         return super()._serialize_message(message)
 
+    def build_payload(self, request: ChatRequest) -> dict[str, object]:
+        """Default OpenAI-compatible payload builder.
+
+        Both ``OpenAIProvider`` and ``DeepSeekProvider`` use this exact wire
+        shape (chat/completions with ``tools`` + ``tool_choice``).  Subclasses
+        can override if a vendor diverges, but should prefer extending this
+        method to keep the message/tool serialisation identical.
+        """
+        payload: dict[str, object] = {
+            "model": request.model,
+            "messages": self._serialize_messages(request),
+        }
+        if request.tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": str(tool.get("name", "")),
+                        "description": str(tool.get("description", "")),
+                        "parameters": tool.get("input_schema", {"type": "object"}),
+                    },
+                }
+                for tool in request.tools
+            ]
+            payload["tool_choice"] = "auto"
+        return payload
+
     def parse_response(self, response: dict[str, Any]) -> ChatMessage:
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -118,7 +145,18 @@ class OpenAICompatibleMixin(HttpChatProvider):
                         call_entry["parse_error"] = parse_error
                     normalized.append(call_entry)
                     continue
-                normalized.append(item)
+                # Tool-call items without a `function` block do not match the
+                # downstream {id, name, input} contract. Normalise them into
+                # an explicit parse-error entry so the model can self-correct
+                # rather than silently passing through a malformed shape.
+                normalized.append(
+                    {
+                        "id": str(item.get("id", "")),
+                        "name": str(item.get("name") or ""),
+                        "input": {},
+                        "parse_error": "tool call missing 'function' block",
+                    }
+                )
             tool_calls = normalized or None
 
         if content is None and not tool_calls:

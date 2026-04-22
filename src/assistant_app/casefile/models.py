@@ -115,6 +115,11 @@ class CasefileSnapshot:
     casefile: Casefile
     lanes: tuple[Lane, ...]
     active_lane_id: str | None
+    # When the on-disk `active_lane_id` referenced a lane that no longer
+    # exists, the loader silently falls back to the first remaining lane.
+    # The id of the missing lane is surfaced here so the renderer can show
+    # a one-time warning (instead of the active selection silently moving).
+    skipped_active_lane_id: str | None = None
 
     def lane_by_id(self, lane_id: str) -> Lane:
         for lane in self.lanes:

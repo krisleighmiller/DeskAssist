@@ -106,6 +106,14 @@ a {
   white-space: nowrap;
 }
 
+/* Pressed state for the Terminal toggle so the button visibly tracks
+   whether the integrated-terminal pane is currently open. */
+.toolbar .toolbar-terminal-toggle.active {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #f9fafb;
+}
+
 /* When the toolbar wraps, drop the auto-margin so the wrapped row hugs
    the left edge instead of being pushed past the viewport. */
 @media (max-width: 1100px) {

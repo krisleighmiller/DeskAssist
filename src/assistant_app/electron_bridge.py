@@ -382,7 +382,14 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
         try:
             cs = CasefileService(casefile_root)
             cs.append_chat(lane_id_raw, serialized_delta)
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, ValueError) as exc:
+            # Only catch the failure modes that are *expected* to occur
+            # during routine persistence (disk full, permission denied,
+            # malformed lane id, oversize message). Programmer errors
+            # (AttributeError, NameError, TypeError, etc.) are allowed to
+            # propagate so they surface in development instead of being
+            # silently returned to the renderer as a `persistenceError`
+            # field that nobody looks at.
             persistence_error = f"chat persistence failed: {type(exc).__name__}: {exc}"
 
     payload: dict[str, Any] = {
@@ -428,7 +435,13 @@ def handle_casefile_register_lane(request: dict[str, Any]) -> dict[str, Any]:
     _validate_path_depth(resolved_lane_root, "lane.root")
     lane_id_raw = lane_raw.get("id")
     lane_id = lane_id_raw if isinstance(lane_id_raw, str) and lane_id_raw.strip() else None
-    parent_id_raw = lane_raw.get("parentId") if "parentId" in lane_raw else lane_raw.get("parent_id")
+    # Renderer uses camelCase (`parentId`); the snake_case `parent_id`
+    # fallback is retained because hand-edited test fixtures and earlier
+    # renderer revisions have used both. New IPC senders should always
+    # use `parentId`.
+    parent_id_raw = lane_raw.get("parentId")
+    if parent_id_raw is None:
+        parent_id_raw = lane_raw.get("parent_id")
     parent_id = (
         parent_id_raw.strip()
         if isinstance(parent_id_raw, str) and parent_id_raw.strip()
@@ -884,7 +897,9 @@ def handle_casefile_read_overlay_file(request: dict[str, Any]) -> dict[str, Any]
     max_chars_raw = request.get("maxChars")
     max_chars = (
         int(max_chars_raw)
-        if isinstance(max_chars_raw, int) and max_chars_raw > 0
+        if isinstance(max_chars_raw, int)
+        and not isinstance(max_chars_raw, bool)
+        and max_chars_raw > 0
         else 200_000
     )
     service = CasefileService(root)
@@ -1057,7 +1072,13 @@ def handle_casefile_list_inbox_items(request: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(source_id, str) or not source_id.strip():
         raise ValueError("sourceId is required")
     raw_depth = request.get("maxDepth")
-    max_depth = int(raw_depth) if isinstance(raw_depth, int) and raw_depth > 0 else None
+    max_depth = (
+        int(raw_depth)
+        if isinstance(raw_depth, int)
+        and not isinstance(raw_depth, bool)
+        and raw_depth > 0
+        else None
+    )
     items = InboxStore(root).list_items(source_id.strip(), max_depth=max_depth)
     return {"ok": True, "items": [_serialize_inbox_item(it) for it in items]}
 
@@ -1071,7 +1092,7 @@ def handle_casefile_read_inbox_item(request: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(relative, str) or not relative.strip():
         raise ValueError("path is required")
     raw_max = request.get("maxChars")
-    if isinstance(raw_max, int) and raw_max > 0:
+    if isinstance(raw_max, int) and not isinstance(raw_max, bool) and raw_max > 0:
         content, truncated, abs_path = InboxStore(root).read_item(
             source_id.strip(), relative, max_chars=raw_max
         )

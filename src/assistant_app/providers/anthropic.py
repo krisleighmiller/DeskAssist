@@ -29,11 +29,17 @@ class AnthropicProvider(HttpChatProvider):
         messages: list[dict[str, object]] = []
         for message in request.messages:
             role = message.role
-            content = message.content or ""
+            # `None` is normalised to "" so downstream concatenation works,
+            # but an explicitly empty string is preserved (the tool-result
+            # branch below distinguishes it from a missing payload).
+            content = message.content if message.content is not None else ""
             if role == "system":
                 system_parts.append(content)
                 continue
             if role == "tool":
+                # Tool results that legitimately return an empty string must
+                # be sent as `""`, not coerced to the JSON literal `"{}"`,
+                # since the latter changes the semantics the model sees.
                 messages.append(
                     {
                         "role": "user",
@@ -41,7 +47,7 @@ class AnthropicProvider(HttpChatProvider):
                             {
                                 "type": "tool_result",
                                 "tool_use_id": message.tool_call_id or "",
-                                "content": content or "{}",
+                                "content": content,
                             }
                         ],
                     }

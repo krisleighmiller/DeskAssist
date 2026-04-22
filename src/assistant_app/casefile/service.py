@@ -126,7 +126,7 @@ class CasefileService:
         """
         snapshot = self.store.load_snapshot()
         try:
-            resolved = self.store._resolve_lane_root(root)
+            resolved = self.store.resolve_lane_root(root)
         except OSError:
             return None
         for lane in snapshot.lanes:
@@ -202,6 +202,7 @@ class CasefileService:
             "root": str(snapshot.casefile.root),
             "lanes": [serialize_lane(lane) for lane in snapshot.lanes],
             "activeLaneId": snapshot.active_lane_id,
+            "skippedActiveLaneId": snapshot.skipped_active_lane_id,
         }
 
 

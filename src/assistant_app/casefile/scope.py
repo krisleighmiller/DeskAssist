@@ -57,10 +57,15 @@ class ScopeContext:
 
     lane_id: str
     write_root: Path
+    # `casefile_root` is required: it anchors the `_context/...` overlay,
+    # which would otherwise default to a relative `Path(".")` and silently
+    # resolve to the process CWD at use time. That footgun is bad enough
+    # for a chat tool that may modify the model's view of the workspace,
+    # so we require callers to pass an explicit (typically absolute) path.
+    casefile_root: Path
     read_overlays: tuple[ReadOverlay, ...] = field(default_factory=tuple)
     context_files: tuple[ResolvedContextFile, ...] = field(default_factory=tuple)
     auto_include_max_bytes: int = 0
-    casefile_root: Path = field(default_factory=lambda: Path("."))
 
     def overlay_map(self) -> dict[str, Path]:
         """Adapter for `WorkspaceFilesystem(read_overlays=...)`."""

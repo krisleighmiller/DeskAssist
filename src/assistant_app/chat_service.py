@@ -49,7 +49,9 @@ class ChatService:
             raise ValueError(f"Unknown provider '{default_provider_name}'")
         self._active_provider_name = default_provider_name
         self._history: list[ChatMessage] = []
-        resolved_workspace_root = (workspace_root or Path.cwd()).resolve()
+        resolved_workspace_root = (
+            workspace_root if workspace_root is not None else Path.cwd()
+        ).resolve()
         resolved_casefile_root = casefile_root.resolve() if casefile_root is not None else None
         self._tool_registry = tool_registry or build_default_tool_registry(
             resolved_workspace_root,
@@ -175,6 +177,19 @@ class ChatService:
         *,
         allow_write_tools: bool,
     ) -> list[ChatMessage]:
+        # Pre-flight write authorization. We refuse to execute *any* call in
+        # the batch if a write call is present without approval, so that we
+        # never partially execute a batch and leave history in an
+        # inconsistent state mid-iteration. Callers are expected to gate on
+        # `_tool_calls_require_write` first; this is defence in depth.
+        if not allow_write_tools:
+            for call in tool_calls:
+                command_name = str(call.get("name") or "")
+                if command_name in self._write_commands:
+                    raise RuntimeError(
+                        "Write tool execution attempted without approval"
+                    )
+
         messages: list[ChatMessage] = []
         for call in tool_calls:
             call_id = str(call.get("id") or "")
@@ -196,8 +211,6 @@ class ChatService:
                     )
                 )
                 continue
-            if command_name in self._write_commands and not allow_write_tools:
-                raise RuntimeError("Write tool execution attempted without approval")
             result = self.execute_tool_command(command_name, params)
             messages.append(
                 ChatMessage(
@@ -214,26 +227,16 @@ class ChatService:
         return [call for call in message.tool_calls if str(call.get("name") or "") in self._write_commands]
 
     def _build_tool_definitions(self) -> list[dict[str, object]]:
-        descriptions = {
-            "list_dir": "List directory entries under the current workspace.",
-            "read_file": "Read text content from a workspace file.",
-            "save_file": "Write full file contents. Requires user write approval.",
-            "append_file": "Append text to a workspace file. Requires user write approval.",
-            "delete_file": "Delete a single workspace file. Requires user write approval.",
-            "delete_path": (
-                "Delete a workspace file or directory. Set recursive=true for directories. "
-                "Requires user write approval."
-            ),
-        }
         definitions: list[dict[str, object]] = []
         for spec in self.list_tool_specs():
             properties: dict[str, object] = {}
             for param_name, param_type in spec.input_schema.items():
                 properties[param_name] = {"type": self._json_type_for_python(param_type)}
+            description = spec.description or f"Execute tool command {spec.name}."
             definitions.append(
                 {
                     "name": spec.name,
-                    "description": descriptions.get(spec.name, f"Execute tool command {spec.name}."),
+                    "description": description,
                     "input_schema": {
                         "type": "object",
                         "properties": properties,
@@ -244,13 +247,21 @@ class ChatService:
         return definitions
 
     def _json_type_for_python(self, value_type: type) -> str:
+        # `bool` must be checked before `int` because `bool` is a subclass of `int`.
+        if value_type is bool:
+            return "boolean"
         if value_type is str:
             return "string"
         if value_type in {int, float}:
             return "number"
-        if value_type is bool:
-            return "boolean"
-        return "string"
+        if value_type is list:
+            return "array"
+        if value_type is dict:
+            return "object"
+        raise TypeError(
+            f"Cannot map Python type {value_type!r} to a JSON schema type. "
+            "Add an explicit mapping in _json_type_for_python."
+        )
 
     def _tool_calls_require_write(self, tool_calls: list[dict[str, object]]) -> bool:
         for call in tool_calls:

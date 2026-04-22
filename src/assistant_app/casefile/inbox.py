@@ -303,7 +303,7 @@ class InboxStore:
         source = self.get_source(source_id)
         source_root = Path(source.root).resolve()
         target = (source_root / relative_path).resolve()
-        if target != source_root and source_root not in target.parents:
+        if target != source_root and not target.is_relative_to(source_root):
             raise ValueError(
                 f"inbox item path escapes source root: {relative_path!r}"
             )
@@ -375,7 +375,10 @@ class InboxStore:
             "sources": [s.to_json() for s in sources],
         }
         tmp = self.config_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         tmp.replace(self.config_path)
 
 

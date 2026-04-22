@@ -361,6 +361,19 @@ function createWindow() {
     {
       label: "View",
       submenu: [
+        {
+          label: "Toggle Integrated Terminal",
+          // Mirrors the well-known VS Code shortcut. Electron normalises
+          // `CmdOrCtrl` to ⌘ on macOS and Ctrl elsewhere, so this is a
+          // single binding that does the right thing on every platform.
+          accelerator: "CmdOrCtrl+`",
+          click: () => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send("app:toggle-terminal");
+            }
+          },
+        },
+        { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
         { role: "toggleDevTools" },
@@ -1098,7 +1111,16 @@ ipcMain.handle("workspace:list", async (_, args = {}) => {
 
 ipcMain.handle("file:read", async (_, args = {}) => {
   const filePath = ensureInWorkspace(args.path || "");
-  if ((await fs.stat(filePath)).isFile() === false) {
+  let stat;
+  try {
+    stat = await fs.stat(filePath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      throw new Error(`File does not exist: ${filePath}`);
+    }
+    throw new Error(`Cannot stat ${filePath}: ${err && err.message ? err.message : err}`);
+  }
+  if (!stat.isFile()) {
     throw new Error("Path is not a file");
   }
   const requestedMaxChars = Number.isInteger(args.maxChars) ? args.maxChars : 200000;
@@ -1124,7 +1146,22 @@ ipcMain.handle("file:save", async (_, args = {}) => {
   // ENOENT from writeFile. The path-escape check above already runs
   // through `ensureInWorkspace`, so mkdir is bounded to the lane.
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, content, "utf-8");
+  // Atomic write: stage to a sibling temp file, then rename onto the
+  // target. This mirrors the temp-file-then-rename pattern every
+  // Python-side save uses, and means a crash mid-write never leaves
+  // the destination truncated.
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.writeFile(tmpPath, content, "utf-8");
+    await fs.rename(tmpPath, filePath);
+  } catch (err) {
+    try {
+      await fs.unlink(tmpPath);
+    } catch {
+      // Best-effort cleanup; the temp file may not exist if writeFile failed early.
+    }
+    throw err;
+  }
   return { path: filePath, saved: true };
 });
 
@@ -1656,11 +1693,19 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  stopAllWatchers();
-  killAllPtySessions();
-  if (process.platform !== "darwin") {
-    app.quit();
+  if (process.platform === "darwin") {
+    // On macOS the app stays alive in the dock when its last window
+    // closes, so the pty sessions and file watchers are about to be
+    // orphaned (no UI to read their output). Tear them down here;
+    // `will-quit` will not fire until the user explicitly quits.
+    stopAllWatchers();
+    killAllPtySessions();
+    return;
   }
+  // Everywhere else we ask Electron to quit, which fires `will-quit`
+  // (the single source of cleanup for every quit path, including
+  // `app.quit()` called from elsewhere).
+  app.quit();
 });
 
 app.on("will-quit", () => {

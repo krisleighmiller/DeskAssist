@@ -90,12 +90,12 @@ def _walk_files(
                     continue
                 stack.append(child)
             elif child.is_file():
-                yield child
-                count += 1
-                if count > max_files:
+                if count >= max_files:
                     raise RuntimeError(
                         f"Lane comparison exceeded {max_files} files; refusing to continue."
                     )
+                count += 1
+                yield child
 
 
 def _hash_file(path: Path, *, max_bytes: int) -> tuple[str, int]:
@@ -174,7 +174,7 @@ def compare_lanes(
     `skip_dir_names` to compare verbatim.
 
     ``max_total_bytes`` caps the combined byte-read work across both lanes
-    (default 500 MB).  Raise it explicitly for unusually large lane roots;
+    (default 2 GB).  Raise it explicitly for unusually large lane roots;
     do not remove it, as a malicious or misconfigured lane root (e.g. a bind
     mount of /proc) could otherwise lock the process for minutes.
     """

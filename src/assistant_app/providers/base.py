@@ -89,12 +89,19 @@ class BaseProvider(ABC):
         max_retries: int = 3,
     ) -> dict[str, object]:
         body = json.dumps(payload).encode("utf-8")
-        delay = 1.0
+        # `backoff_delay` is the exponentially-growing fallback we apply when
+        # the server does not provide an explicit ``Retry-After`` header.
+        # `next_delay` is the actual sleep we will perform before the next
+        # attempt — it may be set to the server-supplied value, in which case
+        # we honour it exactly without doubling it on the following attempt.
+        backoff_delay = 1.0
+        next_delay = backoff_delay
         last_retryable_exc: HTTPError | None = None
         for attempt in range(max_retries + 1):
             if attempt > 0:
-                time.sleep(delay)
-                delay = min(delay * 2, 60.0)
+                time.sleep(next_delay)
+                backoff_delay = min(backoff_delay * 2, 60.0)
+                next_delay = backoff_delay
             request = Request(url=url, data=body, headers=headers, method="POST")
             try:
                 with urlopen(request, timeout=self._timeout_seconds) as response:
@@ -114,7 +121,10 @@ class BaseProvider(ABC):
                     retry_after = exc.headers.get("Retry-After")
                     if retry_after:
                         try:
-                            delay = max(float(retry_after), 0.5)
+                            # Honour the server-supplied delay verbatim for
+                            # this retry only, and do NOT use it as the new
+                            # base for exponential doubling on the next pass.
+                            next_delay = max(float(retry_after), 0.5)
                         except ValueError:
                             pass
                     last_retryable_exc = exc
@@ -154,8 +164,16 @@ class BaseProvider(ABC):
         distinguish a genuine model argument from an internal parse failure
         without scanning inside the ``input`` dict.
         """
-        if not isinstance(raw_arguments, str):
+        if raw_arguments is None:
             return {}, None
+        if isinstance(raw_arguments, dict):
+            # Some providers may already return parsed arguments. Treat that
+            # as a parse error rather than silently dropping them, because the
+            # downstream contract assumes string-encoded arguments and any
+            # silent acceptance would mask provider drift.
+            return {}, "tool arguments must be a JSON-encoded string"
+        if not isinstance(raw_arguments, str):
+            return {}, f"tool arguments has unexpected type: {type(raw_arguments).__name__}"
         try:
             loaded = json.loads(raw_arguments)
         except Exception as exc:

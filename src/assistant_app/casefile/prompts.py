@@ -272,8 +272,14 @@ class PromptsStore:
             json.dumps(prompt.to_meta_json(), indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        body_tmp.replace(body_path)
+        # Each rename is atomic individually, but the *pair* is not.  If we
+        # crash between the two, the on-disk state must still make sense.
+        # Promote the metadata first: a body that is briefly older than its
+        # sidecar is harmless (the next save will re-publish it), whereas a
+        # body that is newer than a stale sidecar would advertise the wrong
+        # `updated_at` / `name` to listings indefinitely.
         meta_tmp.replace(meta_path)
+        body_tmp.replace(body_path)
 
     def _load_meta(self, normalized_id: str) -> PromptDraft:
         meta_path = self.directory / f"{normalized_id}.json"

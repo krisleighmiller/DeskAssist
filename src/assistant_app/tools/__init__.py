@@ -65,6 +65,7 @@ def build_default_tool_registry(
         input_schema={"path": str},
         required_params=set(),
         permission="workspace_read",
+        description="List directory entries under the current workspace.",
     )
     registry.register(
         "read_file",
@@ -72,6 +73,7 @@ def build_default_tool_registry(
         input_schema={"path": str, "max_chars": int},
         required_params={"path"},
         permission="workspace_read",
+        description="Read text content from a workspace file.",
     )
     if enable_writes:
         registry.register(
@@ -80,6 +82,7 @@ def build_default_tool_registry(
             input_schema={"path": str, "content": str, "overwrite": bool},
             required_params={"path", "content"},
             permission="workspace_write",
+            description="Write full file contents. Requires user write approval.",
         )
         registry.register(
             "append_file",
@@ -87,6 +90,7 @@ def build_default_tool_registry(
             input_schema={"path": str, "content": str},
             required_params={"path", "content"},
             permission="workspace_write",
+            description="Append text to a workspace file. Requires user write approval.",
         )
         registry.register(
             "delete_file",
@@ -94,6 +98,7 @@ def build_default_tool_registry(
             input_schema={"path": str},
             required_params={"path"},
             permission="workspace_write",
+            description="Delete a single workspace file. Requires user write approval.",
         )
         registry.register(
             "delete_path",
@@ -101,6 +106,10 @@ def build_default_tool_registry(
             input_schema={"path": str, "recursive": bool},
             required_params={"path"},
             permission="workspace_write",
+            description=(
+                "Delete a workspace file or directory. Set recursive=true for directories. "
+                "Requires user write approval."
+            ),
         )
     return registry
 

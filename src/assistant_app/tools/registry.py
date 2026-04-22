@@ -18,6 +18,7 @@ class ToolSpec:
     required_params: frozenset[str]
     permission: str
     internal_enabled: bool
+    description: str = ""
 
 
 class ToolRegistry:
@@ -43,6 +44,7 @@ class ToolRegistry:
         required_params: set[str] | None = None,
         permission: str = "workspace_read",
         internal_enabled: bool = False,
+        description: str = "",
     ) -> None:
         if command_name in self._handlers:
             raise ValueError(f"Tool command '{command_name}' is already registered")
@@ -53,6 +55,7 @@ class ToolRegistry:
             required_params=frozenset(required_params or set()),
             permission=permission,
             internal_enabled=internal_enabled,
+            description=description,
         )
         self._specs[command_name] = spec
         if internal_enabled:
@@ -90,21 +93,10 @@ class ToolRegistry:
         sanitized = sanitize_command(command)
         cmd_id = sanitized["cmd"]
         spec = self._specs.get(cmd_id)
-        if spec is not None:
-            try:
-                sanitized["params"] = self._validate_params(spec, sanitized["params"])
-            except Exception as exc:  # noqa: BLE001
-                self._audit(cmd_id, "failed", f"{type(exc).__name__}: {exc}")
-                return {
-                    "ok": False,
-                    "cmd": cmd_id,
-                    "summary": f"Tool {cmd_id} failed validation.",
-                    "error": {
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                    },
-                }
 
+        # Authorization runs before parameter validation so that an
+        # unauthorized caller cannot probe the tool's parameter shape by
+        # observing which inputs are accepted vs rejected.
         allowed, reason = authorize(
             cmd_id,
             capability=capability,
@@ -136,6 +128,21 @@ class ToolRegistry:
                     "message": reason,
                 },
             }
+
+        if spec is not None:
+            try:
+                sanitized["params"] = self._validate_params(spec, sanitized["params"])
+            except Exception as exc:  # noqa: BLE001
+                self._audit(cmd_id, "failed", f"{type(exc).__name__}: {exc}")
+                return {
+                    "ok": False,
+                    "cmd": cmd_id,
+                    "summary": f"Tool {cmd_id} failed validation.",
+                    "error": {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    },
+                }
 
         handler = self._handlers[cmd_id]
         try:
@@ -185,4 +192,9 @@ class ToolRegistry:
                 continue
             if not isinstance(value, expected_type):
                 raise TypeError(f"Parameter '{name}' must be {expected_type.__name__}")
+            # `bool` is a subclass of `int` in Python, so `isinstance(True, int)`
+            # is True. Reject booleans for all non-bool numeric types so the
+            # JSON-typed tool surface treats booleans and numbers as distinct.
+            if expected_type is not bool and isinstance(value, bool):
+                raise TypeError(f"Parameter '{name}' must be {expected_type.__name__}, not bool")
         return params

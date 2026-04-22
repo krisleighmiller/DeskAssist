@@ -399,6 +399,10 @@ export interface AssistantApi {
   getProviderModels: () => Promise<ProviderModels>;
   saveProviderModels: (payload: Partial<ProviderModels>) => Promise<ProviderModels>;
   onOpenApiKeys: (handler: () => void) => () => void;
+  /** Subscribe to "toggle integrated terminal" events from the main
+   * process menu (View → Toggle Integrated Terminal, accelerator
+   * `CmdOrCtrl+\``). Returns an unsubscribe function. */
+  onToggleTerminal: (handler: () => void) => () => void;
 
   /** Subscribe to filesystem-change notifications for the active
    * casefile root and any overlay roots registered via
