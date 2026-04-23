@@ -8,7 +8,7 @@ from assistant_app.casefile.context import (
     ContextManifestStore,
     ResolvedContextFile,
 )
-from assistant_app.casefile.models import CasefileSnapshot, Lane, LaneAttachment
+from assistant_app.casefile.models import AttachmentMode, CasefileSnapshot, Lane, LaneAttachment
 from assistant_app.casefile.scope import (
     ScopeContext,
     comparison_id_for_lanes,
@@ -47,6 +47,7 @@ class CasefileService:
         lane_id: str | None = None,
         parent_id: str | None = None,
         attachments: list[LaneAttachment] | None = None,
+        writable: bool = True,
     ) -> CasefileSnapshot:
         return self.store.register_lane(
             name=name,
@@ -55,6 +56,7 @@ class CasefileService:
             lane_id=lane_id,
             parent_id=parent_id,
             attachments=attachments,
+            writable=writable,
         )
 
     def set_active_lane(self, lane_id: str) -> CasefileSnapshot:
@@ -75,8 +77,9 @@ class CasefileService:
         name: str | None = None,
         kind: str | None = None,
         root: Path | None = None,
+        writable: bool | None = None,
     ) -> CasefileSnapshot:
-        """Update an existing lane's `name` / `kind` / `root` (M4.6).
+        """Update an existing lane's `name` / `kind` / `root` / `writable` (M4.6 / M2.5).
 
         Each field is independently optional. Parent and attachments
         have their own dedicated mutators (`set_lane_parent`,
@@ -84,7 +87,7 @@ class CasefileService:
         immutable here.
         """
         return self.store.update_lane(
-            lane_id, name=name, kind=kind, root=root,
+            lane_id, name=name, kind=kind, root=root, writable=writable,
         )
 
     def remove_lane(self, lane_id: str) -> CasefileSnapshot:
@@ -207,14 +210,16 @@ class CasefileService:
 
 
 def serialize_lane(lane: Lane) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "id": lane.id,
         "name": lane.name,
         "kind": lane.kind,
         "root": str(lane.root),
         "parentId": lane.parent_id,
         "attachments": [serialize_attachment(att) for att in lane.attachments],
+        "writable": lane.writable,
     }
+    return result
 
 
 def serialize_attachment(attachment: LaneAttachment) -> dict[str, Any]:
@@ -245,7 +250,8 @@ def parse_attachments(raw: Any) -> list[LaneAttachment]:
             raise ValueError("attachment.name is required")
         if not isinstance(root, str) or not root.strip():
             raise ValueError("attachment.root is required")
-        out.append(LaneAttachment(name=name.strip(), root=Path(root)))
+        mode: AttachmentMode = "write" if item.get("mode") == "write" else "read"
+        out.append(LaneAttachment(name=name.strip(), root=Path(root), mode=mode))
     return out
 
 
@@ -272,9 +278,13 @@ def serialize_scope(scope: ScopeContext) -> dict[str, Any]:
         "laneId": scope.lane_id,
         "writeRoot": str(scope.write_root),
         "casefileRoot": str(scope.casefile_root),
-        "readOverlays": [
-            {"prefix": ov.prefix, "root": str(ov.root), "label": ov.label}
-            for ov in scope.read_overlays
+        "directories": [
+            {
+                "path": str(d.path),
+                "label": d.label,
+                "writable": d.writable,
+            }
+            for d in scope.directories
         ],
         "contextFiles": [serialize_context_file(entry) for entry in scope.context_files],
         "autoIncludeMaxBytes": scope.auto_include_max_bytes,

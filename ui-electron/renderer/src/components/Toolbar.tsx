@@ -1,3 +1,4 @@
+import { useRef, useState } from "react";
 import {
   DEFAULT_PROVIDER_MODELS,
   type ApiKeyStatus,
@@ -6,6 +7,7 @@ import {
   type Provider,
   type ProviderModels,
 } from "../types";
+import { ContextMenu } from "./ContextMenu";
 
 interface ToolbarProps {
   casefile: CasefileSnapshot | null;
@@ -28,6 +30,13 @@ interface ToolbarProps {
    * Drives the pressed/aria-pressed state on the toolbar button so
    * the user can see at a glance whether the pane is open. */
   terminalOpen: boolean;
+  /** M2.5: Lane management actions surfaced in the toolbar dropdown so
+   * they are reachable without right-clicking the file tree. */
+  onUpdateLaneName?: (laneId: string, newName: string) => Promise<void>;
+  onRemoveLane?: (laneId: string) => Promise<void>;
+  onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void>;
+  onHardResetCasefile?: () => Promise<void>;
+  onSoftResetCasefile?: () => Promise<void>;
 }
 
 function describeKeys(status: ApiKeyStatus): string {
@@ -68,7 +77,13 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     onSwitchLane,
     onToggleTerminal,
     terminalOpen,
+    onUpdateLaneName,
+    onRemoveLane,
+    onSetLaneWritable,
+    onHardResetCasefile,
+    onSoftResetCasefile,
   } = props;
+
   const terminalShortcutHint =
     typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
       ? "⌘`"
@@ -77,6 +92,111 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
   const activeModel =
     providerModels[provider]?.trim() || DEFAULT_PROVIDER_MODELS[provider];
   const modelIsDefault = !providerModels[provider]?.trim();
+
+  const [laneMenuOpen, setLaneMenuOpen] = useState(false);
+  const laneButtonRef = useRef<HTMLButtonElement>(null);
+
+  const activeLane = casefile
+    ? casefile.lanes.find((l) => l.id === casefile.activeLaneId) ?? null
+    : null;
+
+  const openLaneMenu = () => {
+    setLaneMenuOpen(true);
+  };
+
+  /** Build the items list for the Lane ▾ dropdown. */
+  const buildLaneMenuItems = () => {
+    if (!casefile) return [];
+    const items: import("./ContextMenu").ContextMenuItem[] = [];
+
+    // Switch to another lane.
+    const others = casefile.lanes.filter((l) => l.id !== casefile.activeLaneId);
+    if (others.length > 0) {
+      for (const lane of others) {
+        items.push({
+          label: `Switch to "${lane.name}"`,
+          onSelect: () => {
+            void Promise.resolve(onSwitchLane?.(lane.id));
+          },
+        });
+      }
+      items[items.length - 1] = { ...items[items.length - 1], separator: true };
+    }
+
+    // Active-lane management (rename, access toggle, remove).
+    if (activeLane) {
+      if (onUpdateLaneName) {
+        items.push({
+          label: "Rename lane…",
+          onSelect: () => {
+            const newName = window.prompt("New name for this lane:", activeLane.name);
+            if (!newName?.trim() || newName.trim() === activeLane.name) return;
+            void onUpdateLaneName(activeLane.id, newName.trim());
+          },
+        });
+      }
+      if (onSetLaneWritable) {
+        const isWritable = activeLane.writable !== false;
+        items.push({
+          label: isWritable
+            ? "Set AI access: read-only"
+            : "Set AI access: writable",
+          onSelect: () => {
+            void onSetLaneWritable(activeLane.id, !isWritable);
+          },
+        });
+      }
+      if (onRemoveLane) {
+        items.push({
+          label: "Remove lane",
+          onSelect: () => {
+            const ok = window.confirm(
+              `Remove lane "${activeLane.name}"?\n\nThis removes it from the casefile but does not delete any files.`
+            );
+            if (!ok) return;
+            void onRemoveLane(activeLane.id);
+          },
+          separator: !!(onSoftResetCasefile || onHardResetCasefile),
+        });
+      }
+    }
+
+    // Casefile-level reset actions.
+    if (onSoftResetCasefile) {
+      items.push({
+        label: "Reset casefile (soft)…",
+        onSelect: () => {
+          const ok = window.confirm(
+            "Soft reset clears lane registrations and chat history metadata. Files on disk are preserved."
+          );
+          if (!ok) return;
+          void onSoftResetCasefile();
+        },
+      });
+    }
+    if (onHardResetCasefile) {
+      items.push({
+        label: "Hard reset casefile…",
+        onSelect: () => {
+          const ok = window.confirm(
+            "Hard reset deletes the entire .casefile metadata folder.\n\nConversation history, lane registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
+          );
+          if (!ok) return;
+          void onHardResetCasefile();
+        },
+      });
+    }
+
+    return items;
+  };
+
+  // Position the dropdown flush below the "Lane ▾" button.
+  const laneMenuPos = (() => {
+    if (!laneButtonRef.current) return { x: 0, y: 32 };
+    const rect = laneButtonRef.current.getBoundingClientRect();
+    return { x: rect.left, y: rect.bottom + 2 };
+  })();
+
   return (
     <div className="toolbar">
       <button type="button" onClick={onChooseCasefile}>
@@ -119,6 +239,29 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
       ) : (
         <span className="breadcrumb breadcrumb-empty">No casefile open</span>
       )}
+      {casefile && (
+        <div className="toolbar-lane-menu-wrapper">
+          <button
+            ref={laneButtonRef}
+            type="button"
+            className="toolbar-lane-btn"
+            aria-haspopup="menu"
+            aria-expanded={laneMenuOpen}
+            onClick={openLaneMenu}
+            title="Lane management actions"
+          >
+            Lane ▾
+          </button>
+          {laneMenuOpen && (
+            <ContextMenu
+              x={laneMenuPos.x}
+              y={laneMenuPos.y}
+              items={buildLaneMenuItems()}
+              onClose={() => setLaneMenuOpen(false)}
+            />
+          )}
+        </div>
+      )}
       <label htmlFor="providerSelect">Provider</label>
       <select
         id="providerSelect"
@@ -137,7 +280,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
         {modelIsDefault && <span className="muted"> (default)</span>}
       </span>
       <button type="button" onClick={onOpenKeys}>
-        API Keys & Models
+        API Keys &amp; Models
       </button>
       <button
         type="button"

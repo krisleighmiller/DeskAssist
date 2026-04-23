@@ -59,7 +59,7 @@ def _parse_messages(raw_messages: list[dict[str, Any]]) -> list[ChatMessage]:
     return parsed
 
 
-_CONTEXT_MARKER = "You are operating inside a DeskAssist casefile scope."
+_CONTEXT_MARKER = "You are operating inside a DeskAssist scoped session."
 _PROMPT_MARKER = "[DeskAssist prompt: "
 
 
@@ -248,22 +248,22 @@ def _resolve_chat_context(
 def _build_context_system_prompt(scope: ScopeContext) -> str | None:
     """Format the auto-injected casefile-context system message.
 
-    Returns None when there is nothing to inject (no overlays and no
-    auto-include candidates), so callers can skip prepending an empty
+    Returns None when there is nothing to inject (no read-only directories
+    and no auto-include candidates), so callers can skip prepending an empty
     message to the chat history.
     """
     candidates = scope.auto_include_candidates()
-    overlays = scope.read_overlays
-    if not candidates and not overlays:
+    read_dirs = [d for d in scope.directories if not d.writable]
+    if not candidates and not read_dirs:
         return None
-    parts: list[str] = ["You are operating inside a DeskAssist casefile scope."]
-    if overlays:
+    parts: list[str] = ["You are operating inside a DeskAssist scoped session."]
+    if read_dirs:
         parts.append(
-            "You have read-only access to the following overlay roots in addition to "
-            "your write root. Reference them via the listed virtual prefix:"
+            "You have read-only access to the following context directories. "
+            "Reference them via the listed virtual prefix:"
         )
-        for overlay in overlays:
-            parts.append(f"  - {overlay.prefix}/  ({overlay.label})")
+        for d in read_dirs:
+            parts.append(f"  - _scope/{d.label}/  ({d.label})")
     if candidates:
         parts.append(
             "Casefile-wide context files (auto-included verbatim below; treat as "
@@ -448,6 +448,8 @@ def handle_casefile_register_lane(request: dict[str, Any]) -> dict[str, Any]:
         else None
     )
     attachments = parse_attachments(lane_raw.get("attachments"))
+    lane_writable_raw = lane_raw.get("writable")
+    lane_writable = True if lane_writable_raw is None else bool(lane_writable_raw)
     service = CasefileService(casefile_root_path)
     snapshot = service.register_lane(
         name=name,
@@ -456,6 +458,7 @@ def handle_casefile_register_lane(request: dict[str, Any]) -> dict[str, Any]:
         lane_id=lane_id,
         parent_id=parent_id,
         attachments=attachments,
+        writable=lane_writable,
     )
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
@@ -518,9 +521,13 @@ def handle_casefile_update_lane(request: dict[str, Any]) -> dict[str, Any]:
         _validate_path_depth(new_root, "root")
     else:
         raise ValueError("root must be a non-empty string or null")
+    writable_raw = request.get("writable")
+    new_writable: bool | None = None
+    if writable_raw is not None:
+        new_writable = bool(writable_raw)
     service = CasefileService(casefile_root_path)
     snapshot = service.update_lane(
-        lane_id.strip(), name=name, kind=kind, root=new_root,
+        lane_id.strip(), name=name, kind=kind, root=new_root, writable=new_writable,
     )
     payload: dict[str, Any] = {
         "ok": True,

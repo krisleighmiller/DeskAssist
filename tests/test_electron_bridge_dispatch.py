@@ -483,16 +483,21 @@ def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
     )
     scope = response["scope"]
     assert scope["writeRoot"] == str(child_dir.resolve())
-    prefixes = [overlay["prefix"] for overlay in scope["readOverlays"]]
-    assert prefixes[0] == "_attachments/notes"
-    assert "_ancestors/parent" in prefixes
+    # New flat model: directories list with labels and writable flags.
+    directories = scope["directories"]
+    labels = [d["label"] for d in directories]
+    write_labels = [d["label"] for d in directories if d["writable"]]
+    read_labels = [d["label"] for d in directories if not d["writable"]]
+    assert write_labels == ["child"]
+    assert "notes" in read_labels
+    assert any(lbl.startswith("parent") for lbl in read_labels), read_labels
     assert [entry["path"] for entry in scope["contextFiles"]] == ["rubric.md"]
 
 
 def test_chat_send_layers_overlays_into_chat_service(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """`chat:send` must hand `read_overlays` from the resolved scope into ChatService."""
+    """`chat:send` must hand the scope's overlay_map into ChatService."""
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
     (casefile_root / "rubric.md").write_text("rubric body content", encoding="utf-8")
@@ -591,8 +596,8 @@ def test_chat_send_layers_overlays_into_chat_service(
     assert captured["casefile_root"] == casefile_root
     overlays = captured["read_overlays"]
     assert overlays is not None
-    assert "_attachments/notes" in overlays
-    assert "_ancestors/parent" in overlays
+    # New flat model: overlays are `_scope/<label>/` keys.
+    assert any(k.startswith("_scope/") for k in overlays), overlays
     assert "_context" in overlays
     # Auto-include: the rubric should appear in a system prompt.
     system_prompts = captured.get("system_prompts", [])

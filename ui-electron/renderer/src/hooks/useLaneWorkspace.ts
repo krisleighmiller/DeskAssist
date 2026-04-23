@@ -8,6 +8,7 @@ import {
   EMPTY_LANE_SESSION,
   errorMessage,
   fileTabKey,
+  generateSessionId,
   isPathOrDescendant,
   rewriteDescendantPath,
   rewriteTabKeyForRename,
@@ -77,7 +78,7 @@ export function useLaneWorkspace({
         setLaneSessions((prev) => {
           if (prev.has(key)) return prev;
           const next = new Map(prev);
-          next.set(key, { ...EMPTY_LANE_SESSION, messages: persisted });
+          next.set(key, { ...EMPTY_LANE_SESSION, id: generateSessionId(), messages: persisted });
           return next;
         });
       } catch (error) {

@@ -69,6 +69,10 @@ export function normalizeChatTurn(
 }
 
 export interface LaneSessionState {
+  /** Stable UUID assigned at session creation. Survives lane switches
+   * so the user (and future cross-session reference UI) can reference
+   * "that specific conversation" by ID rather than by structural path. */
+  id: string;
   messages: ChatMessage[];
   pendingApprovals: ToolCall[];
   tabs: OpenTab[];
@@ -84,12 +88,47 @@ export interface LaneSessionState {
 }
 
 export const EMPTY_LANE_SESSION: LaneSessionState = {
+  id: "",
   messages: [],
   pendingApprovals: [],
   tabs: [],
   activeTabKey: null,
   busy: false,
 };
+
+/**
+ * One directory entry in a scoped session, as represented in renderer state.
+ * Mirrors `ScopedDirectoryDto` from the backend but lives here so that
+ * session creation can happen entirely in the renderer without a round-trip.
+ */
+export interface SessionDirectory {
+  path: string;
+  label: string;
+  writable: boolean;
+}
+
+/**
+ * Specification for a scoped session: a set of one or more directories,
+ * each with declared read or read-write access.  A single-directory session
+ * (one writable entry) is the common lane-chat case.  A multi-directory
+ * session (all read-only) is the comparison case.  The unified model makes
+ * these structurally identical.
+ */
+export interface SessionSpec {
+  id: string;
+  directories: SessionDirectory[];
+}
+
+/**
+ * Generate a stable UUID for a new session.  Falls back to a timestamp
+ * + random string on the rare chance `crypto.randomUUID` is unavailable.
+ */
+export function generateSessionId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `sess-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export interface NoteState {
   content: string;

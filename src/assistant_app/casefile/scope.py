@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -9,73 +10,90 @@ from assistant_app.casefile.context import (
     ContextManifestStore,
     ResolvedContextFile,
 )
-from assistant_app.casefile.models import CasefileSnapshot
+from assistant_app.casefile.models import CasefileSnapshot, ScopedDirectory
 
-# Virtual path prefixes the chat model sees in tool responses. Stable, short,
-# and chosen so they cannot collide with any sane real directory name (the
-# leading underscore is the giveaway). Documented to the model in the chat
-# system prompt.
-ANCESTOR_PREFIX = "_ancestors"
-ATTACHMENT_PREFIX = "_attachments"
+# All in-scope directories (excluding the write root) are surfaced to the
+# model under this flat prefix: `_scope/<label>/`.  The label is the
+# human-readable name of the directory, slugified and de-duplicated.
+# This replaces the old hierarchical `_ancestors/<id>/`, `_attachments/<name>/`,
+# and `_lanes/<id>/` prefixes — the model now sees a flat list of named roots
+# with no structural hierarchy encoded in the path.
+SCOPE_PREFIX = "_scope"
+
+# Context files stay under their own prefix so the model can distinguish
+# "authoritative shared instructions" from ordinary scope directories.
 CONTEXT_PREFIX = "_context"
-# M3.5c: comparison-chat sessions surface every participating lane under
-# `_lanes/<lane_id>/...` so the model has a stable virtual prefix for "the
-# files that belong to lane X" even when X is not the (non-existent) write
-# root of the session.
-LANES_PREFIX = "_lanes"
 
 
-@dataclass(slots=True, frozen=True)
-class ReadOverlay:
-    """One read-only root surfaced to the chat under a virtual prefix.
+def _slug(name: str) -> str:
+    """Convert a human-readable name to a safe, lowercase virtual path segment."""
+    s = re.sub(r"[^a-zA-Z0-9]", "_", name.lower().strip())
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s or "dir"
 
-    `prefix` is the full virtual path (e.g. `_ancestors/TASK_9`,
-    `_attachments/ash_notes`). The model uses this prefix in tool calls;
-    the WorkspaceFilesystem rewrites it to `root` before touching disk.
-    """
 
-    prefix: str
-    root: Path
-    label: str  # Human-friendly label for the system prompt (e.g. lane name).
+def _unique_label(base: str, seen: set[str]) -> str:
+    """Return `base` if unseen, otherwise `base_2`, `base_3`, …"""
+    candidate = base
+    i = 2
+    while candidate in seen:
+        candidate = f"{base}_{i}"
+        i += 1
+    seen.add(candidate)
+    return candidate
 
 
 @dataclass(slots=True, frozen=True)
 class ScopeContext:
-    """The fully-resolved read/write context for a chat in one lane.
+    """The fully-resolved scope for one chat session.
 
-    A chat in this scope:
-      - writes only to `write_root` (the lane's own directory),
-      - reads from `write_root` *and* every overlay in `read_overlays`,
-      - sees casefile-wide context files under `_context/...`.
+    A session is defined by a flat list of ``ScopedDirectory`` entries.
+    Each entry carries a real path, a human-readable label, and a writable
+    flag.  The model addresses directories via ``_scope/<label>/`` virtual
+    paths; write operations are restricted to directories where
+    ``writable=True``.
 
-    The resolver guarantees `read_overlays` is in priority order:
-    attachments first (paired notes are usually closest in intent), then
-    ancestors nearest-first (parent before grandparent), then the casefile
-    context bucket. Order matters when two roots happen to have the same
-    relative subpath — the first match wins.
+    The ``lane_id`` field keeps the session anchored to a persistence key
+    (used for chat log filenames).  For single-lane sessions this is the
+    lane's own id; for multi-lane (comparison) sessions it is the synthetic
+    comparison id.
+
+    ``casefile_root`` anchors the ``_context/`` overlay for casefile-wide
+    context files.
     """
 
     lane_id: str
-    write_root: Path
-    # `casefile_root` is required: it anchors the `_context/...` overlay,
-    # which would otherwise default to a relative `Path(".")` and silently
-    # resolve to the process CWD at use time. That footgun is bad enough
-    # for a chat tool that may modify the model's view of the workspace,
-    # so we require callers to pass an explicit (typically absolute) path.
+    directories: tuple[ScopedDirectory, ...]
     casefile_root: Path
-    read_overlays: tuple[ReadOverlay, ...] = field(default_factory=tuple)
     context_files: tuple[ResolvedContextFile, ...] = field(default_factory=tuple)
     auto_include_max_bytes: int = 0
 
+    @property
+    def write_root(self) -> Path:
+        """Primary write root: first writable directory, or casefile_root as fallback.
+
+        The fallback keeps the comparison-chat code path working without changes:
+        comparison sessions set all directories read-only and use casefile_root
+        as a dummy write root (writes are blocked by ``enable_writes=False``
+        in the tool registry).
+        """
+        for d in self.directories:
+            if d.writable:
+                return d.path
+        return self.casefile_root
+
     def overlay_map(self) -> dict[str, Path]:
-        """Adapter for `WorkspaceFilesystem(read_overlays=...)`."""
-        mapping: dict[str, Path] = {
-            overlay.prefix: overlay.root for overlay in self.read_overlays
-        }
-        # The casefile context bucket is itself an overlay; the model can
-        # `read_file("_context/Behavior_Issues.md")` directly. We point it
-        # at the casefile root and rely on the file list in `context_files`
-        # to advertise the available paths.
+        """Map virtual prefixes to real disk paths for ``WorkspaceFilesystem``.
+
+        Read-only directories are surfaced as ``_scope/<label>/``.
+        The writable directory is the ``write_root`` and is NOT in this map —
+        the model addresses it with bare relative paths (no prefix).
+        Context files get their own ``_context/`` prefix.
+        """
+        mapping: dict[str, Path] = {}
+        for d in self.directories:
+            if not d.writable:
+                mapping[f"{SCOPE_PREFIX}/{d.label}"] = d.path
         if self.context_files:
             mapping[CONTEXT_PREFIX] = self.casefile_root
         return mapping
@@ -98,45 +116,16 @@ def resolve_scope(
     manifest: ContextManifest | None = None,
     context_files: tuple[ResolvedContextFile, ...] | None = None,
 ) -> ScopeContext:
-    """Compute the `ScopeContext` for the given lane.
+    """Compute the ``ScopeContext`` for the given lane.
 
-    `manifest` and `context_files` are accepted as parameters so callers can
-    inject a stub in tests or reuse a freshly-loaded manifest, but if either
-    is None the resolver loads it from disk via `ContextManifestStore`.
+    The write root is the lane's own directory.  All other directories
+    (attachments and ancestor lanes, in priority order) are read-only and
+    surfaced under ``_scope/<label>/`` with human-readable slugified labels.
+
+    Labels are guaranteed unique within the session; a ``_2`` / ``_3``
+    suffix is appended when two directories would otherwise share a label.
     """
     lane = snapshot.lane_by_id(lane_id)
-    overlays: list[ReadOverlay] = []
-
-    # Attachments first — they're the most specific extra context
-    # (typically paired notes for the same lane).
-    for attachment in lane.attachments:
-        overlays.append(
-            ReadOverlay(
-                prefix=f"{ATTACHMENT_PREFIX}/{attachment.name}",
-                root=attachment.root,
-                label=attachment.name,
-            )
-        )
-
-    # Then ancestors, nearest first. Each ancestor contributes its own root
-    # and its attachments. We deliberately do *not* include an ancestor's
-    # *other children* — siblings remain isolated, which is the M2 promise.
-    for ancestor in snapshot.ancestors_of(lane_id):
-        overlays.append(
-            ReadOverlay(
-                prefix=f"{ANCESTOR_PREFIX}/{ancestor.id}",
-                root=ancestor.root,
-                label=ancestor.name,
-            )
-        )
-        for attachment in ancestor.attachments:
-            overlays.append(
-                ReadOverlay(
-                    prefix=f"{ANCESTOR_PREFIX}/{ancestor.id}/{ATTACHMENT_PREFIX}/{attachment.name}",
-                    root=attachment.root,
-                    label=f"{ancestor.name} / {attachment.name}",
-                )
-            )
 
     if manifest is None or context_files is None:
         store = ContextManifestStore(snapshot.casefile.root)
@@ -150,23 +139,41 @@ def resolve_scope(
         loaded_manifest = manifest
         loaded_files = context_files
 
+    seen_labels: set[str] = set()
+    dirs: list[ScopedDirectory] = []
+
+    # Lane root: writability is now user-configured via lane.writable.
+    write_label = _unique_label(_slug(lane.name), seen_labels)
+    dirs.append(ScopedDirectory(path=lane.root, label=write_label, writable=lane.writable))
+
+    # Attachments: use the attachment's own mode field.
+    for attachment in lane.attachments:
+        label = _unique_label(_slug(attachment.name), seen_labels)
+        dirs.append(ScopedDirectory(path=attachment.root, label=label, writable=(attachment.mode == "write")))
+
+    # Ancestor lanes, nearest first.  Each ancestor contributes its own
+    # directory and any attachments it carries.
+    for ancestor in snapshot.ancestors_of(lane_id):
+        label = _unique_label(_slug(ancestor.name), seen_labels)
+        dirs.append(ScopedDirectory(path=ancestor.root, label=label, writable=False))
+        for att in ancestor.attachments:
+            att_label = _unique_label(_slug(att.name), seen_labels)
+            dirs.append(ScopedDirectory(path=att.root, label=att_label, writable=False))
+
     return ScopeContext(
         lane_id=lane.id,
-        write_root=lane.root,
-        read_overlays=tuple(overlays),
+        directories=tuple(dirs),
+        casefile_root=snapshot.casefile.root,
         context_files=loaded_files,
         auto_include_max_bytes=loaded_manifest.auto_include_max_bytes,
-        casefile_root=snapshot.casefile.root,
     )
 
 
 def comparison_id_for_lanes(lane_ids: Iterable[str]) -> str:
     """Stable synthetic id for a comparison session over the given lanes.
 
-    Sorted so order of selection is irrelevant and the chat log path is
-    deterministic — selecting (a, b) and then later (b, a) reuses the same
-    history file.  Re-validates each id through the lane-id normaliser so a
-    bad input never lands as a filename component.
+    Sorted so order of selection is irrelevant; selecting (a, b) and then
+    (b, a) later reuses the same history file.
     """
     from assistant_app.casefile.store import normalize_lane_id  # avoid cycle
 
@@ -183,36 +190,21 @@ def resolve_comparison_scope(
     manifest: ContextManifest | None = None,
     context_files: tuple[ResolvedContextFile, ...] | None = None,
 ) -> ScopeContext:
-    """Compute the read-only ``ScopeContext`` for a comparison chat.
+    """Compute the read-only ``ScopeContext`` for a multi-lane session.
 
-    A comparison session has *no* write root — by construction every tool
-    call is read-only.  We still produce a ``ScopeContext`` so the chat
-    pipeline can reuse the single-lane plumbing; the caller is responsible
-    for building the tool registry with writes disabled (see
-    ``build_default_tool_registry(..., enable_writes=False)``).
+    Every directory is read-only.  Each participating lane (and its
+    attachments and ancestors) gets a ``_scope/<label>/`` entry.  Labels are
+    de-duplicated so two lanes with the same name get ``name`` and ``name_2``.
 
-    The returned ``write_root`` is the casefile root: a stable, real
-    directory we can hand to ``WorkspaceFilesystem`` even though no save /
-    append / delete tool will ever resolve a path against it.
-
-    The overlay set is the union of:
-      - each participating lane surfaced as ``_lanes/<lane_id>/...`` so the
-        model can name "the files of lane X" with a stable prefix,
-      - each lane's full ancestor + attachment cascade,
-      - the casefile-wide context manifest (loaded once, shared across
-        lanes).
-
-    Overlays are de-duplicated by prefix; if two participating lanes share
-    an ancestor (which is the common case for siblings), that ancestor's
-    overlay is registered exactly once.
+    The ``write_root`` property falls back to ``casefile_root`` — no writes
+    are possible in a comparison session (the caller must build the tool
+    registry with ``enable_writes=False``).
     """
     from assistant_app.casefile.context import ContextManifestStore  # avoid cycle
 
     ids = sorted({raw for raw in lane_ids if raw})
     if len(ids) < 2:
         raise ValueError("Comparison requires at least two distinct lane ids")
-    # Validate every lane exists *before* we start building overlays so a
-    # typo surfaces as a clean KeyError, not a half-built scope.
     lanes = [snapshot.lane_by_id(lid) for lid in ids]
 
     if manifest is None or context_files is None:
@@ -227,41 +219,30 @@ def resolve_comparison_scope(
         loaded_manifest = manifest
         loaded_files = context_files
 
-    overlays: list[ReadOverlay] = []
-    seen_prefixes: set[str] = set()
+    seen_labels: set[str] = set()
+    seen_paths: set[Path] = set()
+    dirs: list[ScopedDirectory] = []
 
-    def _add(prefix: str, root: Path, label: str) -> None:
-        if prefix in seen_prefixes:
+    def _add(path: Path, name: str) -> None:
+        if path in seen_paths:
             return
-        seen_prefixes.add(prefix)
-        overlays.append(ReadOverlay(prefix=prefix, root=root, label=label))
+        seen_paths.add(path)
+        label = _unique_label(_slug(name), seen_labels)
+        dirs.append(ScopedDirectory(path=path, label=label, writable=False))
 
     for lane in lanes:
-        _add(f"{LANES_PREFIX}/{lane.id}", lane.root, lane.name)
-        for attachment in lane.attachments:
-            _add(
-                f"{LANES_PREFIX}/{lane.id}/{ATTACHMENT_PREFIX}/{attachment.name}",
-                attachment.root,
-                f"{lane.name} / {attachment.name}",
-            )
+        _add(lane.root, lane.name)
+        for att in lane.attachments:
+            _add(att.root, att.name)
         for ancestor in snapshot.ancestors_of(lane.id):
-            _add(
-                f"{ANCESTOR_PREFIX}/{ancestor.id}",
-                ancestor.root,
-                ancestor.name,
-            )
-            for attachment in ancestor.attachments:
-                _add(
-                    f"{ANCESTOR_PREFIX}/{ancestor.id}/{ATTACHMENT_PREFIX}/{attachment.name}",
-                    attachment.root,
-                    f"{ancestor.name} / {attachment.name}",
-                )
+            _add(ancestor.root, ancestor.name)
+            for att in ancestor.attachments:
+                _add(att.root, att.name)
 
     return ScopeContext(
         lane_id=comparison_id_for_lanes(ids),
-        write_root=snapshot.casefile.root,
-        read_overlays=tuple(overlays),
+        directories=tuple(dirs),
+        casefile_root=snapshot.casefile.root,
         context_files=loaded_files,
         auto_include_max_bytes=loaded_manifest.auto_include_max_bytes,
-        casefile_root=snapshot.casefile.root,
     )

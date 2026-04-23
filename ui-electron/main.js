@@ -458,6 +458,49 @@ function createWindow() {
       },
     },
   ];
+
+  const sendToRenderer = (channel) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(channel);
+    }
+  };
+
+  const laneSubmenu = [
+    {
+      label: "Create Lane…",
+      accelerator: "CmdOrCtrl+Shift+L",
+      click: () => sendToRenderer("app:lane:create"),
+    },
+    {
+      label: "Attach to Lane…",
+      accelerator: "CmdOrCtrl+Shift+A",
+      click: () => sendToRenderer("app:lane:attach"),
+    },
+    { type: "separator" },
+    {
+      label: "Rename Active Lane…",
+      accelerator: "CmdOrCtrl+Shift+N",
+      click: () => sendToRenderer("app:lane:rename"),
+    },
+    {
+      label: "Toggle AI Write Access",
+      accelerator: "CmdOrCtrl+Shift+W",
+      click: () => sendToRenderer("app:lane:toggle-access"),
+    },
+    {
+      label: "Remove Active Lane",
+      click: () => sendToRenderer("app:lane:remove"),
+    },
+    { type: "separator" },
+    {
+      label: "Reset Casefile (soft)…",
+      click: () => sendToRenderer("app:casefile:soft-reset"),
+    },
+    {
+      label: "Hard Reset Casefile…",
+      click: () => sendToRenderer("app:casefile:hard-reset"),
+    },
+  ];
   const template = [
     ...(process.platform === "darwin"
       ? [
@@ -482,6 +525,11 @@ function createWindow() {
     {
       label: "File",
       submenu: [
+        {
+          label: "Open Casefile…",
+          accelerator: "CmdOrCtrl+Shift+O",
+          click: () => sendToRenderer("app:open-casefile"),
+        },
         ...(process.platform === "darwin" ? [{ role: "close" }] : [{ role: "quit" }]),
       ],
     },
@@ -507,6 +555,10 @@ function createWindow() {
             ]
           : [{ role: "delete" }, { type: "separator" }, { role: "selectAll" }]),
       ],
+    },
+    {
+      label: "Lane",
+      submenu: laneSubmenu,
     },
     {
       label: "View",

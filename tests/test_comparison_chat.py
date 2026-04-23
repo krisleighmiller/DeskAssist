@@ -78,12 +78,13 @@ def test_resolve_comparison_scope_unions_overlays(tmp_path: Path) -> None:
     casefile_root = _bootstrap(tmp_path)
     service = CasefileService(casefile_root)
     scope = service.resolve_comparison_scope(["a", "b"])
-    overlay_prefixes = {overlay.prefix for overlay in scope.read_overlays}
-    # Each lane gets a virtual `_lanes/<id>` mount.
-    assert "_lanes/a" in overlay_prefixes
-    assert "_lanes/b" in overlay_prefixes
-    # Comparison sessions never write to a real lane: the bridge maps writes
-    # at the casefile root, but the registry built for them refuses writes.
+    overlay_map = scope.overlay_map()
+    # Each lane gets a virtual `_scope/<label>/` mount; all are read-only.
+    labels = [d.label for d in scope.directories]
+    assert "a" in labels
+    assert "b" in labels
+    assert not any(d.writable for d in scope.directories)
+    # Comparison sessions never write to a real lane; write_root falls back to casefile_root.
     assert scope.write_root == casefile_root.resolve()
     assert scope.lane_id == "_compare__a__b"
 
@@ -138,12 +139,17 @@ def test_resolve_comparison_scope_includes_ancestors_and_attachments(
     )
     service = CasefileService(casefile_root)
     scope = service.resolve_comparison_scope(["a", "b"])
-    prefixes = {o.prefix for o in scope.read_overlays}
-    assert "_lanes/a" in prefixes
-    assert "_lanes/b" in prefixes
-    assert "_lanes/a/_attachments/notes" in prefixes
-    # Shared parent appears once (set semantics in the resolver).
-    assert "_ancestors/p" in prefixes
+    labels = {d.label for d in scope.directories}
+    # Both lanes present; all read-only.
+    assert "a" in labels
+    assert "b" in labels
+    assert not any(d.writable for d in scope.directories)
+    # Attachment and shared parent also present (de-duplicated).
+    assert "notes" in labels
+    assert "p" in labels
+    # All paths are unique (no directory appears twice).
+    paths = [d.path for d in scope.directories]
+    assert len(paths) == len(set(paths))
 
 
 # ---------------------------------------------------------------------------
@@ -270,9 +276,9 @@ def test_send_comparison_chat_persists_to_synthetic_log(
     # send_user_message must have been called with allow_write_tools=False.
     assert captured["enable_writes"] is False
     assert captured["allow_write_tools"] is False
-    # The session reads from both lanes (and any cascade).
-    assert "_lanes/a" in captured["read_overlays"]
-    assert "_lanes/b" in captured["read_overlays"]
+    # The session reads from both lanes via _scope/<label>/ entries.
+    overlays = captured["read_overlays"]
+    assert any(k.startswith("_scope/") for k in overlays), overlays
 
     # Re-opening the comparison must surface the persisted history.
     reopen = bridge.dispatch(

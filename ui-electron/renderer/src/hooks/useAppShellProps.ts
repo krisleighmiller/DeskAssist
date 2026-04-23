@@ -13,32 +13,16 @@ import type {
   CasefileSnapshot,
   ChatMessage,
   ComparisonSession,
-  ContextManifestDto,
   FileTreeNode,
-  InboxItemContent,
-  InboxItemDto,
-  InboxSourceDto,
-  InboxSourceInput,
   Lane,
   LaneAttachmentInput,
-  LaneComparisonDto,
   LaneUpdateInput,
-  PromptDraftDto,
-  PromptInputDto,
-  PromptSummaryDto,
   Provider,
   ProviderModels,
   RegisterLaneInput,
   ToolCall,
   UpdateLaneResult,
 } from "../types";
-
-interface NoteViewState {
-  content: string;
-  loading: boolean;
-  saving: boolean;
-  error: string | null;
-}
 
 interface ShellViewModelState {
   casefile: CasefileSnapshot | null;
@@ -59,22 +43,6 @@ interface ShellViewModelState {
   chatBusy: boolean;
   activePromptName: string | null;
   comparisonChatBusy: boolean;
-  noteState: NoteViewState;
-  comparison: LaneComparisonDto | null;
-  comparisonBusy: boolean;
-  contextManifest: ContextManifestDto | null;
-  contextBusy: boolean;
-  contextError: string | null;
-  prompts: PromptSummaryDto[];
-  promptsLoading: boolean;
-  promptsError: string | null;
-  selectedPromptId: string | null;
-  inboxSources: InboxSourceDto[];
-  inboxLoading: boolean;
-  inboxError: string | null;
-  // M2: lifted right-panel tab state so non-RightPanel surfaces can
-  // request a switch (e.g. FileTree triggering a comparison should
-  // jump the user to the Lanes tab).
   activeRightTab: RightTabKey;
 }
 
@@ -88,21 +56,13 @@ interface ShellViewModelActions {
   onAddToContext?: (path: string) => void;
   onRename?: (sourcePath: string, nextPath: string) => Promise<void>;
   onRefreshTree?: () => void;
-  /** Clear the file tree's transient error state. Wired to a dismiss
-   * button on the in-tree error banner so a per-action failure ("move
-   * rejected", "name conflict", etc.) doesn't keep covering the tree
-   * after the user acknowledges it. */
   onDismissTreeError: () => void;
-  // M2: browser-driven file ops + lane integration. All optional —
-  // the FileTree silently hides the corresponding menu items when a
-  // handler is missing, which keeps unit / casefile-less states sane
-  // (no active lane → no point offering a "New file" prompt).
   onCreateFile?: (parentDir: string, name: string) => Promise<void>;
   onCreateFolder?: (parentDir: string, name: string) => Promise<void>;
   onMoveEntry?: (sourcePath: string, destinationPath: string) => Promise<void>;
   onTrashEntry?: (path: string) => Promise<void>;
   onCreateLaneFromPath?: (path: string, name: string) => Promise<void>;
-  onAttachToActiveLane?: (path: string, name: string) => Promise<void>;
+  onAttachToLane?: (path: string, laneId: string, name: string) => Promise<void>;
   onStartLaneComparison?: (selfLaneId: string, otherLaneId: string) => Promise<void>;
   onActiveRightTabChange: (tab: RightTabKey) => void;
   onSelectTab: (key: string) => void;
@@ -116,7 +76,6 @@ interface ShellViewModelActions {
   onApproveTools: () => void;
   onDenyTools: () => void;
   onSendComparisonChat: (text: string) => void;
-  onNoteChange: (value: string) => void;
   onRegisterLane: (input: RegisterLaneInput) => Promise<void>;
   onChooseLaneRoot: () => Promise<string | null>;
   onCompareLanes: (leftLaneId: string, rightLaneId: string) => Promise<void>;
@@ -135,15 +94,14 @@ interface ShellViewModelActions {
   onHardResetCasefile: () => Promise<void>;
   onSoftResetCasefile: (keepPrompts: boolean) => Promise<void>;
   onSelectPromptForChat: (promptId: string | null) => void;
-  onCreatePrompt: (input: PromptInputDto) => Promise<PromptDraftDto>;
-  onSavePrompt: (promptId: string, input: PromptInputDto) => Promise<PromptDraftDto>;
-  onDeletePrompt: (promptId: string) => Promise<void>;
-  onLoadPrompt: (promptId: string) => Promise<PromptDraftDto>;
-  onAddInboxSource: (input: InboxSourceInput) => Promise<InboxSourceDto>;
-  onRemoveInboxSource: (sourceId: string) => Promise<void>;
-  onChooseInboxRoot: () => Promise<string | null>;
-  onListInboxItems: (sourceId: string) => Promise<InboxItemDto[]>;
-  onReadInboxItem: (sourceId: string, path: string) => Promise<InboxItemContent>;
+  /** Called when the user renames a lane via the file tree context menu. */
+  onUpdateLaneName?: (laneId: string, newName: string) => Promise<void>;
+  /** M2.5: toggle AI write access for a lane. */
+  onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void>;
+  /** M2.5: remove an attachment from the active lane by its label name. */
+  onRemoveAttachment?: (laneId: string, attName: string) => Promise<void>;
+  /** M2.5: change an attachment's AI access mode. */
+  onSetAttachmentMode?: (laneId: string, attName: string, mode: "read" | "write") => Promise<void>;
 }
 
 interface UseAppShellPropsArgs {
@@ -191,6 +149,13 @@ export function useAppShellProps({
       providerModels: state.providerModels,
       onChooseCasefile: actions.onChooseCasefile,
       onSwitchLane: actions.onSwitchLane,
+      onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
+      onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,
+      onSetLaneWritable: state.casefile ? actions.onSetLaneWritable : undefined,
+      onSoftResetCasefile: state.casefile
+        ? () => actions.onSoftResetCasefile(false)
+        : undefined,
+      onHardResetCasefile: state.casefile ? actions.onHardResetCasefile : undefined,
     },
     workbench: {
       workspaceTitle: state.activeLane ? state.activeLane.name : "Workspace",
@@ -232,6 +197,7 @@ export function useAppShellProps({
               id: lane.id,
               name: lane.name,
               root: lane.root,
+              writable: lane.writable,
             }))
           : undefined,
         onCreateFile: state.casefile ? actions.onCreateFile : undefined,
@@ -241,13 +207,21 @@ export function useAppShellProps({
         onCreateLaneFromPath: state.casefile
           ? actions.onCreateLaneFromPath
           : undefined,
-        onAttachToActiveLane: state.activeLane
-          ? actions.onAttachToActiveLane
+        onAttachToLane: state.casefile && (state.casefile.lanes.length > 0)
+          ? actions.onAttachToLane
           : undefined,
         onStartLaneComparison:
           state.casefile && state.casefile.lanes.length >= 2
             ? actions.onStartLaneComparison
             : undefined,
+        onSwitchLane: state.casefile ? actions.onSwitchLane : undefined,
+        onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
+        onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,
+        onSetLaneWritable: state.casefile ? actions.onSetLaneWritable : undefined,
+        onSoftResetCasefile: state.casefile
+          ? () => actions.onSoftResetCasefile(false)
+          : undefined,
+        onHardResetCasefile: state.casefile ? actions.onHardResetCasefile : undefined,
       },
       editor: {
         tabs: state.sessionTabs,
@@ -281,6 +255,21 @@ export function useAppShellProps({
             onSend: actions.onSendMessage,
             onApproveTools: actions.onApproveTools,
             onDenyTools: actions.onDenyTools,
+            onSetLaneWritable: state.activeLane && actions.onSetLaneWritable
+              ? (writable: boolean) => {
+                  void actions.onSetLaneWritable!(state.activeLane!.id, writable);
+                }
+              : undefined,
+            onRemoveAttachment: state.activeLane && actions.onRemoveAttachment
+              ? (attName: string) => {
+                  void actions.onRemoveAttachment!(state.activeLane!.id, attName);
+                }
+              : undefined,
+            onSetAttachmentMode: state.activeLane && actions.onSetAttachmentMode
+              ? (attName: string, mode: "read" | "write") => {
+                  void actions.onSetAttachmentMode!(state.activeLane!.id, attName, mode);
+                }
+              : undefined,
           },
           compareChat: {
             provider: state.provider,
@@ -295,61 +284,6 @@ export function useAppShellProps({
           // wouldn't otherwise re-list. Fire a refresh so the new
           // file appears immediately in the workspace pane.
           onAfterSaveOutput: actions.onRefreshTree,
-        },
-        notes: {
-          value: state.noteState.content,
-          hasActiveLane: Boolean(state.activeLane),
-          loading: state.noteState.loading,
-          saving: state.noteState.saving,
-          error: state.noteState.error,
-          onChange: actions.onNoteChange,
-        },
-        lanes: {
-          casefile: state.casefile,
-          onSwitchLane: actions.onSwitchLane,
-          onRegisterLane: actions.onRegisterLane,
-          onChooseLaneRoot: actions.onChooseLaneRoot,
-          comparison: state.comparison,
-          comparisonBusy: state.comparisonBusy,
-          onCompare: actions.onCompareLanes,
-          onClearComparison: actions.onClearComparison,
-          onOpenDiff: actions.onOpenDiff,
-          onOpenLaneFile: actions.onOpenLaneFile,
-          onOpenComparisonChat: actions.onOpenComparisonChat,
-          context: state.contextManifest,
-          contextBusy: state.contextBusy,
-          contextError: state.contextError,
-          onSaveContext: actions.onSaveContext,
-          onSetLaneParent: actions.onSetLaneParent,
-          onUpdateLaneAttachments: actions.onUpdateLaneAttachments,
-          onUpdateLane: actions.onUpdateLane,
-          onRemoveLane: actions.onRemoveLane,
-          onHardResetCasefile: actions.onHardResetCasefile,
-          onSoftResetCasefile: actions.onSoftResetCasefile,
-        },
-        prompts: {
-          hasCasefile: Boolean(state.casefile),
-          hasActiveLane: Boolean(state.activeLane),
-          prompts: state.prompts,
-          loading: state.promptsLoading,
-          error: state.promptsError,
-          selectedPromptId: state.selectedPromptId,
-          onSelectForChat: actions.onSelectPromptForChat,
-          onCreate: actions.onCreatePrompt,
-          onSave: actions.onSavePrompt,
-          onDelete: actions.onDeletePrompt,
-          onLoad: actions.onLoadPrompt,
-        },
-        inbox: {
-          hasCasefile: Boolean(state.casefile),
-          sources: state.inboxSources,
-          loading: state.inboxLoading,
-          error: state.inboxError,
-          onAddSource: actions.onAddInboxSource,
-          onRemoveSource: actions.onRemoveInboxSource,
-          onChooseRoot: actions.onChooseInboxRoot,
-          onListItems: actions.onListInboxItems,
-          onReadItem: actions.onReadInboxItem,
         },
       },
     },

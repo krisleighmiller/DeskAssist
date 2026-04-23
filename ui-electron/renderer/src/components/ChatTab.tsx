@@ -8,6 +8,9 @@ import type {
   Provider,
   ToolCall,
 } from "../types";
+import { api } from "../lib/api";
+import { FILETREE_DRAG_MIME, parseDragPayload } from "./FileTree";
+import { ContextMenu } from "./ContextMenu";
 import { SaveOutputPicker, suggestSaveFilename } from "./SaveOutputPicker";
 
 /** Identifier for a single chat session entry in the session list. Lane
@@ -94,6 +97,12 @@ interface LaneChatProps {
   onSend: (text: string) => void;
   onApproveTools: () => void;
   onDenyTools: () => void;
+  /** M2.5: Toggle AI write access for the active lane (true = writable). */
+  onSetLaneWritable?: (writable: boolean) => void;
+  /** M2.5: Remove an attachment from the active lane by its label name. */
+  onRemoveAttachment?: (attName: string) => void;
+  /** M2.5: Change an attachment's AI access mode. */
+  onSetAttachmentMode?: (attName: string, mode: "read" | "write") => void;
 }
 
 interface CompareChatProps {
@@ -224,11 +233,11 @@ function ChatSessionList({
       {comparisonSessions.map((session) => {
         const id = compareSessionId(session.id);
         const active = id === activeSessionId;
-        const label = session.lanes.map((l) => l.name).join(" ↔ ");
+        const label = session.lanes.map((l) => l.name).join(" · ");
         return (
           <span
             key={id}
-            className={`chat-session compare${active ? " active" : ""}`}
+            className={`chat-session scoped${active ? " active" : ""}`}
           >
             <button
               type="button"
@@ -236,20 +245,20 @@ function ChatSessionList({
               aria-selected={active}
               className="chat-session-main"
               onClick={() => onSelectSession(id)}
-              title={`Comparison chat: ${label}`}
+              title={`Scoped session: ${label}`}
             >
-              <span className="chat-session-kind">compare</span>
+              <span className="chat-session-kind">scoped</span>
               <span className="chat-session-label">{label}</span>
             </button>
             <button
               type="button"
               className="chat-session-close"
-              aria-label={`Close comparison ${label}`}
+              aria-label={`Close scoped session ${label}`}
               onClick={(event) => {
                 event.stopPropagation();
                 onCloseCompareSession(session.id);
               }}
-              title="Close this comparison chat"
+              title="Close this scoped session"
             >
               ×
             </button>
@@ -330,7 +339,123 @@ function MessageRow({
 
 /** Single-lane chat body: provider/key/badge strip, message list with
  * per-message Save..., approval panel for write-tool requests, send
- * form. Mirrors the prior dedicated `ChatTab` body. */
+ * form with @mention and drag-drop context inclusion. */
+/** Displays the AI scope for the current lane as a compact row of
+ * labelled pills — one per directory in scope — each tagged with a
+ * (RW) or (RO) access badge. Right-clicking a pill reveals management
+ * actions (toggle AI access for the root, remove an attachment). */
+function ScopeHeader({
+  lane,
+  onSetLaneWritable,
+  onRemoveAttachment,
+  onSetAttachmentMode,
+}: {
+  lane: Lane;
+  onSetLaneWritable?: (writable: boolean) => void;
+  onRemoveAttachment?: (attName: string) => void;
+  onSetAttachmentMode?: (attName: string, mode: "read" | "write") => void;
+}): JSX.Element {
+  const [scopeMenu, setScopeMenu] = useState<{
+    x: number;
+    y: number;
+    items: Parameters<typeof ContextMenu>[0]["items"];
+  } | null>(null);
+  const [open, setOpen] = useState(true);
+
+  const rootWritable = lane.writable !== false;
+
+  const handleRootContext = (event: React.MouseEvent) => {
+    event.preventDefault();
+    const items: Parameters<typeof ContextMenu>[0]["items"] = [];
+    if (onSetLaneWritable) {
+      items.push({
+        label: rootWritable
+          ? "Set AI access: read-only"
+          : "Set AI access: writable",
+        onSelect: () => onSetLaneWritable(!rootWritable),
+      });
+    }
+    if (items.length === 0) return;
+    setScopeMenu({ x: event.clientX, y: event.clientY, items });
+  };
+
+  const handleAttachContext = (
+    event: React.MouseEvent,
+    att: NonNullable<Lane["attachments"]>[number]
+  ) => {
+    event.preventDefault();
+    const items: Parameters<typeof ContextMenu>[0]["items"] = [];
+    const attWritable = att.mode === "write";
+    if (onSetAttachmentMode) {
+      items.push({
+        label: attWritable ? "Set AI access: read-only" : "Set AI access: writable",
+        onSelect: () => onSetAttachmentMode(att.name, attWritable ? "read" : "write"),
+      });
+    }
+    if (onRemoveAttachment) {
+      items.push({
+        label: `Remove "${att.name}" from scope`,
+        onSelect: () => onRemoveAttachment(att.name),
+      });
+    }
+    if (items.length === 0) return;
+    setScopeMenu({ x: event.clientX, y: event.clientY, items });
+  };
+
+  const rootName = lane.root.split(/[\\/]/).pop() ?? lane.root;
+
+  return (
+    <div className="scope-header">
+      <button
+        type="button"
+        className="scope-header-toggle"
+        onClick={() => setOpen((v) => !v)}
+        title={open ? "Hide AI scope" : "Show AI scope"}
+        aria-expanded={open}
+        aria-label="Toggle AI scope visibility"
+      >
+        AI scope {open ? "▾" : "▸"}
+      </button>
+      {open && (
+        <div className="scope-header-pills" role="list" aria-label="Directories in AI scope">
+          <span
+            className={`scope-pill ${rootWritable ? "scope-pill-rw" : "scope-pill-ro"}`}
+            role="listitem"
+            title={`${lane.root} — ${rootWritable ? "AI may write" : "AI read-only"}`}
+            onContextMenu={handleRootContext}
+          >
+            {rootName}
+            <span className="scope-pill-badge">{rootWritable ? "RW" : "RO"}</span>
+          </span>
+          {(lane.attachments ?? []).map((att) => {
+            const attWritable = att.mode === "write";
+            return (
+              <span
+                key={att.name}
+                className={`scope-pill ${attWritable ? "scope-pill-rw" : "scope-pill-ro"}`}
+                role="listitem"
+                title={`${att.root} — ${attWritable ? "AI may write" : "AI read-only"}`}
+                onContextMenu={(e) => handleAttachContext(e, att)}
+              >
+                {att.name}
+                <span className="scope-pill-badge">{attWritable ? "RW" : "RO"}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {scopeMenu && (
+        <ContextMenu
+          x={scopeMenu.x}
+          y={scopeMenu.y}
+          items={scopeMenu.items}
+          onClose={() => setScopeMenu(null)}
+        />
+      )}
+    </div>
+  );
+}
+
 function LaneChatBody({
   chat,
   onAfterSave,
@@ -342,6 +467,10 @@ function LaneChatBody({
   const messagesRef = useRef<HTMLDivElement>(null);
   const [busyStart, setBusyStart] = useState<number | null>(null);
   const [now, setNow] = useState<number>(() => Date.now());
+  const [mentionActive, setMentionActive] = useState(false);
+  const [mentionPath, setMentionPath] = useState("");
+  const [isDragOver, setIsDragOver] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (chat.busy) {
@@ -374,6 +503,68 @@ function LaneChatBody({
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submit();
+    }
+    // Trigger @mention picker when @ is typed at the start of a word.
+    if (event.key === "@" && !mentionActive) {
+      setMentionActive(true);
+      setMentionPath("");
+    }
+  };
+
+  const insertFileBlock = (path: string, content: string, truncated: boolean) => {
+    const block = `[file: ${path}]\n${content}${truncated ? "\n...(truncated)" : ""}`;
+    setInput((prev) => (prev ? `${prev}\n\n${block}` : block));
+    setMentionActive(false);
+    setMentionPath("");
+    textareaRef.current?.focus();
+  };
+
+  const readAndInsert = async (filePath: string) => {
+    try {
+      const result = await api().readFile(filePath);
+      insertFileBlock(result.path, result.content, result.truncated);
+    } catch (err) {
+      console.error("ChatTab: file read for @mention failed:", err);
+    }
+  };
+
+  const handleMentionSubmit = () => {
+    const path = mentionPath.trim();
+    if (!path) {
+      setMentionActive(false);
+      return;
+    }
+    void readAndInsert(path);
+  };
+
+  const handleDragOver = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    // Accept intra-tree drags (custom MIME) and plain text drops.
+    const types = Array.from(event.dataTransfer.types);
+    if (types.includes(FILETREE_DRAG_MIME) || types.includes("text/plain")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = () => setIsDragOver(false);
+
+  const handleDrop = (event: React.DragEvent<HTMLTextAreaElement>) => {
+    event.preventDefault();
+    setIsDragOver(false);
+    // Prefer the structured tree payload which carries the absolute path.
+    // Fall back to the plain-text mirror for drops from other sources.
+    const raw = event.dataTransfer.getData(FILETREE_DRAG_MIME);
+    let filePath: string | null = null;
+    if (raw) {
+      const payloads = parseDragPayload(raw);
+      filePath = payloads[0]?.absolutePath ?? null;
+    }
+    if (!filePath) {
+      filePath = event.dataTransfer.getData("text/plain").trim() || null;
+    }
+    if (filePath) {
+      void readAndInsert(filePath);
     }
   };
 
@@ -425,6 +616,14 @@ function LaneChatBody({
           </span>
         )}
       </div>
+      {chat.activeLane && (
+        <ScopeHeader
+          lane={chat.activeLane}
+          onSetLaneWritable={chat.onSetLaneWritable}
+          onRemoveAttachment={chat.onRemoveAttachment}
+          onSetAttachmentMode={chat.onSetAttachmentMode}
+        />
+      )}
       <div className="chat-messages" ref={messagesRef}>
         {chat.messages.length === 0 && (
           <div style={{ color: "#6b7280", fontStyle: "italic" }}>
@@ -480,6 +679,35 @@ function LaneChatBody({
           </div>
         </div>
       )}
+      {mentionActive && (
+        <div className="chat-mention-picker">
+          <input
+            autoFocus
+            type="text"
+            className="chat-mention-input"
+            placeholder="Type a file path and press Enter…"
+            value={mentionPath}
+            onChange={(e) => setMentionPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleMentionSubmit();
+              }
+              if (e.key === "Escape") {
+                setMentionActive(false);
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="chat-mention-cancel"
+            onClick={() => setMentionActive(false)}
+            title="Cancel"
+          >
+            ×
+          </button>
+        </div>
+      )}
       <form
         className="chat-form"
         onSubmit={(event) => {
@@ -488,11 +716,18 @@ function LaneChatBody({
         }}
       >
         <textarea
+          ref={textareaRef}
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={onKeyDown}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={isDragOver ? "drop-target" : undefined}
           placeholder={
-            chat.hasActiveLane ? "Ask about your workspace..." : "Open a casefile to enable chat..."
+            chat.hasActiveLane
+              ? "Ask about your workspace… type @ to include a file"
+              : "Open a casefile to enable chat..."
           }
           disabled={inputDisabled}
         />
@@ -500,6 +735,9 @@ function LaneChatBody({
           <button type="submit" disabled={inputDisabled || !input.trim()}>
             {chat.busy ? "Sending..." : "Send"}
           </button>
+          <span className="chat-hint muted">
+            Shift+Enter for new line · @ to include a file · drag a file here
+          </span>
         </div>
       </form>
     </div>

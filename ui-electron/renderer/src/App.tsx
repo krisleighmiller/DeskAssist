@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  AttachmentMode,
   CasefileSnapshot,
   ChatMessage,
   LaneAttachmentInput,
@@ -7,6 +8,7 @@ import type {
 } from "./types";
 import { api } from "./lib/api";
 import { AppShell } from "./components/AppShell";
+import { InputDialog } from "./components/InputDialog";
 import type { RightTabKey } from "./components/RightPanel";
 import {
   EMPTY_LANE_SESSION,
@@ -19,9 +21,7 @@ import {
 import { useAppShellProps } from "./hooks/useAppShellProps";
 import { useComparisons } from "./hooks/useComparisons";
 import { useContextAndOverlays } from "./hooks/useContextAndOverlays";
-import { useInboxSources } from "./hooks/useInboxSources";
 import { useLaneWorkspace } from "./hooks/useLaneWorkspace";
-import { useNotesState } from "./hooks/useNotesState";
 import { usePromptDrafts } from "./hooks/usePromptDrafts";
 import { useProviderSettings } from "./hooks/useProviderSettings";
 
@@ -32,6 +32,41 @@ export function App(): JSX.Element {
   const activeLane = activeLaneId
     ? casefile?.lanes.find((lane) => lane.id === activeLaneId) ?? null
     : null;
+
+  // ----- Global dialog (for menu-bar triggered prompts that need text input) -----
+  const [globalDialog, setGlobalDialog] = useState<{
+    title: string;
+    message?: string;
+    defaultValue: string;
+    confirmLabel?: string;
+    resolve: (value: string | null) => void;
+  } | null>(null);
+
+  /** Promise-based text-input prompt rendered at App level so menu-bar
+   * IPC handlers (which run outside the FileTree component) can ask the
+   * user for a name/label without reaching into a child component's state. */
+  const promptGlobalRef = useRef<(opts: {
+    title: string;
+    message?: string;
+    defaultValue?: string;
+    confirmLabel?: string;
+  }) => Promise<string | null>>();
+  promptGlobalRef.current = (opts) =>
+    new Promise<string | null>((resolve) => {
+      setGlobalDialog({
+        title: opts.title,
+        message: opts.message,
+        defaultValue: opts.defaultValue ?? "",
+        confirmLabel: opts.confirmLabel,
+        resolve,
+      });
+    });
+
+  const promptGlobal = useCallback(
+    (opts: { title: string; message?: string; defaultValue?: string; confirmLabel?: string }) =>
+      promptGlobalRef.current!(opts),
+    []
+  );
   const [treeError, setTreeError] = useState<string | null>(null);
 
   // ----- Per-lane in-memory session state -----
@@ -74,38 +109,14 @@ export function App(): JSX.Element {
     providerModels,
     setProviderModels,
   } = useProviderSettings();
-  const { noteState, handleNoteChange } = useNotesState({
-    casefileRoot: casefile?.root ?? null,
-    activeLaneId,
-    sessionKey,
-  });
   const {
-    prompts,
-    promptsLoading,
-    promptsError,
     selectedPromptId,
     activePromptName,
-    handleCreatePrompt,
-    handleSavePrompt,
-    handleDeletePrompt,
-    handleLoadPrompt,
     handleSelectPromptForChat,
   } = usePromptDrafts(casefile, sessionKey);
-  const {
-    inboxSources,
-    inboxLoading,
-    inboxError,
-    handleAddInboxSource,
-    handleRemoveInboxSource,
-    handleChooseInboxRoot,
-    handleListInboxItems,
-    handleReadInboxItem,
-  } = useInboxSources(casefile);
 
   // ----- Lane comparison -----
   const {
-    comparison,
-    comparisonBusy,
     comparisonSessions,
     setActiveComparisonId,
     comparisonChatBusy,
@@ -128,9 +139,6 @@ export function App(): JSX.Element {
   });
 
   const {
-    contextManifest,
-    contextBusy,
-    contextError,
     handleSaveContext,
     handleAddToContext,
     handleSetLaneParent,
@@ -284,11 +292,6 @@ export function App(): JSX.Element {
 
   const [activeRightTab, setActiveRightTab] = useState<RightTabKey>("chat");
 
-  // Promote a tree directory into a new lane in the current casefile.
-  // Defaults to `kind: "repo"` because that's by far the dominant case
-  // for "I dragged this folder over from the file tree" — non-repo
-  // lanes are usually created up-front via the LanesTab, where the
-  // full kind picker is exposed. Users can change kind later.
   const handleCreateLaneFromPath = useCallback(
     async (path: string, name: string) => {
       try {
@@ -298,10 +301,6 @@ export function App(): JSX.Element {
           root: path,
         });
         setCasefile(snapshot);
-        // Jump to the Lanes tab so the user sees the newly-registered
-        // lane and can edit kind / parent / attachments without
-        // hunting for it.
-        setActiveRightTab("lanes");
       } catch (error) {
         setTreeError(errorMessage(error));
         throw error;
@@ -314,18 +313,13 @@ export function App(): JSX.Element {
   // `updateLaneAttachments` is a full-replacement contract, so we
   // re-derive the existing list from the current snapshot instead of
   // assuming caller-side state is fresh.
-  const handleAttachToActiveLane = useCallback(
-    async (path: string, name: string) => {
-      if (!casefile || !activeLaneId) return;
-      const lane = casefile.lanes.find((l) => l.id === activeLaneId);
+  const handleAttachToLane = useCallback(
+    async (path: string, laneId: string, name: string) => {
+      const lane = casefile?.lanes.find((l) => l.id === laneId);
       if (!lane) return;
       const existing: LaneAttachmentInput[] = (lane.attachments ?? []).map(
         (a) => ({ name: a.name, root: a.root })
       );
-      // Reject duplicates client-side with a clear message instead of
-      // letting the bridge's "duplicate attachment name" error surface
-      // through the generic catch — gives the user a chance to retry
-      // with a different prefix without losing context.
       if (existing.some((a) => a.name === name)) {
         setTreeError(
           `Lane "${lane.name}" already has an attachment named "${name}".`
@@ -333,7 +327,7 @@ export function App(): JSX.Element {
         return;
       }
       try {
-        await handleUpdateLaneAttachments(activeLaneId, [
+        await handleUpdateLaneAttachments(laneId, [
           ...existing,
           { name, root: path },
         ]);
@@ -341,18 +335,189 @@ export function App(): JSX.Element {
         // handleUpdateLaneAttachments already surfaces via setTreeError.
       }
     },
-    [activeLaneId, casefile, handleUpdateLaneAttachments]
+    [casefile, handleUpdateLaneAttachments]
   );
 
-  // Trigger a comparison from the FileTree's "Compare with…" picker.
-  // Switches to the Lanes tab so the user sees the diff result; the
-  // existing AppShell auto-switch effect will then route them back to
-  // the chat tab as soon as they open the comparison-chat session.
+  const handleRemoveAttachment = useCallback(
+    async (laneId: string, attName: string) => {
+      const lane = casefile?.lanes.find((l) => l.id === laneId);
+      if (!lane) return;
+      const updated: LaneAttachmentInput[] = (lane.attachments ?? [])
+        .filter((a) => a.name !== attName)
+        .map((a) => ({ name: a.name, root: a.root, mode: a.mode }));
+      try {
+        await handleUpdateLaneAttachments(laneId, updated);
+      } catch {
+        // Error surfaces via setTreeError in handleUpdateLaneAttachments.
+      }
+    },
+    [casefile, handleUpdateLaneAttachments]
+  );
+
+  const handleSetAttachmentMode = useCallback(
+    async (laneId: string, attName: string, mode: AttachmentMode) => {
+      const lane = casefile?.lanes.find((l) => l.id === laneId);
+      if (!lane) return;
+      const updated: LaneAttachmentInput[] = (lane.attachments ?? []).map((a) =>
+        a.name === attName ? { name: a.name, root: a.root, mode } : { name: a.name, root: a.root, mode: a.mode }
+      );
+      try {
+        await handleUpdateLaneAttachments(laneId, updated);
+      } catch {
+        // Error surfaces via setTreeError in handleUpdateLaneAttachments.
+      }
+    },
+    [casefile, handleUpdateLaneAttachments]
+  );
+
+  // ----- Menu-bar IPC handlers -----
+  // The Lane menu (main.js) sends IPC messages. Each handler carries out
+  // the full dialog flow (directory picker → name prompt → register/update).
+  // `promptGlobal` renders a global InputDialog in the App's JSX since
+  // FileTree's promptForInput is not accessible here.
+
+  useEffect(() => {
+    const unsub = api().onOpenCasefile(handleChooseCasefile);
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const unsub = api().onLaneCreate(async () => {
+      if (!casefile) return;
+      const root = await handleChooseLaneRoot();
+      if (!root) return;
+      const defaultName = root.split(/[\\/]/).pop() ?? "lane";
+      const name = await promptGlobal({
+        title: "Create lane",
+        message: "Name for the new lane.",
+        defaultValue: defaultName,
+        confirmLabel: "Create lane",
+      });
+      if (!name?.trim()) return;
+      try {
+        await handleCreateLaneFromPath(root, name.trim());
+      } catch {
+        // surfaced via setTreeError
+      }
+    });
+    return unsub;
+  // handleChooseLaneRoot and handleCreateLaneFromPath are stable useCallback refs.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [casefile, promptGlobal]);
+
+  useEffect(() => {
+    const unsub = api().onLaneAttach(async () => {
+      if (!casefile || casefile.lanes.length === 0) return;
+      const root = await handleChooseLaneRoot();
+      if (!root) return;
+      // Ask which lane to attach to.
+      const laneNames = casefile.lanes.map((l) => l.name).join(" / ");
+      const laneName = await promptGlobal({
+        title: "Attach to lane",
+        message: `Enter the lane name to attach to (${laneNames}):`,
+        defaultValue: casefile.lanes[0]?.name ?? "",
+        confirmLabel: "Next",
+      });
+      if (!laneName?.trim()) return;
+      const targetLane = casefile.lanes.find(
+        (l) => l.name.toLowerCase() === laneName.trim().toLowerCase()
+      );
+      if (!targetLane) {
+        setTreeError(`No lane named "${laneName.trim()}".`);
+        return;
+      }
+      const defaultLabel = root.split(/[\\/]/).pop() ?? "attachment";
+      const label = await promptGlobal({
+        title: `Attach to "${targetLane.name}"`,
+        message: "Attachment label — how this directory will be referenced in scope.",
+        defaultValue: defaultLabel,
+        confirmLabel: "Attach",
+      });
+      if (!label?.trim()) return;
+      try {
+        await handleAttachToLane(root, targetLane.id, label.trim());
+      } catch {
+        // surfaced via setTreeError
+      }
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [casefile, promptGlobal]);
+
+  useEffect(() => {
+    const unsub = api().onLaneRename(async () => {
+      if (!activeLane) return;
+      const name = await promptGlobal({
+        title: "Rename lane",
+        message: "Enter the new lane name.",
+        defaultValue: activeLane.name,
+        confirmLabel: "Rename",
+      });
+      if (!name?.trim() || name.trim() === activeLane.name) return;
+      try {
+        await handleUpdateLane(activeLane.id, { name: name.trim() });
+      } catch {
+        // surfaced via setTreeError
+      }
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLane, promptGlobal]);
+
+  useEffect(() => {
+    const unsub = api().onLaneToggleAccess(() => {
+      if (!activeLane) return;
+      const isWritable = activeLane.writable !== false;
+      void handleUpdateLane(activeLane.id, { writable: !isWritable });
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLane]);
+
+  useEffect(() => {
+    const unsub = api().onLaneRemove(() => {
+      if (!activeLane) return;
+      const ok = window.confirm(
+        `Remove lane "${activeLane.name}"?\n\nThis removes it from the casefile but does not delete any files.`
+      );
+      if (!ok) return;
+      void handleRemoveLane(activeLane.id);
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLane]);
+
+  useEffect(() => {
+    const unsub = api().onCasefileSoftReset(() => {
+      if (!casefile) return;
+      const ok = window.confirm(
+        "Soft reset clears lane registrations and chat history metadata. Files on disk are preserved."
+      );
+      if (!ok) return;
+      void handleSoftResetCasefile(false);
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [casefile]);
+
+  useEffect(() => {
+    const unsub = api().onCasefileHardReset(() => {
+      if (!casefile) return;
+      const ok = window.confirm(
+        "Hard reset deletes the entire .casefile metadata folder.\n\nConversation history, lane registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
+      );
+      if (!ok) return;
+      void handleHardResetCasefile();
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [casefile]);
+
   const handleStartLaneComparisonFromTree = useCallback(
     async (selfLaneId: string, otherLaneId: string) => {
       try {
         await handleCompareLanes(selfLaneId, otherLaneId);
-        setActiveRightTab("lanes");
       } catch (error) {
         setTreeError(errorMessage(error));
         throw error;
@@ -456,7 +621,7 @@ export function App(): JSX.Element {
         model: providerModels[provider] || null,
         messages: historyBeforeTurn,
         userMessage: "",
-        allowWriteTools: true,
+        allowWriteTools: activeLane?.writable !== false,
         resumePendingToolCalls: true,
         systemPromptId: selectedPromptId,
       });
@@ -542,24 +707,6 @@ export function App(): JSX.Element {
       chatBusy,
       activePromptName,
       comparisonChatBusy,
-      noteState: {
-        content: noteState.content,
-        loading: noteState.loading,
-        saving: noteState.saving,
-        error: noteState.error,
-      },
-      comparison,
-      comparisonBusy,
-      contextManifest,
-      contextBusy,
-      contextError,
-      prompts,
-      promptsLoading,
-      promptsError,
-      selectedPromptId,
-      inboxSources,
-      inboxLoading,
-      inboxError,
       activeRightTab,
     },
     actions: {
@@ -578,7 +725,7 @@ export function App(): JSX.Element {
       onMoveEntry: handleMoveEntry,
       onTrashEntry: handleTrashEntry,
       onCreateLaneFromPath: handleCreateLaneFromPath,
-      onAttachToActiveLane: handleAttachToActiveLane,
+      onAttachToLane: handleAttachToLane,
       onStartLaneComparison: handleStartLaneComparisonFromTree,
       onActiveRightTabChange: setActiveRightTab,
       onSelectTab: handleSelectTab,
@@ -592,7 +739,6 @@ export function App(): JSX.Element {
       onApproveTools: approveTools,
       onDenyTools: denyTools,
       onSendComparisonChat: sendComparisonChat,
-      onNoteChange: handleNoteChange,
       onRegisterLane: handleRegisterLane,
       onChooseLaneRoot: handleChooseLaneRoot,
       onCompareLanes: handleCompareLanes,
@@ -608,17 +754,38 @@ export function App(): JSX.Element {
       onHardResetCasefile: handleHardResetCasefile,
       onSoftResetCasefile: handleSoftResetCasefile,
       onSelectPromptForChat: handleSelectPromptForChat,
-      onCreatePrompt: handleCreatePrompt,
-      onSavePrompt: handleSavePrompt,
-      onDeletePrompt: handleDeletePrompt,
-      onLoadPrompt: handleLoadPrompt,
-      onAddInboxSource: handleAddInboxSource,
-      onRemoveInboxSource: handleRemoveInboxSource,
-      onChooseInboxRoot: handleChooseInboxRoot,
-      onListInboxItems: handleListInboxItems,
-      onReadInboxItem: handleReadInboxItem,
+      onUpdateLaneName: async (laneId: string, newName: string) => {
+        await handleUpdateLane(laneId, { name: newName });
+      },
+      onSetLaneWritable: async (laneId: string, writable: boolean) => {
+        await handleUpdateLane(laneId, { writable });
+      },
+      onRemoveAttachment: handleRemoveAttachment,
+      onSetAttachmentMode: handleSetAttachmentMode,
     },
   });
 
-  return <AppShell {...shellProps} />;
+  return (
+    <>
+      <AppShell {...shellProps} />
+      {globalDialog && (
+        <InputDialog
+          title={globalDialog.title}
+          message={globalDialog.message}
+          defaultValue={globalDialog.defaultValue}
+          confirmLabel={globalDialog.confirmLabel}
+          onSubmit={(value) => {
+            const resolve = globalDialog.resolve;
+            setGlobalDialog(null);
+            resolve(value);
+          }}
+          onCancel={() => {
+            const resolve = globalDialog.resolve;
+            setGlobalDialog(null);
+            resolve(null);
+          }}
+        />
+      )}
+    </>
+  );
 }

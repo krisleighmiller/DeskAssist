@@ -88,7 +88,7 @@ export type LaneKind = "repo" | "doc" | "rubric" | "review" | "other";
 
 export const LANE_KINDS: readonly LaneKind[] = ["repo", "doc", "rubric", "review", "other"];
 
-export type AttachmentMode = "read";
+export type AttachmentMode = "read" | "write";
 
 export interface LaneAttachmentDto {
   name: string;
@@ -103,8 +103,11 @@ export interface Lane {
   root: string;
   /** M3.5: parent lane id; null/undefined means top-level. */
   parentId?: string | null;
-  /** M3.5: read-only sibling directories travelling with this lane. */
+  /** M3.5: sibling directories travelling with this lane. */
   attachments?: LaneAttachmentDto[];
+  /** M2.5: whether the AI has write access to this lane's root directory.
+   * Defaults to true. Set to false to make this lane a read-only reference context. */
+  writable?: boolean;
 }
 
 export interface CasefileSnapshot {
@@ -116,6 +119,7 @@ export interface CasefileSnapshot {
 export interface LaneAttachmentInput {
   name: string;
   root: string;
+  mode?: AttachmentMode;
 }
 
 export interface RegisterLaneInput {
@@ -125,6 +129,7 @@ export interface RegisterLaneInput {
   id?: string;
   parentId?: string | null;
   attachments?: LaneAttachmentInput[];
+  writable?: boolean;
 }
 
 // M4.6: every field is independently optional. Omitting a field means
@@ -134,6 +139,8 @@ export interface LaneUpdateInput {
   name?: string;
   kind?: LaneKind;
   root?: string;
+  /** M2.5: toggle AI write access for this lane's root directory. */
+  writable?: boolean;
 }
 
 // M4.6: `casefile:updateLane` may surface a non-blocking "another lane
@@ -156,17 +163,17 @@ export interface ContextManifestDto {
   resolved: ContextResolvedFileDto[];
 }
 
-export interface ReadOverlayDto {
-  prefix: string;
-  root: string;
+export interface ScopedDirectoryDto {
+  path: string;
   label: string;
+  writable: boolean;
 }
 
 export interface ScopeDto {
   laneId: string;
   writeRoot: string;
   casefileRoot: string;
-  readOverlays: ReadOverlayDto[];
+  directories: ScopedDirectoryDto[];
   contextFiles: ContextResolvedFileDto[];
   autoIncludeMaxBytes: number;
 }
@@ -444,6 +451,17 @@ export interface AssistantApi {
    * process menu (View → Toggle Integrated Terminal, accelerator
    * `CmdOrCtrl+\``). Returns an unsubscribe function. */
   onToggleTerminal: (handler: () => void) => () => void;
+
+  /** Menu-bar → renderer: Lane management triggers. Each returns an
+   * unsubscribe function for use in useEffect teardowns. */
+  onOpenCasefile: (handler: () => void) => () => void;
+  onLaneCreate: (handler: () => void) => () => void;
+  onLaneAttach: (handler: () => void) => () => void;
+  onLaneRename: (handler: () => void) => () => void;
+  onLaneToggleAccess: (handler: () => void) => () => void;
+  onLaneRemove: (handler: () => void) => () => void;
+  onCasefileSoftReset: (handler: () => void) => () => void;
+  onCasefileHardReset: (handler: () => void) => () => void;
 
   /** Subscribe to filesystem-change notifications for the active
    * casefile root and any overlay roots registered via

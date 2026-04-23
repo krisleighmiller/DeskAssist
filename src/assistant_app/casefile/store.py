@@ -197,6 +197,7 @@ class CasefileStore:
         lane_id: str | None = None,
         parent_id: str | None = None,
         attachments: Iterable[LaneAttachment] | None = None,
+        writable: bool = True,
     ) -> CasefileSnapshot:
         """Add a new lane and return the updated snapshot.
 
@@ -235,6 +236,7 @@ class CasefileStore:
             root=resolved_root,
             parent_id=resolved_parent,
             attachments=resolved_attachments,
+            writable=writable,
         )
         new_lanes = list(snapshot.lanes) + [lane]
         active = snapshot.active_lane_id or lane.id
@@ -312,8 +314,9 @@ class CasefileStore:
         name: str | None = None,
         kind: str | None = None,
         root: Path | None = None,
+        writable: bool | None = None,
     ) -> CasefileSnapshot:
-        """Update a lane's `name` / `kind` / `root` in place.
+        """Update a lane's `name` / `kind` / `root` / `writable` in place.
 
         Each kwarg is independently optional: ``None`` means "leave the
         field unchanged". The lane id, parent, and attachments are
@@ -345,6 +348,7 @@ class CasefileStore:
             new_root = resolved
         else:
             new_root = target.root
+        new_writable = target.writable if writable is None else bool(writable)
         replaced = Lane(
             id=target.id,
             name=new_name,
@@ -352,6 +356,7 @@ class CasefileStore:
             root=new_root,
             parent_id=target.parent_id,
             attachments=target.attachments,
+            writable=new_writable,
         )
         new_lanes = [replaced if lane.id == lane_id else lane for lane in snapshot.lanes]
         self._write_lanes_file(new_lanes, active_lane_id=snapshot.active_lane_id)
@@ -604,11 +609,14 @@ class CasefileStore:
             root_repr = rel.as_posix() or "."
         except ValueError:
             root_repr = str(attachment.root)
-        return {
+        result: dict[str, Any] = {
             "name": attachment.name,
             "root": root_repr,
-            "mode": attachment.mode,
         }
+        # Only write mode when it differs from the default to keep JSON minimal.
+        if attachment.mode != DEFAULT_ATTACHMENT_MODE:
+            result["mode"] = attachment.mode
+        return result
 
     def _write_lanes_file(self, lanes: list[Lane], active_lane_id: str | None) -> None:
         # Lane roots are written *relative to the casefile root* whenever they
@@ -629,6 +637,10 @@ class CasefileStore:
                 "parent_id": lane.parent_id,
                 "attachments": [self._serialize_attachment(a) for a in lane.attachments],
             }
+            # Only write `writable` when it differs from the default (True)
+            # to keep existing lane files forward-compatible.
+            if not lane.writable:
+                entry["writable"] = False
             serialized_lanes.append(entry)
         payload = {
             "version": LANES_FILE_VERSION,
@@ -690,10 +702,11 @@ class CasefileStore:
                         LaneAttachment(
                             name=normalized_name,
                             root=self._resolve_lane_root(Path(att_root)),
-                            mode=DEFAULT_ATTACHMENT_MODE,
+                            mode="write" if raw_att.get("mode") == "write" else DEFAULT_ATTACHMENT_MODE,
                         )
                     )
                 attachments = tuple(parsed)
+        writable = bool(entry.get("writable", True))
         return Lane(
             id=lane_id,
             name=name,
@@ -701,6 +714,7 @@ class CasefileStore:
             root=resolved_root,
             parent_id=parent_id,
             attachments=attachments,
+            writable=writable,
         )
 
     def resolve_lane_root(self, root: Path) -> Path:

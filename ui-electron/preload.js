@@ -113,6 +113,51 @@ contextBridge.exposeInMainWorld("assistantApi", {
     return () => ipcRenderer.removeListener("app:toggle-terminal", wrapped);
   },
 
+  // Menu-bar → renderer: lane management actions.
+  // Each returns an unsubscribe function so callers can clean up in
+  // useEffect teardowns. The renderer handles the dialog/prompt flow
+  // (main has no access to per-lane state; it just fires the trigger).
+  onOpenCasefile: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:open-casefile", wrapped);
+    return () => ipcRenderer.removeListener("app:open-casefile", wrapped);
+  },
+  onLaneCreate: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:lane:create", wrapped);
+    return () => ipcRenderer.removeListener("app:lane:create", wrapped);
+  },
+  onLaneAttach: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:lane:attach", wrapped);
+    return () => ipcRenderer.removeListener("app:lane:attach", wrapped);
+  },
+  onLaneRename: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:lane:rename", wrapped);
+    return () => ipcRenderer.removeListener("app:lane:rename", wrapped);
+  },
+  onLaneToggleAccess: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:lane:toggle-access", wrapped);
+    return () => ipcRenderer.removeListener("app:lane:toggle-access", wrapped);
+  },
+  onLaneRemove: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:lane:remove", wrapped);
+    return () => ipcRenderer.removeListener("app:lane:remove", wrapped);
+  },
+  onCasefileSoftReset: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:casefile:soft-reset", wrapped);
+    return () => ipcRenderer.removeListener("app:casefile:soft-reset", wrapped);
+  },
+  onCasefileHardReset: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:casefile:hard-reset", wrapped);
+    return () => ipcRenderer.removeListener("app:casefile:hard-reset", wrapped);
+  },
+
   // Filesystem-watcher events from main: emitted whenever the active
   // casefile root or any of its overlay roots is mutated (by the user
   // via the editor, by the assistant via tools, or by an external

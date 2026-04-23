@@ -1,13 +1,12 @@
-"""Tests for `casefile.scope.resolve_scope` (M3.5a)."""
+"""Tests for `casefile.scope.resolve_scope` (M3.5a → M2.5 flat scope model)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from assistant_app.casefile import (
-    ANCESTOR_PREFIX,
-    ATTACHMENT_PREFIX,
     CONTEXT_PREFIX,
+    SCOPE_PREFIX,
     CasefileStore,
     ContextManifest,
     ContextManifestStore,
@@ -51,36 +50,52 @@ def _setup(tmp_path: Path):
     return family_root, store
 
 
-def test_root_lane_has_no_overlays(tmp_path: Path):
+def test_root_lane_has_no_read_overlays(tmp_path: Path):
+    """Root lane has only its own writable directory; no _scope entries."""
     family_root, store = _setup(tmp_path)
     snapshot = store.load_snapshot()
     scope = resolve_scope(snapshot, "main")
-    assert scope.read_overlays == ()
+    # Only the write root; no read-only _scope directories.
+    assert all(d.writable for d in scope.directories)
     assert scope.write_root == family_root.resolve()
+    overlay_map = scope.overlay_map()
+    # No _scope/… keys (write root isn't in the overlay map)
+    assert not any(k.startswith(SCOPE_PREFIX) for k in overlay_map)
 
 
-def test_child_lane_inherits_ancestor_roots(tmp_path: Path):
+def test_child_lane_has_flat_scope_labels(tmp_path: Path):
+    """Ash lane's scope is flat: own write root + attachment + ancestors under _scope/."""
     family_root, store = _setup(tmp_path)
     snapshot = store.load_snapshot()
     scope = resolve_scope(snapshot, "ash")
-    prefixes = [overlay.prefix for overlay in scope.read_overlays]
-    # Order: own attachment first, then nearest ancestor (task-9), then 'main'.
-    assert prefixes[0] == f"{ATTACHMENT_PREFIX}/notes"
-    assert f"{ANCESTOR_PREFIX}/task-9" in prefixes
-    assert f"{ANCESTOR_PREFIX}/main" in prefixes
-    assert prefixes.index(f"{ANCESTOR_PREFIX}/task-9") < prefixes.index(
-        f"{ANCESTOR_PREFIX}/main"
-    )
+    # Should have writable directory for ash, plus read-only for notes, task_9, main.
+    labels = [d.label for d in scope.directories]
+    assert scope.directories[0].writable, "first directory must be the write root"
+    read_labels = [d.label for d in scope.directories if not d.writable]
+    # All labels must be unique.
+    assert len(read_labels) == len(set(read_labels))
+    # Notes attachment must be present.
+    assert "notes" in read_labels
+    # Ancestor lanes (task_9, main) must be present in some form.
+    assert any(lbl.startswith("task") for lbl in read_labels), read_labels
+    assert any(lbl.startswith("main") for lbl in read_labels), read_labels
+    # Order: attachment first, then task-9, then main.
+    idx = {lbl: i for i, lbl in enumerate(labels)}
+    notes_i = idx.get("notes")
+    task_i = next(i for lbl, i in idx.items() if lbl.startswith("task"))
+    main_i = next(i for lbl, i in idx.items() if lbl.startswith("main"))
+    assert notes_i is not None
+    assert notes_i < task_i < main_i
 
 
-def test_sibling_lanes_are_not_in_overlays(tmp_path: Path):
-    """Cross-sibling isolation from M2 must survive: 'ash' should not see 'elm'."""
+def test_sibling_lanes_are_not_in_scope(tmp_path: Path):
+    """Cross-sibling isolation: 'ash' must not see 'elm'."""
     _, store = _setup(tmp_path)
     snapshot = store.load_snapshot()
     scope = resolve_scope(snapshot, "ash")
-    overlay_roots = {overlay.root for overlay in scope.read_overlays}
     elm_root = snapshot.lane_by_id("elm").root
-    assert elm_root not in overlay_roots
+    scope_paths = {d.path for d in scope.directories}
+    assert elm_root not in scope_paths
 
 
 def test_context_files_resolved_with_size(tmp_path: Path):
@@ -121,6 +136,19 @@ def test_overlay_map_includes_context_when_files_present(tmp_path: Path):
     overlay_map = scope.overlay_map()
     assert CONTEXT_PREFIX in overlay_map
     assert overlay_map[CONTEXT_PREFIX] == family_root.resolve()
+
+
+def test_overlay_map_uses_scope_prefix_for_read_only_dirs(tmp_path: Path):
+    """Read-only directories should appear under `_scope/<label>/` in the overlay map."""
+    _, store = _setup(tmp_path)
+    snapshot = store.load_snapshot()
+    scope = resolve_scope(snapshot, "ash")
+    overlay_map = scope.overlay_map()
+    # Every key should start with _scope/ or _context/ — no _ancestors, no _attachments.
+    for key in overlay_map:
+        assert key.startswith(SCOPE_PREFIX + "/") or key == CONTEXT_PREFIX, (
+            f"Unexpected overlay key: {key}"
+        )
 
 
 def test_glob_patterns_resolve(tmp_path: Path):

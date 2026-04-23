@@ -13,6 +13,8 @@ export interface FileTreeLaneInfo {
   id: string;
   name: string;
   root: string;
+  /** M2.5: whether this lane has AI write access. Undefined/true means writable. */
+  writable?: boolean;
 }
 
 interface FileTreeProps {
@@ -89,12 +91,31 @@ interface FileTreeProps {
   /** Register the right-clicked directory as a new lane in the open
    * casefile. The parent owns the registration form / dialog. */
   onCreateLaneFromPath?: (path: string, defaultName: string) => Promise<void> | void;
-  /** Attach the right-clicked directory to the active lane as a
-   * read-only overlay under the chosen prefix. */
-  onAttachToActiveLane?: (path: string, defaultName: string) => Promise<void> | void;
+  /** Attach the right-clicked directory to any lane the user selects.
+   * A secondary lane-picker menu is shown before the label prompt.
+   * M2.5: replaces the old single-target `onAttachToActiveLane`. */
+  onAttachToLane?: (path: string, laneId: string, name: string) => Promise<void> | void;
   /** Start a comparison between two lanes. Invoked when the user picks
    * a target lane from the "Compare with…" sub-menu. */
   onStartLaneComparison?: (selfLaneId: string, otherLaneId: string) => Promise<void> | void;
+  /** Switch the active lane to the lane whose root was right-clicked.
+   * Added in M2.5 so lane switching works without the Lanes tab. */
+  onSwitchLane?: (laneId: string) => void | Promise<void>;
+  /** Rename the lane whose root was right-clicked.
+   * Added in M2.5 so lane editing works without the Lanes tab. */
+  onUpdateLaneName?: (laneId: string, newName: string) => Promise<void> | void;
+  /** Remove the lane whose root was right-clicked.
+   * Added in M2.5 so lane removal works without the Lanes tab. */
+  onRemoveLane?: (laneId: string) => Promise<void> | void;
+  /** Toggle the AI write access for the lane whose root was right-clicked.
+   * M2.5: per-directory read/write permissions. */
+  onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void> | void;
+  /** Reset the casefile metadata (soft reset — keeps data files on disk).
+   * M2.5: restored from LanesTab. */
+  onSoftResetCasefile?: () => Promise<void> | void;
+  /** Hard-reset the casefile metadata directory entirely.
+   * M2.5: restored from LanesTab. */
+  onHardResetCasefile?: () => Promise<void> | void;
 }
 
 function compareNodes(a: FileTreeNode, b: FileTreeNode): number {
@@ -446,8 +467,14 @@ export function FileTree({
   onMoveEntry,
   onTrashEntry,
   onCreateLaneFromPath,
-  onAttachToActiveLane,
+  onAttachToLane,
   onStartLaneComparison,
+  onSwitchLane,
+  onUpdateLaneName,
+  onRemoveLane,
+  onSetLaneWritable,
+  onSoftResetCasefile,
+  onHardResetCasefile,
 }: FileTreeProps): JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -1146,15 +1173,14 @@ export function FileTree({
       !laneRootByPath.has(menu.node.path)
         ? [
             {
-              label: "Create lane from this folder…",
+              label: "Create lane here…",
               onSelect: () => {
                 const target = menu.node;
                 const defaultName = target.name;
                 void (async () => {
                   const name = await promptForInput({
                     title: "Create lane",
-                    message:
-                      'New lane name. Kind defaults to "repo"; edit later from the Lanes tab.',
+                    message: "Name for the new lane.",
                     defaultValue: defaultName,
                     confirmLabel: "Create lane",
                   });
@@ -1173,40 +1199,193 @@ export function FileTree({
             },
           ]
         : []),
-      ...(onAttachToActiveLane &&
-      activeLaneId &&
+      // "Set as active lane" — on a lane-root directory that is NOT the
+      // currently active lane.
+      ...(onSwitchLane &&
       !multi &&
       menu.node.type === "dir" &&
-      !menu.node.path.startsWith("_") &&
-      // Skip if the target IS the active lane's own root — attaching a
-      // lane to itself is meaningless. Sub-directories of the active
-      // lane are still allowed: they let the user pin a specific
-      // sub-tree as a named overlay even though it's already in scope.
-      !(activeLaneRoot && menu.node.path === activeLaneRoot)
+      laneRootByPath.has(menu.node.path)
+        ? (() => {
+            const laneId = laneIdAtPath(menu.node.path);
+            const alreadyActive = laneId === activeLaneId;
+            if (!laneId || alreadyActive) return [];
+            return [
+              {
+                label: "Set as active lane",
+                onSelect: () => {
+                  void Promise.resolve(onSwitchLane(laneId)).catch((err) => {
+                    console.error("FileTree switch lane failed:", err);
+                  });
+                },
+              },
+            ];
+          })()
+        : []),
+      // "Rename lane…" — on a lane-root directory.
+      ...(onUpdateLaneName &&
+      !multi &&
+      menu.node.type === "dir" &&
+      laneRootByPath.has(menu.node.path)
+        ? (() => {
+            const laneId = laneIdAtPath(menu.node.path);
+            const currentLaneName = laneRootByPath.get(menu.node.path) ?? "";
+            if (!laneId) return [];
+            return [
+              {
+                label: "Rename lane…",
+                onSelect: () => {
+                  void (async () => {
+                    const name = await promptForInput({
+                      title: "Rename lane",
+                      message: "Enter the new lane name.",
+                      defaultValue: currentLaneName,
+                      confirmLabel: "Rename",
+                    });
+                    if (name == null) return;
+                    const trimmed = name.trim();
+                    if (!trimmed || trimmed === currentLaneName) return;
+                    try {
+                      await Promise.resolve(onUpdateLaneName(laneId, trimmed));
+                    } catch (err) {
+                      console.error("FileTree rename lane failed:", err);
+                    }
+                  })();
+                },
+              },
+            ];
+          })()
+        : []),
+      // "Remove lane" — on a lane-root directory.
+      ...(onRemoveLane &&
+      !multi &&
+      menu.node.type === "dir" &&
+      laneRootByPath.has(menu.node.path)
+        ? (() => {
+            const laneId = laneIdAtPath(menu.node.path);
+            const laneName = laneRootByPath.get(menu.node.path) ?? "";
+            if (!laneId) return [];
+            return [
+              {
+                label: "Remove lane",
+                onSelect: () => {
+                  const ok = window.confirm(
+                    `Remove lane "${laneName}"?\n\nThis removes it from the casefile but does not delete any files.`
+                  );
+                  if (!ok) return;
+                  void Promise.resolve(onRemoveLane(laneId)).catch((err) => {
+                    console.error("FileTree remove lane failed:", err);
+                  });
+                },
+              },
+            ];
+          })()
+        : []),
+      // "Set as read-only" / "Set as writable" — on a lane-root directory.
+      ...(onSetLaneWritable &&
+      !multi &&
+      menu.node.type === "dir" &&
+      laneRootByPath.has(menu.node.path)
+        ? (() => {
+            const laneId = laneIdAtPath(menu.node.path);
+            if (!laneId) return [];
+            const lane = lanes?.find((l) => l.id === laneId);
+            const currentlyWritable = lane ? (lane.writable !== false) : true;
+            return [
+              {
+                label: currentlyWritable ? "Set AI access: read-only" : "Set AI access: writable",
+                onSelect: () => {
+                  void Promise.resolve(onSetLaneWritable(laneId, !currentlyWritable)).catch(
+                    (err) => { console.error("FileTree set lane writable failed:", err); }
+                  );
+                },
+              },
+            ];
+          })()
+        : []),
+      // Casefile reset actions — on the casefile root node.
+      ...((onSoftResetCasefile || onHardResetCasefile) &&
+      !multi &&
+      menu.node.type === "dir" &&
+      casefileRoot &&
+      menu.node.path === casefileRoot
+        ? [
+            ...(onSoftResetCasefile
+              ? [
+                  {
+                    label: "Reset casefile (soft)…",
+                    onSelect: () => {
+                      const ok = window.confirm(
+                        "Soft reset clears lane registrations and chat history metadata. Files on disk are preserved."
+                      );
+                      if (!ok) return;
+                      void Promise.resolve(onSoftResetCasefile()).catch((err) => {
+                        console.error("FileTree soft reset failed:", err);
+                      });
+                    },
+                  },
+                ]
+              : []),
+            ...(onHardResetCasefile
+              ? [
+                  {
+                    label: "Hard reset casefile…",
+                    onSelect: () => {
+                      const ok = window.confirm(
+                        "Hard reset deletes the entire .casefile metadata folder.\n\nConversation history, lane registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
+                      );
+                      if (!ok) return;
+                      void Promise.resolve(onHardResetCasefile()).catch((err) => {
+                        console.error("FileTree hard reset failed:", err);
+                      });
+                    },
+                  },
+                ]
+              : []),
+          ]
+        : []),
+      ...(onAttachToLane &&
+      lanes &&
+      lanes.length > 0 &&
+      !multi &&
+      menu.node.type === "dir" &&
+      !menu.node.path.startsWith("_")
         ? [
             {
-              label: "Attach to current lane…",
+              label: "Attach to lane…",
               onSelect: () => {
                 const target = menu.node;
-                const defaultPrefix = target.name;
-                void (async () => {
-                  const prefix = await promptForInput({
-                    title: `Attach "${target.name}"`,
-                    message: `Attachment prefix (shown under _attachments/<prefix>).`,
-                    defaultValue: defaultPrefix,
-                    confirmLabel: "Attach",
-                  });
-                  if (prefix == null) return;
-                  const trimmed = prefix.trim();
-                  if (!trimmed) return;
-                  try {
-                    await Promise.resolve(
-                      onAttachToActiveLane(target.path, trimmed)
-                    );
-                  } catch (err) {
-                    console.error("FileTree attach failed:", err);
-                  }
-                })();
+                const attachableLanes = lanes.filter(
+                  (l) => l.root !== target.path
+                );
+                if (attachableLanes.length === 0) return;
+                // Build a picker that lists every lane the user can attach to.
+                const pickerItems: ContextMenuItem[] = attachableLanes.map(
+                  (lane) => ({
+                    label: lane.name,
+                    onSelect: () => {
+                      void (async () => {
+                        const label = await promptForInput({
+                          title: `Attach "${target.name}" to "${lane.name}"`,
+                          message:
+                            "Attachment label — how this directory will be referenced in the lane's scope.",
+                          defaultValue: target.name,
+                          confirmLabel: "Attach",
+                        });
+                        if (label == null) return;
+                        const trimmed = label.trim();
+                        if (!trimmed) return;
+                        try {
+                          await Promise.resolve(
+                            onAttachToLane(target.path, lane.id, trimmed)
+                          );
+                        } catch (err) {
+                          console.error("FileTree attach to lane failed:", err);
+                        }
+                      })();
+                    },
+                  })
+                );
+                setPickerMenu({ x: menu.x, y: menu.y, items: pickerItems });
               },
             },
           ]

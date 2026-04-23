@@ -21,6 +21,7 @@ from assistant_app.casefile.models import (
     LaneAttachment,
     LaneKind,
     LANE_KINDS,
+    ScopedDirectory,
 )
 from assistant_app.casefile.inbox import (
     DEFAULT_INBOX_READ_MAX_CHARS,
@@ -47,11 +48,8 @@ from assistant_app.casefile.prompts import (
     slug_from_name as prompt_slug_from_name,
 )
 from assistant_app.casefile.scope import (
-    ANCESTOR_PREFIX,
-    ATTACHMENT_PREFIX,
     CONTEXT_PREFIX,
-    LANES_PREFIX,
-    ReadOverlay,
+    SCOPE_PREFIX,
     ScopeContext,
     comparison_id_for_lanes,
     resolve_comparison_scope,
@@ -61,8 +59,6 @@ from assistant_app.casefile.service import CasefileService, serialize_lane
 from assistant_app.casefile.store import CasefileStore, LanesFileError, normalize_attachment_name
 
 __all__ = [
-    "ANCESTOR_PREFIX",
-    "ATTACHMENT_PREFIX",
     "CONTEXT_FILE_VERSION",
     "CONTEXT_PREFIX",
     "Casefile",
@@ -85,7 +81,6 @@ __all__ = [
     "InboxItem",
     "InboxSource",
     "InboxStore",
-    "LANES_PREFIX",
     "LANE_KINDS",
     "Lane",
     "LaneAttachment",
@@ -100,9 +95,10 @@ __all__ = [
     "PromptFileError",
     "PromptSummary",
     "PromptsStore",
-    "ReadOverlay",
     "ResolvedContextFile",
+    "SCOPE_PREFIX",
     "ScopeContext",
+    "ScopedDirectory",
     "compare_lanes",
     "comparison_id_for_lanes",
     "inbox_slug_from_name",

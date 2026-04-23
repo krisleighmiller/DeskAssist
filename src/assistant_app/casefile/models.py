@@ -5,6 +5,26 @@ from pathlib import Path
 from typing import Literal
 
 
+@dataclass(slots=True, frozen=True)
+class ScopedDirectory:
+    """One directory in a scoped session.
+
+    Every directory in a session is represented this way — including the
+    primary write root.  The `writable` flag is what determines access, not
+    structural position (no more "lane root is always writable" assumption).
+
+    `label` becomes the virtual path segment the model uses to address the
+    directory (e.g. ``_scope/<label>/``).  It must be short, slug-safe, and
+    unique within the session — the scope resolver ensures uniqueness by
+    appending ``_2``, ``_3``, … when two directories would otherwise share a
+    label.
+    """
+
+    path: Path
+    label: str
+    writable: bool = False
+
+
 # Known lane kinds. Kept as a Literal so callers can rely on the name set,
 # but the store also accepts arbitrary strings (forward compatibility); see
 # `coerce_lane_kind` below.
@@ -27,24 +47,24 @@ def coerce_lane_kind(value: object) -> LaneKind:
     return "other"
 
 
-# An attachment is a sibling read-only directory that travels with a lane.
+# An attachment is a sibling directory associated with a lane.
 # Typical use: pairing analyst notes (`ash_notes/`) with the code being
 # discussed (`ash/`). Attachments are exposed to chats as virtual roots
-# (`_attachments/<name>/...`) and can never be written to.
-AttachmentMode = Literal["read"]
+# (`_scope/<name>/...`). `mode` controls whether the AI can write to them.
+AttachmentMode = Literal["read", "write"]
 DEFAULT_ATTACHMENT_MODE: AttachmentMode = "read"
 
 
 @dataclass(slots=True, frozen=True)
 class LaneAttachment:
-    """A read-only sibling directory associated with a lane.
+    """A sibling directory associated with a lane.
 
     `name` is the user-facing label and the virtual path segment the model
-    sees (`_attachments/<name>/...`). It is normalized by the store to be
-    filesystem-safe.
+    sees. It is normalized by the store to be filesystem-safe.
     `root` is an absolute directory path. It may live anywhere on disk;
     attachments are explicitly allowed to point outside the casefile.
-    `mode` is reserved for future write-attachments; M3.5a only ships "read".
+    `mode` controls AI access: "read" (default) is read-only; "write" gives
+    the AI write access to this directory.
     """
 
     name: str
@@ -66,8 +86,10 @@ class Lane:
     `parent_id` is None for top-level lanes; otherwise the id of the
     enclosing scope. Children inherit read-only access to ancestor roots
     and ancestor attachments. Cycles are forbidden by the store.
-    `attachments` is the list of sibling read-only directories that travel
-    with this lane (see `LaneAttachment`).
+    `attachments` is the list of sibling directories that travel with this
+    lane (see `LaneAttachment`).
+    `writable` controls AI write access to the lane root; True by default.
+    Setting it to False makes the lane a read-only reference context.
     """
 
     id: str
@@ -76,6 +98,7 @@ class Lane:
     root: Path
     parent_id: str | None = None
     attachments: tuple[LaneAttachment, ...] = field(default_factory=tuple)
+    writable: bool = True
 
 
 @dataclass(slots=True, frozen=True)

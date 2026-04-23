@@ -818,6 +818,62 @@ a {
 .chat-form .row {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Hint text shown next to the Send button in the composer row. */
+.chat-hint {
+  font-size: 11px;
+  color: #374151;
+  margin-right: auto;
+}
+
+/* Textarea drop-target highlight when a file is being dragged over. */
+.chat-form textarea.drop-target {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+  outline: none;
+}
+
+/* @mention file picker shown above the composer when @ is pressed. */
+.chat-mention-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #0b1220;
+  border: 1px solid #3b82f6;
+  border-radius: 6px;
+  margin: 0 10px 0;
+}
+
+.chat-mention-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #e5e7eb;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+
+.chat-mention-input::placeholder {
+  color: #4b5563;
+}
+
+.chat-mention-cancel {
+  background: transparent;
+  border: none;
+  color: #6b7280;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.chat-mention-cancel:hover {
+  color: #f87171;
 }
 
 /* Working indicator: shown both as a pill in the controls strip (always
@@ -1456,6 +1512,27 @@ button.destructive:hover:not(:disabled) {
   border: none;
   background: transparent;
   padding: 2px 0;
+}
+
+/* Scoped sessions (multi-lane) mirror compare layout */
+.chat-session.scoped {
+  padding: 0 4px 0 10px;
+}
+
+.chat-session.scoped .chat-session-main {
+  border: none;
+  background: transparent;
+  padding: 2px 0;
+}
+
+.chat-session.scoped.active {
+  background: #164e63;
+  border-color: #06b6d4;
+  color: #cffafe;
+}
+
+.chat-session.scoped.active .chat-session-kind {
+  color: #67e8f9;
 }
 
 .chat-session:hover,
@@ -2348,3 +2425,105 @@ button.destructive:hover:not(:disabled) {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ================================================================
+   Toolbar — Lane ▾ dropdown
+   ================================================================ */
+.toolbar-lane-menu-wrapper {
+  position: relative;
+}
+
+.toolbar-lane-btn {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  color: #cbd5e1;
+  font-size: 12px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.toolbar-lane-btn:hover {
+  background: #273449;
+  border-color: #4b6280;
+  color: #e2e8f0;
+}
+
+.toolbar-lane-btn[aria-expanded="true"] {
+  background: #1d4ed8;
+  border-color: #1d4ed8;
+  color: #f9fafb;
+}
+
+/* ================================================================
+   Scope header — AI scope visibility strip
+   ================================================================ */
+.scope-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-bottom: 1px solid #1f2937;
+  background: #0c1425;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.scope-header-toggle {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 11px;
+  padding: 1px 2px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.scope-header-toggle:hover {
+  color: #94a3b8;
+}
+
+.scope-header-pills {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.scope-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  border-radius: 10px;
+  padding: 1px 7px 1px 7px;
+  font-size: 11px;
+  cursor: default;
+  user-select: none;
+}
+
+.scope-pill:hover {
+  opacity: 0.85;
+}
+
+.scope-pill-rw {
+  background: rgba(29, 78, 216, 0.18);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+}
+
+.scope-pill-ro {
+  background: rgba(100, 116, 139, 0.15);
+  border: 1px solid rgba(100, 116, 139, 0.3);
+  color: #94a3b8;
+}
+
+.scope-pill-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+
