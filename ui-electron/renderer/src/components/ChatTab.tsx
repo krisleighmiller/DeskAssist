@@ -15,12 +15,37 @@ import { SaveOutputPicker, suggestSaveFilename } from "./SaveOutputPicker";
  * `compare:<id>` prefix so the two namespaces never collide. */
 export type ChatSessionId = `lane:${string}` | `compare:${string}`;
 
+const LANE_PREFIX = "lane:";
+const COMPARE_PREFIX = "compare:";
+
 export function laneSessionId(laneId: string): ChatSessionId {
-  return `lane:${laneId}`;
+  return `${LANE_PREFIX}${laneId}`;
 }
 
 export function compareSessionId(comparisonId: string): ChatSessionId {
-  return `compare:${comparisonId}`;
+  return `${COMPARE_PREFIX}${comparisonId}`;
+}
+
+/**
+ * Parse a chat session id into its kind + raw id. Centralized here
+ * with `laneSessionId` / `compareSessionId` so the encoding scheme
+ * lives in exactly one place. (Review item #15.)
+ */
+export type ParsedChatSessionId =
+  | { kind: "lane"; id: string }
+  | { kind: "compare"; id: string };
+
+export function parseChatSessionId(id: ChatSessionId): ParsedChatSessionId | null {
+  if (id.startsWith(LANE_PREFIX)) {
+    return { kind: "lane", id: id.slice(LANE_PREFIX.length) };
+  }
+  if (id.startsWith(COMPARE_PREFIX)) {
+    return { kind: "compare", id: id.slice(COMPARE_PREFIX.length) };
+  }
+  if (process.env.NODE_ENV !== "production") {
+    console.warn("Unrecognised chat session id", id);
+  }
+  return null;
 }
 
 /** Last assistant tool-call burst, used by the "working" indicator to give

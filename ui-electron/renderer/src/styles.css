@@ -366,9 +366,25 @@ a {
   outline: none;
 }
 
+.splitter-horizontal {
+  flex: 0 0 6px;
+  width: 100%;
+  cursor: row-resize;
+}
+
+.splitter-horizontal::before {
+  top: 50%;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 1px;
+}
+
 .pane-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
   border-bottom: 1px solid #1f2937;
@@ -377,6 +393,50 @@ a {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #9ca3af;
+}
+
+.pane-header-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-header-action {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.pane-collapsed-rail {
+  flex: 0 0 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 0;
+  border: none;
+  border-right: 1px solid #1f2937;
+  border-radius: 0;
+  background: #0f172a;
+  color: #9ca3af;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+
+.pane-collapsed-rail:hover {
+  background: #111827;
+  color: #e5e7eb;
+}
+
+.pane-collapsed-rail-right {
+  border-right: none;
+  border-left: 1px solid #1f2937;
 }
 
 .pane-body {
@@ -520,11 +580,28 @@ a {
 
 /* ---------- Right panel tabs ---------- */
 
+.right-panel {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .right-tabs {
   display: flex;
-  flex-wrap: wrap;
+  align-items: stretch;
+  flex: 0 0 auto;
   background: #0f172a;
   border-bottom: 1px solid #1f2937;
+}
+
+.right-tabs-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .right-tab {
@@ -553,11 +630,41 @@ a {
   border-bottom-color: #3b82f6;
 }
 
+.right-tab-action {
+  flex: 0 0 auto;
+  min-width: auto;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: #9ca3af;
+  background: transparent;
+  border: none;
+  border-left: 1px solid #1f2937;
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.right-tab-action:hover {
+  background: #111827;
+  color: #e5e7eb;
+}
+
 .right-body {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  height: 0;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.right-body > * {
+  flex: 1 1 0;
+  height: 0;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* ---------- Chat tab ---------- */
@@ -723,8 +830,10 @@ a {
 
 .notes {
   display: flex;
+  flex: 1 1 0;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   padding: 10px;
   gap: 6px;
 }
@@ -817,16 +926,24 @@ a {
 .lanes {
   display: flex;
   flex-direction: column;
+  flex: 1 1 0;
+  height: 0;
   gap: 12px;
   padding: 12px;
-  height: 100%;
-  overflow: auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
 .lanes-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
 }
 
 .lanes-title {
@@ -864,11 +981,16 @@ a {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .lane-name {
   font-weight: 600;
   color: #e5e7eb;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .lane-kind {
@@ -921,10 +1043,10 @@ a {
 
 /* When the right pane is narrow the 70px label + input + trailing button
    stops fitting on one line and the input gets clipped (the symptom the
-   user circled in the screenshot). Below ~360px container width we
-   stack the label above the input so the input always has the full
-   pane width to grow into. */
-@container lane-edit (max-width: 360px) {
+   user circled in the screenshot). We stack the label above the input a
+   bit earlier than before so the edit card remains usable while the side
+   panel is still relatively narrow. */
+@container lane-edit (max-width: 480px) {
   .lane-form-row {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1103,10 +1225,12 @@ button.destructive:hover:not(:disabled) {
 .compare-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 12px;
   border-top: 1px solid #1f2937;
   font-size: 12px;
+  min-width: 0;
 }
 
 .compare-controls .lanes-title {
@@ -1519,7 +1643,8 @@ button.destructive:hover:not(:disabled) {
   gap: 8px;
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   /* Establish an inline-size container so the form rows below can
      respond to the panel's actual width instead of the viewport. */
   container-type: inline-size;
@@ -1822,8 +1947,10 @@ button.destructive:hover:not(:disabled) {
 
 .prompts-tab {
   display: flex;
+  flex: 1 1 0;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   gap: 8px;
   padding: 8px;
 }
@@ -1960,6 +2087,7 @@ button.destructive:hover:not(:disabled) {
 /* M4.3: Inbox tab */
 .inbox-tab {
   display: flex;
+  flex: 1 1 0;
   flex-direction: column;
   height: 100%;
   gap: 8px;

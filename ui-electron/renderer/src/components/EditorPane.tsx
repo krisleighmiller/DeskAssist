@@ -5,22 +5,26 @@ import { languageFromPath } from "../lib/language";
 /**
  * The editor pane supports two kinds of tabs:
  *
- *   - `file`: a regular Monaco editor tied to a file inside the active lane.
+ *   - `file`: a regular Monaco editor tied to a file inside a lane.
  *     `path` is the absolute on-disk path; `content` is the in-memory
- *     buffer and `savedContent` is what was last persisted, so dirty state
- *     is `content !== savedContent`.
+ *     buffer and `savedContent` is what was last persisted, so dirty
+ *     state is `content !== savedContent`.
  *
  *   - `diff`: a Monaco DiffEditor showing the same relative path across
- *     two lanes (M3 lane comparison). Diff tabs are read-only and have no
- *     dirty state.
+ *     two lanes (M3 lane comparison). Diff tabs are read-only snapshots
+ *     and have no dirty state. They are intentionally NOT refreshed by
+ *     the workspace-changed feed; re-open the diff to see fresh content.
  *
- * Each tab also carries an opaque `key` so the strip and active-tab
- * tracking can disambiguate between, say, the user's editable `foo.py`
- * file and a `diff:a↔b:foo.py` view of that same path.
+ * Each tab also carries an opaque `key` produced by the helpers in
+ * `hooks/appModelTypes.ts` (`fileTabKey`, `overlayTabKey`,
+ * `diffTabKey`). All three encode the lane id so opening the same
+ * file from two UI surfaces reuses one buffer instead of producing
+ * two disconnected ones.
  */
 export interface FileTab {
   kind: "file";
-  key: string; // == path for file tabs
+  /** Synthetic; e.g. `lane:<laneId>:<path>` or `overlay:<laneId>:<virtualPath>`. */
+  key: string;
   path: string;
   content: string;
   savedContent: string;

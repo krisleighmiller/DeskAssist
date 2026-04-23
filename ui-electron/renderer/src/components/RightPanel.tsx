@@ -36,6 +36,7 @@ export type RightTabKey =
 interface RightPanelProps {
   activeTab: RightTabKey;
   onTabChange: (tab: RightTabKey) => void;
+  onCollapse?: () => void;
   chat: {
     casefile: CasefileSnapshot | null;
     comparisonSessions: ComparisonSession[];
@@ -142,6 +143,7 @@ const TABS: { key: RightTabKey; label: string }[] = [
 export function RightPanel({
   activeTab,
   onTabChange,
+  onCollapse,
   chat,
   notes,
   lanes,
@@ -149,18 +151,31 @@ export function RightPanel({
   inbox,
 }: RightPanelProps): JSX.Element {
   return (
-    <>
+    <div className="right-panel">
       <div className="right-tabs">
-        {TABS.map((t) => (
+        <div className="right-tabs-list">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              className={`right-tab${t.key === activeTab ? " active" : ""}`}
+              onClick={() => onTabChange(t.key)}
+              type="button"
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {onCollapse && (
           <button
-            key={t.key}
-            className={`right-tab${t.key === activeTab ? " active" : ""}`}
-            onClick={() => onTabChange(t.key)}
             type="button"
+            className="right-tab-action"
+            onClick={onCollapse}
+            aria-label="Hide side panel"
+            title="Hide side panel"
           >
-            {t.label}
+            Hide
           </button>
-        ))}
+        )}
       </div>
       <div className="right-body">
         {activeTab === "chat" && (
@@ -210,19 +225,6 @@ export function RightPanel({
             onSoftResetCasefile={lanes.onSoftResetCasefile}
           />
         )}
-        {activeTab === "inbox" && (
-          <InboxTab
-            hasCasefile={inbox.hasCasefile}
-            sources={inbox.sources}
-            loading={inbox.loading}
-            error={inbox.error}
-            onAddSource={inbox.onAddSource}
-            onRemoveSource={inbox.onRemoveSource}
-            onChooseRoot={inbox.onChooseRoot}
-            onListItems={inbox.onListItems}
-            onReadItem={inbox.onReadItem}
-          />
-        )}
         {activeTab === "prompts" && (
           <PromptsTab
             hasCasefile={prompts.hasCasefile}
@@ -238,7 +240,20 @@ export function RightPanel({
             onLoad={prompts.onLoad}
           />
         )}
+        {activeTab === "inbox" && (
+          <InboxTab
+            hasCasefile={inbox.hasCasefile}
+            sources={inbox.sources}
+            loading={inbox.loading}
+            error={inbox.error}
+            onAddSource={inbox.onAddSource}
+            onRemoveSource={inbox.onRemoveSource}
+            onChooseRoot={inbox.onChooseRoot}
+            onListItems={inbox.onListItems}
+            onReadItem={inbox.onReadItem}
+          />
+        )}
       </div>
-    </>
+    </div>
   );
 }
