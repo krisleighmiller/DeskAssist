@@ -30,6 +30,12 @@ contextBridge.exposeInMainWorld("assistantApi", {
   moveEntry: (sourcePath, destinationPath) =>
     ipcRenderer.invoke("file:move", { sourcePath, destinationPath }),
   trashEntry: (path) => ipcRenderer.invoke("file:trash", { path }),
+  // M2.1: in-app undo for the most recent trash. Returns
+  // `{ restored: false }` when the stack is empty (intentional: the
+  // renderer treats it as a no-op so the keybinding doesn't surface
+  // a scary error when there's nothing to undo).
+  undoLastTrash: () => ipcRenderer.invoke("file:undoLastTrash"),
+  trashUndoStatus: () => ipcRenderer.invoke("file:undoStatus"),
 
   // Notes, comparison (M3).
   getNote: (laneId) => ipcRenderer.invoke("casefile:getNote", { laneId }),

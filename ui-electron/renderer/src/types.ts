@@ -334,8 +334,26 @@ export interface AssistantApi {
   ) => Promise<{ sourcePath: string; destinationPath: string; moved: boolean }>;
   /** Move a file or directory inside the active lane to the OS trash
    * via Electron's shell.trashItem (recoverable). The lane root itself
-   * cannot be trashed; lane removal is a separate flow. */
-  trashEntry: (path: string) => Promise<{ path: string; trashed: boolean }>;
+   * cannot be trashed; lane removal is a separate flow. The bridge
+   * snapshots the target into a session-private staging directory
+   * before the trash so `undoLastTrash` can restore it. */
+  trashEntry: (
+    path: string
+  ) => Promise<{ path: string; trashed: boolean; undoId?: string }>;
+  /** Restore the most recently trashed entry from the session-local
+   * undo stack. Resolves with `{ restored: false }` when the stack is
+   * empty so the keyboard binding can stay silent. May reject when the
+   * target path now belongs to a different casefile, when something
+   * already exists at that path, or when the parent directory has been
+   * removed in the meantime. */
+  undoLastTrash: () => Promise<
+    | { restored: false }
+    | { restored: true; path: string; type: "file" | "dir" }
+  >;
+  /** How many trash-undo entries are restorable for the active casefile.
+   * The renderer uses this to decide whether to render an "undo" hint
+   * in the file-tree toolbar. */
+  trashUndoStatus: () => Promise<{ restorable: number }>;
 
   // Notes (M3).
   getNote: (laneId: string) => Promise<string>;

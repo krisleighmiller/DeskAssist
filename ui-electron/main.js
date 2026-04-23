@@ -593,7 +593,13 @@ function ensureInWorkspace(targetPath) {
     resolvedTarget !== resolvedWorkspace &&
     !resolvedTarget.startsWith(`${resolvedWorkspace}${path.sep}`)
   ) {
-    throw new Error("Path escapes casefile root");
+    // Include both the offending path and the casefile root in the
+    // error so the user (and the renderer error banner) can actually
+    // diagnose what went wrong, instead of seeing the bare "Path
+    // escapes casefile root" with no clue which path or which root.
+    throw new Error(
+      `Path escapes casefile root: ${resolvedTarget} is not inside ${resolvedWorkspace}`
+    );
   }
   return resolvedTarget;
 }
@@ -848,6 +854,13 @@ function adoptCasefileSnapshot(snapshot) {
   // so the next file-tree IPC call is rooted at the active lane.
   if (!snapshot || typeof snapshot.root !== "string") {
     throw new Error("Bridge returned an invalid casefile snapshot");
+  }
+  // Drop any pending trash-undo entries when the casefile changes — the
+  // backups are tied to the previous casefile root and would either fail
+  // the casefile match or, worse, surprise the user by resurrecting a
+  // file in a workspace they're no longer in.
+  if (activeCasefileRoot && activeCasefileRoot !== snapshot.root) {
+    clearTrashUndoStack();
   }
   activeCasefileRoot = snapshot.root;
   activeLaneId = snapshot.activeLaneId || null;
@@ -1543,6 +1556,55 @@ ipcMain.handle("file:move", async (_, args = {}) => {
   return { sourcePath, destinationPath, moved: true };
 });
 
+// In-app undo stack for `file:trash`.  We snapshot each trashed entry
+// to a session-private staging directory before invoking the OS trash
+// so the renderer can restore-on-Ctrl+Z without depending on the
+// (platform-specific, frequently inaccessible) OS Trash on-disk layout.
+// The stack is process-local — restarting the app forfeits any pending
+// undo entries (deliberate: long-lived staging would silently double
+// disk usage and require its own GC story).
+//
+// We cap the stack at MAX_TRASH_UNDO entries; once full, the oldest
+// snapshot is purged from disk and from the stack. Per-entry size is
+// not capped here because casefiles can legitimately contain large
+// trees and refusing to back up a directory would yield a
+// silently-undone "trash" the user can't recover. Operators who care
+// about disk usage can lower MAX_TRASH_UNDO.
+const MAX_TRASH_UNDO = 20;
+const trashUndoStack = [];
+let trashUndoSeq = 0;
+let trashUndoStagingDir = null;
+
+async function ensureTrashUndoStagingDir() {
+  if (trashUndoStagingDir) return trashUndoStagingDir;
+  const base = path.join(
+    os.tmpdir(),
+    `deskassist-trash-undo-${process.pid}-${Date.now()}`
+  );
+  await fs.mkdir(base, { recursive: true });
+  trashUndoStagingDir = base;
+  return base;
+}
+
+async function purgeTrashUndoEntry(entry) {
+  if (!entry || !entry.backupPath) return;
+  try {
+    await fs.rm(entry.backupPath, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup: leftover staging files are harmless and the
+    // staging dir is under the OS temp dir anyway.
+  }
+}
+
+function clearTrashUndoStack() {
+  // Spawn cleanup so we don't keep ipc handlers waiting on disk IO when
+  // a casefile is closed / a hard reset fires.
+  const drained = trashUndoStack.splice(0, trashUndoStack.length);
+  for (const entry of drained) {
+    void purgeTrashUndoEntry(entry);
+  }
+}
+
 // Move a file or directory to the OS trash via Electron's shell API.
 // We deliberately do not offer permanent delete from the renderer; if
 // the user wants that, they can empty the OS trash.  shell.trashItem
@@ -1556,16 +1618,125 @@ ipcMain.handle("file:trash", async (_, args = {}) => {
   if (activeLaneRoot && path.resolve(targetPath) === path.resolve(activeLaneRoot)) {
     throw new Error("Cannot trash the active lane's root directory");
   }
+  let stat;
   try {
-    await fs.access(targetPath);
+    stat = await fs.stat(targetPath);
   } catch (err) {
     if (err && err.code === "ENOENT") {
       throw new Error(`File or folder no longer exists: ${targetPath}`);
     }
     throw err;
   }
-  await shell.trashItem(targetPath);
-  return { path: targetPath, trashed: true };
+  // Snapshot to the undo staging dir BEFORE trashing. We use a fresh
+  // per-entry sub-directory keyed by `trashUndoSeq` so two entries with
+  // the same basename can coexist in the staging dir without collision.
+  const stagingRoot = await ensureTrashUndoStagingDir();
+  const undoId = `undo-${++trashUndoSeq}-${Date.now().toString(36)}`;
+  const backupPath = path.join(stagingRoot, undoId, path.basename(targetPath));
+  await fs.mkdir(path.dirname(backupPath), { recursive: true });
+  if (stat.isDirectory()) {
+    await fs.cp(targetPath, backupPath, { recursive: true, preserveTimestamps: true });
+  } else {
+    await fs.copyFile(targetPath, backupPath);
+  }
+  // Record the casefile root that owned this entry so we can refuse to
+  // restore it across casefile switches (`originalCasefileRoot` mismatch).
+  const entry = {
+    id: undoId,
+    originalPath: targetPath,
+    backupPath,
+    type: stat.isDirectory() ? "dir" : "file",
+    originalCasefileRoot: activeCasefileRoot,
+    timestamp: Date.now(),
+  };
+  // Now do the actual trash. If trashItem fails after the snapshot we
+  // purge the snapshot to avoid leaving an undo entry that resurrects
+  // a file that was never deleted.
+  try {
+    await shell.trashItem(targetPath);
+  } catch (err) {
+    void purgeTrashUndoEntry(entry);
+    throw err;
+  }
+  trashUndoStack.push(entry);
+  while (trashUndoStack.length > MAX_TRASH_UNDO) {
+    void purgeTrashUndoEntry(trashUndoStack.shift());
+  }
+  return { path: targetPath, trashed: true, undoId };
+});
+
+// Restore the most recently trashed entry from the undo stack. Returns
+// `{ restored: false }` when nothing is on the stack so the renderer can
+// flash a hint (or stay silent) without the IPC throwing. The restore is
+// blocked when the original path now belongs to a different casefile
+// (the user opened a different workspace mid-undo) — silently restoring
+// outside the current ensureInWorkspace would be a path-escape.
+ipcMain.handle("file:undoLastTrash", async () => {
+  // Pop entries from the top until we find one that's still restorable
+  // for the current casefile. Stale entries (different casefile) get
+  // purged so the next undo skips straight to a usable one.
+  while (trashUndoStack.length > 0) {
+    const entry = trashUndoStack.pop();
+    if (!entry) continue;
+    if (
+      !activeCasefileRoot ||
+      entry.originalCasefileRoot !== activeCasefileRoot
+    ) {
+      void purgeTrashUndoEntry(entry);
+      continue;
+    }
+    // Refuse to clobber an entry that came back at the same path while
+    // the user wasn't looking (created via the "+ File" toolbar, e.g.).
+    try {
+      await fs.access(entry.originalPath);
+      void purgeTrashUndoEntry(entry);
+      throw new Error(
+        `Cannot restore: a file or folder already exists at ${entry.originalPath}`
+      );
+    } catch (err) {
+      if (err && err.code !== "ENOENT") throw err;
+    }
+    // Make sure the parent dir still exists. If the user trashed both
+    // the entry and its parent in succession, restoring just the leaf
+    // would silently leave the parent missing — better to surface it.
+    const parent = path.dirname(entry.originalPath);
+    try {
+      const parentStat = await fs.stat(parent);
+      if (!parentStat.isDirectory()) {
+        throw new Error(`Cannot restore: ${parent} is not a directory`);
+      }
+    } catch (err) {
+      void purgeTrashUndoEntry(entry);
+      if (err && err.code === "ENOENT") {
+        throw new Error(
+          `Cannot restore: parent directory no longer exists: ${parent}`
+        );
+      }
+      throw err;
+    }
+    if (entry.type === "dir") {
+      await fs.cp(entry.backupPath, entry.originalPath, {
+        recursive: true,
+        preserveTimestamps: true,
+      });
+    } else {
+      await fs.copyFile(entry.backupPath, entry.originalPath);
+    }
+    void purgeTrashUndoEntry(entry);
+    return { restored: true, path: entry.originalPath, type: entry.type };
+  }
+  return { restored: false };
+});
+
+// How many entries are currently restorable for the active casefile.
+// Used by the renderer to decide whether to surface an "undo available"
+// hint and to keep keyboard shortcuts a no-op when there's nothing to
+// undo (so the binding falls through to the OS / browser default).
+ipcMain.handle("file:undoStatus", async () => {
+  const restorable = trashUndoStack.filter(
+    (entry) => entry.originalCasefileRoot === activeCasefileRoot
+  ).length;
+  return { restorable };
 });
 
 ipcMain.handle("chat:send", async (_, payload = {}) => {
@@ -2071,4 +2242,15 @@ app.on("window-all-closed", () => {
 app.on("will-quit", () => {
   stopAllWatchers();
   killAllPtySessions();
+  // Drop any pending trash-undo backups; the staging dir lives under
+  // the OS temp dir but cleaning up explicitly avoids leaking gigabytes
+  // across many short-lived sessions.
+  clearTrashUndoStack();
+  if (trashUndoStagingDir) {
+    try {
+      fsSync.rmSync(trashUndoStagingDir, { recursive: true, force: true });
+    } catch {
+      // The OS will GC its temp dir eventually; ignore.
+    }
+  }
 });

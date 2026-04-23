@@ -458,6 +458,46 @@ a {
   font-style: italic;
 }
 
+/* Inline error banner shown above the tree when an operation fails.
+   Replaces the old "kill the whole tree on error" branch so the user
+   keeps their navigation context after a per-action failure. */
+.file-tree-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 6px 6px;
+  padding: 6px 8px;
+  background: rgba(127, 29, 29, 0.35);
+  border: 1px solid #7f1d1d;
+  border-radius: 4px;
+  color: #fecaca;
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.file-tree-error-text {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+}
+
+.file-tree-error-dismiss {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: #fecaca;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.file-tree-error-dismiss:hover {
+  background: rgba(254, 202, 202, 0.15);
+  color: #fff5f5;
+}
+
 .tree-row {
   display: flex;
   align-items: center;
@@ -931,6 +971,30 @@ a {
 
 .dialog .status.error {
   color: #f87171;
+}
+
+/* Single-field text input dialog (renderer-side replacement for
+   `window.prompt`, which Electron does not display). */
+.input-dialog {
+  min-width: 420px;
+}
+
+.input-dialog .input-dialog-field {
+  width: 100%;
+  padding: 6px 8px;
+  margin-bottom: 12px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #e5e7eb;
+  font-family: inherit;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.input-dialog .input-dialog-field:focus {
+  outline: none;
+  border-color: #6366f1;
 }
 
 /* ----- Lanes tab ----- */

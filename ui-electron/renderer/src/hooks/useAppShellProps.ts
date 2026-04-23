@@ -88,6 +88,11 @@ interface ShellViewModelActions {
   onAddToContext?: (path: string) => void;
   onRename?: (sourcePath: string, nextPath: string) => Promise<void>;
   onRefreshTree?: () => void;
+  /** Clear the file tree's transient error state. Wired to a dismiss
+   * button on the in-tree error banner so a per-action failure ("move
+   * rejected", "name conflict", etc.) doesn't keep covering the tree
+   * after the user acknowledges it. */
+  onDismissTreeError: () => void;
   // M2: browser-driven file ops + lane integration. All optional —
   // the FileTree silently hides the corresponding menu items when a
   // handler is missing, which keeps unit / casefile-less states sane
@@ -194,6 +199,7 @@ export function useAppShellProps({
         activePath: state.activeFilePath,
         onOpenFile: actions.onOpenFile,
         error: state.treeError,
+        onDismissError: actions.onDismissTreeError,
         // The file tree is the user's view of the casefile. Lanes
         // exist to scope what the chat agent sees — they are NOT a
         // gate on the user's ability to browse, open, or edit files.

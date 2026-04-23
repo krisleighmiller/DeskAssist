@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FileTreeNode } from "../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import { InputDialog } from "./InputDialog";
 
 /** Lightweight summary of the lanes in the active casefile. We only
  * need (id, name, root) here — the FileTree uses these to detect
@@ -33,6 +34,12 @@ interface FileTreeProps {
    * and to populate drag payloads. When null, only absolute-path actions
    * are offered. */
   casefileRoot?: string | null;
+  /** Invoked when the user dismisses the error banner that surfaces above
+   * the tree. The parent owns the error state and is responsible for
+   * clearing it. When omitted the banner becomes non-dismissible (which
+   * is fine for fatal load failures but a bad UX for transient operation
+   * errors, so callers should generally provide it). */
+  onDismissError?: () => void;
   /** M3.5c+: invoked when the user picks "Add to casefile context" from
    * the right-click menu (or drops a tree node onto the context editor's
    * drop target — the FileTree just sets up the dataTransfer payload).
@@ -148,6 +155,10 @@ interface NodeProps {
   onRowClick: (event: React.MouseEvent, node: FileTreeNode) => void;
   onContextMenu: (event: React.MouseEvent, node: FileTreeNode) => void;
   onDragStartNode: (event: React.DragEvent, node: FileTreeNode) => void;
+  /** Cleanup hook called on dragend (whether the drop succeeded or was
+   * cancelled). Used to clear the FileTree's internal drag state so a
+   * cancelled drag does not leave a stale source payload behind. */
+  onDragEndNode: () => void;
   /** Optional drop handlers. Only provided when the parent has wired
    * `onMoveEntry` AND the row is a real (non-overlay) directory. The
    * TreeNode itself decides per-row whether to actually attach them. */
@@ -183,6 +194,7 @@ function TreeNode({
   onRowClick,
   onContextMenu,
   onDragStartNode,
+  onDragEndNode,
   onDragOverDir,
   onDragLeaveDir,
   onDropOnDir,
@@ -211,6 +223,7 @@ function TreeNode({
         title={node.path}
         draggable
         onDragStart={(event) => onDragStartNode(event, node)}
+        onDragEnd={onDragEndNode}
       >
         {/* The bullet sits in the same column as a directory's
             arrow — that way file rows and directory rows at the same
@@ -251,6 +264,7 @@ function TreeNode({
         title={node.path}
         draggable
         onDragStart={(event) => onDragStartNode(event, node)}
+        onDragEnd={onDragEndNode}
         onDragOver={acceptsDrop && onDragOverDir ? (event) => onDragOverDir(event, node) : undefined}
         onDragLeave={acceptsDrop && onDragLeaveDir ? (event) => onDragLeaveDir(event, node) : undefined}
         onDrop={acceptsDrop && onDropOnDir ? (event) => onDropOnDir(event, node) : undefined}
@@ -277,6 +291,7 @@ function TreeNode({
               onRowClick={onRowClick}
               onContextMenu={onContextMenu}
               onDragStartNode={onDragStartNode}
+              onDragEndNode={onDragEndNode}
               onDragOverDir={onDragOverDir}
               onDragLeaveDir={onDragLeaveDir}
               onDropOnDir={onDropOnDir}
@@ -418,6 +433,7 @@ export function FileTree({
   error,
   onOpenFile,
   casefileRoot,
+  onDismissError,
   onAddToContext,
   onRename,
   onRefresh,
@@ -444,6 +460,14 @@ export function FileTree({
   // hovering over with a tree-node payload. Null when nothing is being
   // dragged or the cursor is outside any drop target.
   const [dragOverPath, setDragOverPath] = useState<string | null>(null);
+  // The drag payload(s) for the currently-active intra-tree drag, mirrored
+  // out of the dataTransfer object. We need this because HTML5 drag-and-drop
+  // hides `dataTransfer.getData()` during dragenter/dragover for security
+  // reasons (only `dataTransfer.types` is readable); without a side-channel
+  // copy of the payload we can't validate the prospective drop target,
+  // can't call preventDefault, and the drop event never fires. We clear it
+  // in onDragEnd so a cancelled drag doesn't poison subsequent ones.
+  const dragSourceRef = useRef<FileTreeDragPayload[] | null>(null);
   // Compare-with picker: a second context menu spawned from the main
   // menu's "Compare with…" item. We don't reuse `menu` because that one
   // closes on item-select, and we want the picker to live independently.
@@ -452,6 +476,43 @@ export function FileTree({
     y: number;
     items: ContextMenuItem[];
   } | null>(null);
+  // Single-field text-input dialog state. We render `<InputDialog />`
+  // when this is non-null and resolve the stashed promise on submit /
+  // cancel. This is the replacement for `window.prompt`, which Electron
+  // doesn't display — see InputDialog.tsx for the full rationale.
+  const [inputDialog, setInputDialog] = useState<{
+    title: string;
+    message?: string;
+    defaultValue: string;
+    confirmLabel?: string;
+    selection?: { start: number; end: number };
+    resolve: (value: string | null) => void;
+  } | null>(null);
+
+  /** Promise-returning replacement for `window.prompt`. Resolves with the
+   * trimmed user input, or null on cancel. The caller is responsible for
+   * any further validation (empty-string check, separator check, etc.).
+   * The dialog auto-focuses and selects its content on open and supports
+   * Enter to submit / Esc to cancel — i.e. it behaves like `window.prompt`
+   * with a less hostile look. */
+  const promptForInput = (opts: {
+    title: string;
+    message?: string;
+    defaultValue?: string;
+    confirmLabel?: string;
+    selection?: { start: number; end: number };
+  }): Promise<string | null> => {
+    return new Promise<string | null>((resolve) => {
+      setInputDialog({
+        title: opts.title,
+        message: opts.message,
+        defaultValue: opts.defaultValue ?? "",
+        confirmLabel: opts.confirmLabel,
+        selection: opts.selection,
+        resolve,
+      });
+    });
+  };
 
   useEffect(() => {
     if (root) {
@@ -618,6 +679,15 @@ export function FileTree({
     // FileTree's own drop handler treat the gesture as a move. The
     // dropEffect is decided per-target in onDragOver.
     event.dataTransfer.effectAllowed = "copyMove";
+    // Side-channel for the dragOver handler — see the dragSourceRef
+    // declaration. Cleared by `handleDragEndNode` whether the drop
+    // succeeded or was cancelled.
+    dragSourceRef.current = payloads;
+  };
+
+  const handleDragEndNode = () => {
+    dragSourceRef.current = null;
+    if (dragOverPath !== null) setDragOverPath(null);
   };
 
   // ---------- M2: drag-and-drop move within the tree ----------
@@ -663,7 +733,18 @@ export function FileTree({
   };
 
   const handleDragOverDir = (event: React.DragEvent, node: FileTreeNode) => {
-    const payloads = readTreePayload(event.dataTransfer);
+    // Only honour intra-tree drags. External drags (OS files, URLs, text)
+    // expose different MIME types and should fall through to the default
+    // browser handling so they can't accidentally mutate the workspace.
+    // `dataTransfer.types` is the only thing that's readable during
+    // dragenter/dragover — `getData()` is intentionally blanked by the
+    // platform until `drop`, which is why we mirror the payload through
+    // `dragSourceRef` for validation here.
+    if (!event.dataTransfer.types.includes(FILETREE_DRAG_MIME)) {
+      if (dragOverPath === node.path) setDragOverPath(null);
+      return;
+    }
+    const payloads = dragSourceRef.current ?? [];
     if (!canDropOnDir(payloads, node.path)) {
       // Important: do NOT preventDefault — the row should not show a
       // drop cursor for invalid targets. Also clear any stale highlight
@@ -697,27 +778,61 @@ export function FileTree({
         try {
           await onMoveEntry(src, dest);
         } catch (err) {
-          window.alert(
-            `Move failed: ${err instanceof Error ? err.message : String(err)}`
-          );
+          // Upstream (`useLaneWorkspace.handleMoveEntry`) already routes
+          // the error into the tree-level error banner via
+          // `setTreeError`, so we just log here for debugging and stop
+          // the batch; an alert on top of the banner would double-
+          // report the same failure.
+          console.error("FileTree drop move failed:", err);
           return;
         }
       }
     })();
   };
 
-  if (error) {
-    return <div className="file-tree"><div className="empty">Error: {error}</div></div>;
-  }
+  // Errors used to replace the entire tree, which meant a single
+  // operation-level failure (e.g. "Path escapes casefile root" from a
+  // malformed move) wiped out the user's whole navigation surface and
+  // left them with no way to recover short of switching casefiles. We
+  // now distinguish two cases:
+  //   1) No workspace / no tree to show       → render the error full-page
+  //      (there's nothing else useful to display anyway).
+  //   2) Tree exists                          → render a dismissible banner
+  //      ABOVE the tree so the user can read the error and keep working.
+  // The banner element is built once and inserted into both branches
+  // below so the dismiss UX stays consistent.
+  const errorBanner = error ? (
+    <div className="file-tree-error" role="alert">
+      <span className="file-tree-error-text">{error}</span>
+      {onDismissError && (
+        <button
+          type="button"
+          className="file-tree-error-dismiss"
+          onClick={onDismissError}
+          title="Dismiss error"
+          aria-label="Dismiss error"
+        >
+          ×
+        </button>
+      )}
+    </div>
+  ) : null;
+
   if (!hasWorkspace) {
     return (
       <div className="file-tree">
+        {errorBanner}
         <div className="empty">No workspace selected. Choose one from the toolbar.</div>
       </div>
     );
   }
   if (!root) {
-    return <div className="file-tree"><div className="empty">Loading...</div></div>;
+    return (
+      <div className="file-tree">
+        {errorBanner}
+        <div className="empty">{error ? "Tree unavailable." : "Loading..."}</div>
+      </div>
+    );
   }
 
   // Build menu items from the snapshot, not from `selected` directly —
@@ -809,26 +924,40 @@ export function FileTree({
               onSelect: () => {
                 const target = menu.node;
                 const currentName = target.name;
-                const proposed = window.prompt(
-                  `Rename "${currentName}" to:`,
-                  currentName
-                );
-                if (proposed == null) return;
-                const trimmed = proposed.trim();
-                if (!trimmed || trimmed === currentName) return;
-                if (trimmed.includes("/") || trimmed.includes("\\")) {
-                  window.alert(
-                    "Name must not contain path separators ('/' or '\\')."
-                  );
-                  return;
-                }
-                void Promise.resolve(onRename(target.path, trimmed)).catch(
-                  (err) => {
+                // Pre-select just the base name (everything before the
+                // last "."), matching VS Code / Finder. The dot itself
+                // and the extension stay highlighted-but-not-selected
+                // so a typing user replaces the basename only.
+                const dot = currentName.lastIndexOf(".");
+                const selection =
+                  target.type === "file" && dot > 0
+                    ? { start: 0, end: dot }
+                    : undefined;
+                void (async () => {
+                  const proposed = await promptForInput({
+                    title: `Rename "${currentName}"`,
+                    message: "Enter the new name (no path separators).",
+                    defaultValue: currentName,
+                    confirmLabel: "Rename",
+                    selection,
+                  });
+                  if (proposed == null) return;
+                  const trimmed = proposed.trim();
+                  if (!trimmed || trimmed === currentName) return;
+                  if (trimmed.includes("/") || trimmed.includes("\\")) {
                     window.alert(
-                      `Rename failed: ${err instanceof Error ? err.message : String(err)}`
+                      "Name must not contain path separators ('/' or '\\')."
                     );
+                    return;
                   }
-                );
+                  try {
+                    await Promise.resolve(onRename(target.path, trimmed));
+                  } catch (err) {
+                    // The parent (`useLaneWorkspace`) routes this into
+                    // the tree-level error banner; just log here.
+                    console.error("FileTree rename failed:", err);
+                  }
+                })();
               },
               disabled:
                 multi ||
@@ -852,23 +981,30 @@ export function FileTree({
                   menu.node.type === "dir"
                     ? menu.node.path
                     : menu.node.path.replace(/[\\/][^\\/]+$/, "");
-                const name = window.prompt("New file name:", "untitled.txt");
-                if (name == null) return;
-                const trimmed = name.trim();
-                if (!trimmed) return;
-                if (trimmed.includes("/") || trimmed.includes("\\")) {
-                  window.alert(
-                    "Name must not contain path separators ('/' or '\\')."
-                  );
-                  return;
-                }
-                void Promise.resolve(onCreateFile(parentDir, trimmed)).catch(
-                  (err) => {
+                void (async () => {
+                  const name = await promptForInput({
+                    title: "New file",
+                    message: `Create a file inside "${
+                      parentDir.split(/[\\/]/).pop() ?? parentDir
+                    }".`,
+                    defaultValue: "untitled.txt",
+                    confirmLabel: "Create",
+                  });
+                  if (name == null) return;
+                  const trimmed = name.trim();
+                  if (!trimmed) return;
+                  if (trimmed.includes("/") || trimmed.includes("\\")) {
                     window.alert(
-                      `Create file failed: ${err instanceof Error ? err.message : String(err)}`
+                      "Name must not contain path separators ('/' or '\\')."
                     );
+                    return;
                   }
-                );
+                  try {
+                    await Promise.resolve(onCreateFile(parentDir, trimmed));
+                  } catch (err) {
+                    console.error("FileTree create file failed:", err);
+                  }
+                })();
               },
             },
           ]
@@ -882,23 +1018,30 @@ export function FileTree({
                   menu.node.type === "dir"
                     ? menu.node.path
                     : menu.node.path.replace(/[\\/][^\\/]+$/, "");
-                const name = window.prompt("New folder name:", "new-folder");
-                if (name == null) return;
-                const trimmed = name.trim();
-                if (!trimmed) return;
-                if (trimmed.includes("/") || trimmed.includes("\\")) {
-                  window.alert(
-                    "Name must not contain path separators ('/' or '\\')."
-                  );
-                  return;
-                }
-                void Promise.resolve(onCreateFolder(parentDir, trimmed)).catch(
-                  (err) => {
+                void (async () => {
+                  const name = await promptForInput({
+                    title: "New folder",
+                    message: `Create a folder inside "${
+                      parentDir.split(/[\\/]/).pop() ?? parentDir
+                    }".`,
+                    defaultValue: "new-folder",
+                    confirmLabel: "Create",
+                  });
+                  if (name == null) return;
+                  const trimmed = name.trim();
+                  if (!trimmed) return;
+                  if (trimmed.includes("/") || trimmed.includes("\\")) {
                     window.alert(
-                      `Create folder failed: ${err instanceof Error ? err.message : String(err)}`
+                      "Name must not contain path separators ('/' or '\\')."
                     );
+                    return;
                   }
-                );
+                  try {
+                    await Promise.resolve(onCreateFolder(parentDir, trimmed));
+                  } catch (err) {
+                    console.error("FileTree create folder failed:", err);
+                  }
+                })();
               },
             },
           ]
@@ -921,28 +1064,30 @@ export function FileTree({
                   );
                   return;
                 }
-                const proposed = window.prompt(
-                  `Move "${target.name}" to (casefile-relative path):`,
-                  current
-                );
-                if (proposed == null) return;
-                const cleaned = proposed
-                  .trim()
-                  .replace(/^[\\/]+/, "")
-                  .replace(/[\\/]+$/, "");
-                if (!cleaned || cleaned === current) return;
-                // Normalise typed POSIX-style separators to the
-                // casefile's native separator so the bridge sees a
-                // consistent path.
-                const normalised = cleaned.split(/[\\/]/).join(sep);
-                const dest = `${casefileRoot.replace(/[\\/]+$/, "")}${sep}${normalised}`;
-                void Promise.resolve(onMoveEntry(target.path, dest)).catch(
-                  (err) => {
-                    window.alert(
-                      `Move failed: ${err instanceof Error ? err.message : String(err)}`
-                    );
+                void (async () => {
+                  const proposed = await promptForInput({
+                    title: `Move "${target.name}"`,
+                    message: "Type the new casefile-relative path.",
+                    defaultValue: current,
+                    confirmLabel: "Move",
+                  });
+                  if (proposed == null) return;
+                  const cleaned = proposed
+                    .trim()
+                    .replace(/^[\\/]+/, "")
+                    .replace(/[\\/]+$/, "");
+                  if (!cleaned || cleaned === current) return;
+                  // Normalise typed POSIX-style separators to the
+                  // casefile's native separator so the bridge sees a
+                  // consistent path.
+                  const normalised = cleaned.split(/[\\/]/).join(sep);
+                  const dest = `${casefileRoot.replace(/[\\/]+$/, "")}${sep}${normalised}`;
+                  try {
+                    await Promise.resolve(onMoveEntry(target.path, dest));
+                  } catch (err) {
+                    console.error("FileTree move failed:", err);
                   }
-                );
+                })();
               },
               disabled:
                 multi ||
@@ -975,9 +1120,7 @@ export function FileTree({
                     try {
                       await onTrashEntry(p);
                     } catch (err) {
-                      window.alert(
-                        `Trash failed for ${p}: ${err instanceof Error ? err.message : String(err)}`
-                      );
+                      console.error("FileTree trash failed:", p, err);
                       return;
                     }
                   }
@@ -1007,20 +1150,25 @@ export function FileTree({
               onSelect: () => {
                 const target = menu.node;
                 const defaultName = target.name;
-                const name = window.prompt(
-                  `New lane name (kind defaults to "repo"; edit later from the Lanes tab):`,
-                  defaultName
-                );
-                if (name == null) return;
-                const trimmed = name.trim();
-                if (!trimmed) return;
-                void Promise.resolve(
-                  onCreateLaneFromPath(target.path, trimmed)
-                ).catch((err) => {
-                  window.alert(
-                    `Create lane failed: ${err instanceof Error ? err.message : String(err)}`
-                  );
-                });
+                void (async () => {
+                  const name = await promptForInput({
+                    title: "Create lane",
+                    message:
+                      'New lane name. Kind defaults to "repo"; edit later from the Lanes tab.',
+                    defaultValue: defaultName,
+                    confirmLabel: "Create lane",
+                  });
+                  if (name == null) return;
+                  const trimmed = name.trim();
+                  if (!trimmed) return;
+                  try {
+                    await Promise.resolve(
+                      onCreateLaneFromPath(target.path, trimmed)
+                    );
+                  } catch (err) {
+                    console.error("FileTree create lane failed:", err);
+                  }
+                })();
               },
             },
           ]
@@ -1041,20 +1189,24 @@ export function FileTree({
               onSelect: () => {
                 const target = menu.node;
                 const defaultPrefix = target.name;
-                const prefix = window.prompt(
-                  `Attachment prefix for "${target.name}" (shown under _attachments/<prefix>):`,
-                  defaultPrefix
-                );
-                if (prefix == null) return;
-                const trimmed = prefix.trim();
-                if (!trimmed) return;
-                void Promise.resolve(
-                  onAttachToActiveLane(target.path, trimmed)
-                ).catch((err) => {
-                  window.alert(
-                    `Attach failed: ${err instanceof Error ? err.message : String(err)}`
-                  );
-                });
+                void (async () => {
+                  const prefix = await promptForInput({
+                    title: `Attach "${target.name}"`,
+                    message: `Attachment prefix (shown under _attachments/<prefix>).`,
+                    defaultValue: defaultPrefix,
+                    confirmLabel: "Attach",
+                  });
+                  if (prefix == null) return;
+                  const trimmed = prefix.trim();
+                  if (!trimmed) return;
+                  try {
+                    await Promise.resolve(
+                      onAttachToActiveLane(target.path, trimmed)
+                    );
+                  } catch (err) {
+                    console.error("FileTree attach failed:", err);
+                  }
+                })();
               },
             },
           ]
@@ -1084,9 +1236,7 @@ export function FileTree({
                       void Promise.resolve(
                         onStartLaneComparison(selfId, other.id)
                       ).catch((err) => {
-                        window.alert(
-                          `Compare failed: ${err instanceof Error ? err.message : String(err)}`
-                        );
+                        console.error("FileTree compare failed:", err);
                       });
                     },
                   }));
@@ -1113,6 +1263,7 @@ export function FileTree({
         }
       }}
     >
+      {errorBanner}
       {(onRefresh || onCreateFile || onCreateFolder) && (
         <div className="file-tree-toolbar">
           <div className="file-tree-toolbar-row">
@@ -1145,26 +1296,36 @@ export function FileTree({
                       type="button"
                       className="file-tree-refresh"
                       onClick={() => {
-                        const name = window.prompt(
-                          "New file name:",
-                          "untitled.txt"
-                        );
-                        if (name == null) return;
-                        const trimmed = name.trim();
-                        if (!trimmed) return;
-                        if (trimmed.includes("/") || trimmed.includes("\\")) {
-                          window.alert(
-                            "Name must not contain path separators."
-                          );
-                          return;
-                        }
-                        void Promise.resolve(
-                          onCreateFile(defaultTarget, trimmed)
-                        ).catch((err) => {
-                          window.alert(
-                            `Create file failed: ${err instanceof Error ? err.message : String(err)}`
-                          );
-                        });
+                        void (async () => {
+                          const name = await promptForInput({
+                            title: "New file",
+                            message: `Create a file at the ${targetLabel}.`,
+                            defaultValue: "untitled.txt",
+                            confirmLabel: "Create",
+                          });
+                          if (name == null) return;
+                          const trimmed = name.trim();
+                          if (!trimmed) return;
+                          if (
+                            trimmed.includes("/") ||
+                            trimmed.includes("\\")
+                          ) {
+                            window.alert(
+                              "Name must not contain path separators."
+                            );
+                            return;
+                          }
+                          try {
+                            await Promise.resolve(
+                              onCreateFile(defaultTarget, trimmed)
+                            );
+                          } catch (err) {
+                            console.error(
+                              "FileTree toolbar create file failed:",
+                              err
+                            );
+                          }
+                        })();
                       }}
                       title={`New file at ${targetLabel}`}
                       aria-label={`New file at ${targetLabel}`}
@@ -1177,26 +1338,36 @@ export function FileTree({
                       type="button"
                       className="file-tree-refresh"
                       onClick={() => {
-                        const name = window.prompt(
-                          "New folder name:",
-                          "new-folder"
-                        );
-                        if (name == null) return;
-                        const trimmed = name.trim();
-                        if (!trimmed) return;
-                        if (trimmed.includes("/") || trimmed.includes("\\")) {
-                          window.alert(
-                            "Name must not contain path separators."
-                          );
-                          return;
-                        }
-                        void Promise.resolve(
-                          onCreateFolder(defaultTarget, trimmed)
-                        ).catch((err) => {
-                          window.alert(
-                            `Create folder failed: ${err instanceof Error ? err.message : String(err)}`
-                          );
-                        });
+                        void (async () => {
+                          const name = await promptForInput({
+                            title: "New folder",
+                            message: `Create a folder at the ${targetLabel}.`,
+                            defaultValue: "new-folder",
+                            confirmLabel: "Create",
+                          });
+                          if (name == null) return;
+                          const trimmed = name.trim();
+                          if (!trimmed) return;
+                          if (
+                            trimmed.includes("/") ||
+                            trimmed.includes("\\")
+                          ) {
+                            window.alert(
+                              "Name must not contain path separators."
+                            );
+                            return;
+                          }
+                          try {
+                            await Promise.resolve(
+                              onCreateFolder(defaultTarget, trimmed)
+                            );
+                          } catch (err) {
+                            console.error(
+                              "FileTree toolbar create folder failed:",
+                              err
+                            );
+                          }
+                        })();
                       }}
                       title={`New folder at ${targetLabel}`}
                       aria-label={`New folder at ${targetLabel}`}
@@ -1221,6 +1392,7 @@ export function FileTree({
         onRowClick={handleRowClick}
         onContextMenu={handleContextMenu}
         onDragStartNode={handleDragStartNode}
+        onDragEndNode={handleDragEndNode}
         onDragOverDir={onMoveEntry ? handleDragOverDir : undefined}
         onDragLeaveDir={onMoveEntry ? handleDragLeaveDir : undefined}
         onDropOnDir={onMoveEntry ? handleDropOnDir : undefined}
@@ -1245,6 +1417,25 @@ export function FileTree({
           y={pickerMenu.y}
           items={pickerMenu.items}
           onClose={() => setPickerMenu(null)}
+        />
+      )}
+      {inputDialog && (
+        <InputDialog
+          title={inputDialog.title}
+          message={inputDialog.message}
+          defaultValue={inputDialog.defaultValue}
+          confirmLabel={inputDialog.confirmLabel}
+          selection={inputDialog.selection}
+          onSubmit={(value) => {
+            const resolve = inputDialog.resolve;
+            setInputDialog(null);
+            resolve(value);
+          }}
+          onCancel={() => {
+            const resolve = inputDialog.resolve;
+            setInputDialog(null);
+            resolve(null);
+          }}
         />
       )}
     </div>

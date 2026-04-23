@@ -188,6 +188,56 @@ export function App(): JSX.Element {
     void loadLaneChatHistory(activeLaneId, sessionKey);
   }, [activeLaneId, sessionKey, loadLaneChatHistory]);
 
+  // Global Ctrl/Cmd+Z handler that restores the most recently trashed
+  // entry. We intentionally let the keystroke fall through when the
+  // user is focused inside an editable element (Monaco editor, text
+  // inputs, contenteditable) so the local undo stack stays intact.
+  // Monaco swallows Ctrl+Z itself before it reaches window, so the
+  // editable check just guards plain HTML inputs / textareas.
+  useEffect(() => {
+    if (!casefile) return;
+    const handler = (event: KeyboardEvent) => {
+      const isUndo =
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "z";
+      if (!isUndo) return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          target.isContentEditable ||
+          // Monaco renders inside `.monaco-editor` and surfaces its own
+          // undo for in-buffer text edits. Defer to it when the focus
+          // is inside the editor surface.
+          target.closest(".monaco-editor") ||
+          // Same for our xterm-based terminals — Ctrl+Z is meaningful
+          // there as a process-suspend signal and should not be
+          // intercepted by the renderer-level file undo.
+          target.closest(".xterm")
+        ) {
+          return;
+        }
+      }
+      event.preventDefault();
+      void (async () => {
+        try {
+          const result = await api().undoLastTrash();
+          if (result.restored) {
+            await refreshTree();
+          }
+        } catch (err) {
+          setTreeError(errorMessage(err));
+        }
+      })();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [casefile, refreshTree, setTreeError]);
+
   // ----- Casefile ops -----
 
   const handleChooseCasefile = useCallback(async () => {
@@ -522,6 +572,7 @@ export function App(): JSX.Element {
       onAddToContext: handleAddToContext,
       onRename: handleRenameFile,
       onRefreshTree: refreshTreeAction,
+      onDismissTreeError: () => setTreeError(null),
       onCreateFile: handleCreateFile,
       onCreateFolder: handleCreateFolder,
       onMoveEntry: handleMoveEntry,
