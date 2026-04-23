@@ -13,20 +13,15 @@ export interface ChatTurnResponse {
 }
 
 /**
- * Convert the bridge response into the next chat history. Centralized
- * so a future bridge contract change only needs one update, and so
- * the empty-response edge case logs a single, recognisable warning
- * instead of silently producing an "Error: empty bridge response"
- * message that looks like a user-facing bug. (Review item #8.)
+ * Extract the assistant-side delta from a bridge response, accepting
+ * both the preferred `messages` array and the legacy single `message`
+ * format. Returns `null` if the bridge produced neither — callers
+ * decide how to surface the empty case (resume flows treat it as a
+ * silent no-op while a fresh user send shows an error).
  */
-export function normalizeChatTurn(
-  history: ChatMessage[],
-  userMessage: string,
-  response: ChatTurnResponse
-): ChatMessage[] {
-  const delta = Array.isArray(response.messages) ? response.messages : [];
-  if (delta.length > 0) {
-    return [...history, ...delta];
+export function chatTurnDelta(response: ChatTurnResponse): ChatMessage[] | null {
+  if (Array.isArray(response.messages) && response.messages.length > 0) {
+    return response.messages;
   }
   if (response.message) {
     if (process.env.NODE_ENV !== "production") {
@@ -34,7 +29,34 @@ export function normalizeChatTurn(
         "Bridge returned legacy single-message response; expected a `messages` array"
       );
     }
-    return [...history, { role: "user", content: userMessage }, response.message];
+    return [response.message];
+  }
+  return null;
+}
+
+/**
+ * Convert the bridge response into the next chat history. Centralized
+ * so a future bridge contract change only needs one update, and so
+ * the empty-response edge case logs a single, recognisable warning
+ * instead of silently producing an "Error: empty bridge response"
+ * message that looks like a user-facing bug. (Review item #8.)
+ *
+ * The legacy single-`message` path injects the user message manually
+ * because the older bridge format omitted it from the response. Only
+ * use this helper for fresh user sends; tool-resume/approval flows
+ * have no new user message and should use `chatTurnDelta` directly.
+ */
+export function normalizeChatTurn(
+  history: ChatMessage[],
+  userMessage: string,
+  response: ChatTurnResponse
+): ChatMessage[] {
+  if (Array.isArray(response.messages) && response.messages.length > 0) {
+    return [...history, ...response.messages];
+  }
+  const delta = chatTurnDelta(response);
+  if (delta) {
+    return [...history, { role: "user", content: userMessage }, ...delta];
   }
   if (process.env.NODE_ENV !== "production") {
     console.warn("Bridge returned an empty chat response");
@@ -140,6 +162,46 @@ export function rewriteTabKeyForRename(
   const suffix = `:${oldPath}`;
   if (!key.endsWith(suffix)) return key;
   return `${key.slice(0, key.length - suffix.length)}:${newPath}`;
+}
+
+/**
+ * Detect the platform separator used in `samplePath` so the renderer
+ * can compare paths without importing Node's `path` module. Falls back
+ * to `/` (POSIX) when the path contains neither separator.  We only
+ * need this for descendant-prefix checks; the bridge always returns
+ * native paths, so a single sample is enough.
+ */
+function pathSeparatorOf(samplePath: string): "/" | "\\" {
+  return samplePath.includes("\\") && !samplePath.includes("/") ? "\\" : "/";
+}
+
+/**
+ * Return true if `candidate` equals `ancestor` or lives strictly under
+ * it as a descendant (one or more separators deep). Used to decide
+ * which open tabs to rewrite when a directory is moved or trashed.
+ */
+export function isPathOrDescendant(candidate: string, ancestor: string): boolean {
+  if (candidate === ancestor) return true;
+  const sep = pathSeparatorOf(ancestor);
+  return candidate.startsWith(ancestor + sep);
+}
+
+/**
+ * Replace an `ancestor` prefix in `candidate` with `newAncestor`. Used
+ * when a directory move ripples through every descendant tab path.
+ * Returns `candidate` unchanged when it neither equals nor descends
+ * from `ancestor`.
+ */
+export function rewriteDescendantPath(
+  candidate: string,
+  ancestor: string,
+  newAncestor: string
+): string {
+  if (candidate === ancestor) return newAncestor;
+  const sep = pathSeparatorOf(ancestor);
+  const prefix = ancestor + sep;
+  if (!candidate.startsWith(prefix)) return candidate;
+  return newAncestor + sep + candidate.slice(prefix.length);
 }
 
 export function errorMessage(error: unknown): string {

@@ -8,7 +8,8 @@ import {
   EMPTY_LANE_SESSION,
   errorMessage,
   fileTabKey,
-  overlayTabKey,
+  isPathOrDescendant,
+  rewriteDescendantPath,
   rewriteTabKeyForRename,
   type LaneSessionState,
 } from "./appModelTypes";
@@ -21,7 +22,6 @@ interface UseLaneWorkspaceArgs {
   updateSession: (updater: (prev: LaneSessionState) => LaneSessionState) => void;
   setLaneSessions: React.Dispatch<React.SetStateAction<Map<string, LaneSessionState>>>;
   setTreeError: Dispatch<SetStateAction<string | null>>;
-  reloadOverlays: () => Promise<void>;
 }
 
 export function useLaneWorkspace({
@@ -32,7 +32,6 @@ export function useLaneWorkspace({
   updateSession,
   setLaneSessions,
   setTreeError,
-  reloadOverlays,
 }: UseLaneWorkspaceArgs) {
   const [tree, setTree] = useState<FileTreeNode | null>(null);
 
@@ -49,7 +48,11 @@ export function useLaneWorkspace({
     }
     const token = ++treeRequestRef.current;
     try {
-      const next = await api().listWorkspace(4);
+      // Depth 6 matches what the bridge caps to (8) minus a little
+      // headroom; the tree now starts at the casefile root rather than
+      // the active lane root, so we need a couple of extra levels for
+      // typical "casefile → lane → src → …" hierarchies to render.
+      const next = await api().listWorkspace(6);
       if (token !== treeRequestRef.current) return;
       setTree(next);
       setTreeError(null);
@@ -258,101 +261,185 @@ export function useLaneWorkspace({
     // the implicit `this` binding in case the bridge is class-based.
     return apiRef.onWorkspaceChanged(() => {
       void refreshTree();
-      void reloadOverlays();
       void refreshOpenTabsFromDisk();
     });
-  }, [refreshOpenTabsFromDisk, refreshTree, reloadOverlays]);
+  }, [refreshOpenTabsFromDisk, refreshTree]);
+
+  // Rewrite open tabs after a path rename or move. Handles both
+  // single-file moves and directory renames where every descendant tab
+  // also needs its path updated. Pure helper — no IPC, no setState.
+  const applyPathChangeToSessions = useCallback(
+    (
+      sessions: Map<string, LaneSessionState>,
+      oldPath: string,
+      newPath: string
+    ): Map<string, LaneSessionState> => {
+      const next = new Map(sessions);
+      let mutated = false;
+      for (const [key, sessionState] of sessions.entries()) {
+        let touched = false;
+        const tabs = sessionState.tabs.map((tab) => {
+          if (tab.kind === "file" && isPathOrDescendant(tab.path, oldPath)) {
+            touched = true;
+            const rewrittenPath = rewriteDescendantPath(tab.path, oldPath, newPath);
+            return {
+              ...tab,
+              path: rewrittenPath,
+              key: rewriteTabKeyForRename(tab.key, tab.path, rewrittenPath),
+            };
+          }
+          if (tab.kind === "diff" && isPathOrDescendant(tab.path, oldPath)) {
+            // Diff tabs are read-only snapshots, but the displayed
+            // path label and the tab key both encode the old name
+            // and would be misleading after the move.
+            touched = true;
+            const rewrittenPath = rewriteDescendantPath(tab.path, oldPath, newPath);
+            return {
+              ...tab,
+              path: rewrittenPath,
+              key: rewriteTabKeyForRename(tab.key, tab.path, rewrittenPath),
+            };
+          }
+          return tab;
+        });
+        if (touched) {
+          mutated = true;
+          // The active tab's key may itself be one of the moved tabs;
+          // recompute it the same way so the session keeps focus on
+          // the same buffer after the move.
+          let activeTabKey = sessionState.activeTabKey;
+          if (activeTabKey) {
+            const activeTab = sessionState.tabs.find(
+              (tab) => tab.key === activeTabKey
+            );
+            if (activeTab && isPathOrDescendant(activeTab.path, oldPath)) {
+              const rewrittenPath = rewriteDescendantPath(
+                activeTab.path,
+                oldPath,
+                newPath
+              );
+              activeTabKey = rewriteTabKeyForRename(
+                activeTab.key,
+                activeTab.path,
+                rewrittenPath
+              );
+            }
+          }
+          next.set(key, { ...sessionState, tabs, activeTabKey });
+        }
+      }
+      return mutated ? next : sessions;
+    },
+    []
+  );
 
   const handleRenameFile = useCallback(
     async (oldPath: string, newName: string) => {
       try {
         const result = await api().renameFile(oldPath, newName);
         const newPath = result.newPath;
-        setLaneSessions((prev) => {
-          const next = new Map(prev);
-          let mutated = false;
-          for (const [key, sessionState] of prev.entries()) {
-            let touched = false;
-            const tabs = sessionState.tabs.map((tab) => {
-              if (tab.kind === "file" && tab.path === oldPath) {
-                touched = true;
-                return {
-                  ...tab,
-                  path: newPath,
-                  key: rewriteTabKeyForRename(tab.key, oldPath, newPath),
-                };
-              }
-              if (tab.kind === "diff" && tab.path === oldPath) {
-                // Diff tabs are read-only snapshots, but the displayed
-                // path label and the tab key both encode the old name
-                // and would be misleading after a rename.
-                touched = true;
-                return {
-                  ...tab,
-                  path: newPath,
-                  key: rewriteTabKeyForRename(tab.key, oldPath, newPath),
-                };
-              }
-              return tab;
-            });
-            if (touched) {
-              mutated = true;
-              const activeTabKey =
-                sessionState.activeTabKey && sessionState.activeTabKey.endsWith(`:${oldPath}`)
-                  ? rewriteTabKeyForRename(sessionState.activeTabKey, oldPath, newPath)
-                  : sessionState.activeTabKey;
-              next.set(key, { ...sessionState, tabs, activeTabKey });
-            }
-          }
-          return mutated ? next : prev;
-        });
+        setLaneSessions((prev) => applyPathChangeToSessions(prev, oldPath, newPath));
         await refreshTree();
-        await reloadOverlays();
       } catch (error) {
         setTreeError(errorMessage(error));
         throw error;
       }
     },
-    [refreshTree, reloadOverlays, setLaneSessions, setTreeError]
+    [applyPathChangeToSessions, refreshTree, setLaneSessions, setTreeError]
   );
 
-  const handleOpenOverlayFile = useCallback(
-    async (virtualPath: string) => {
-      if (!casefile || !activeLaneId) return;
-      // Include the lane id so the same `virtualPath` viewed from two
-      // different lanes does not collide on a single tab. (Review #3.)
-      const key = overlayTabKey(activeLaneId, virtualPath);
-      if (session.tabs.some((tab) => tab.key === key)) {
-        updateSession((prev) => ({ ...prev, activeTabKey: key }));
-        return;
-      }
+  // M2: cross-directory move/rename. The destination is a full lane-
+  // absolute path (the FileTree composes it from the typed sub-path or
+  // the drag-and-drop target row). Tabs whose path equals or descends
+  // from the source are rewritten so dirty buffers do not orphan.
+  const handleMoveEntry = useCallback(
+    async (sourcePath: string, destinationPath: string) => {
       try {
-        const result = await api().readOverlayFile(activeLaneId, virtualPath);
-        updateSession((prev) => {
-          if (prev.tabs.some((tab) => tab.key === key)) {
-            return { ...prev, activeTabKey: key };
-          }
-          return {
-            ...prev,
-            tabs: [
-              ...prev.tabs,
-              {
-                kind: "file",
-                key,
-                path: virtualPath,
-                content: result.content,
-                savedContent: result.content,
-                truncated: result.truncated,
-              },
-            ],
-            activeTabKey: key,
-          };
-        });
+        const result = await api().moveEntry(sourcePath, destinationPath);
+        if (result.moved) {
+          setLaneSessions((prev) =>
+            applyPathChangeToSessions(prev, result.sourcePath, result.destinationPath)
+          );
+        }
+        await refreshTree();
       } catch (error) {
         setTreeError(errorMessage(error));
+        throw error;
       }
     },
-    [activeLaneId, casefile, session.tabs, setTreeError, updateSession]
+    [applyPathChangeToSessions, refreshTree, setLaneSessions, setTreeError]
+  );
+
+  // M2: trash an entry to the OS trash and prune any open tabs that
+  // pointed at the trashed path or its descendants. We don't try to
+  // preserve dirty edits here — the user explicitly asked for the
+  // delete; surfacing a "you have unsaved changes" prompt belongs in
+  // the FileTree's confirmation step, not here.
+  const handleTrashEntry = useCallback(
+    async (targetPath: string) => {
+      try {
+        await api().trashEntry(targetPath);
+        setLaneSessions((prev) => {
+          const next = new Map(prev);
+          let mutated = false;
+          for (const [key, sessionState] of prev.entries()) {
+            const remaining = sessionState.tabs.filter(
+              (tab) => !isPathOrDescendant(tab.path, targetPath)
+            );
+            if (remaining.length === sessionState.tabs.length) continue;
+            mutated = true;
+            // If the active tab was just removed, fall back to the new
+            // last tab (or null if nothing remains). Mirrors the close-
+            // tab snap-to-neighbour behaviour.
+            let activeTabKey = sessionState.activeTabKey;
+            const activeStillThere = remaining.some(
+              (tab) => tab.key === activeTabKey
+            );
+            if (!activeStillThere) {
+              activeTabKey = remaining.length > 0 ? remaining[remaining.length - 1].key : null;
+            }
+            next.set(key, { ...sessionState, tabs: remaining, activeTabKey });
+          }
+          return mutated ? next : prev;
+        });
+        await refreshTree();
+      } catch (error) {
+        setTreeError(errorMessage(error));
+        throw error;
+      }
+    },
+    [refreshTree, setLaneSessions, setTreeError]
+  );
+
+  // M2: create a new (empty) file inside the active lane and open it
+  // in the editor. We open the file proactively so the user can start
+  // typing immediately — the watcher will refresh the tree but we
+  // don't want to wait for that round-trip.
+  const handleCreateFile = useCallback(
+    async (parentDir: string, name: string) => {
+      try {
+        const result = await api().createFile(parentDir, name);
+        await refreshTree();
+        await handleOpenFile(result.path);
+      } catch (error) {
+        setTreeError(errorMessage(error));
+        throw error;
+      }
+    },
+    [handleOpenFile, refreshTree, setTreeError]
+  );
+
+  const handleCreateFolder = useCallback(
+    async (parentDir: string, name: string) => {
+      try {
+        await api().createFolder(parentDir, name);
+        await refreshTree();
+      } catch (error) {
+        setTreeError(errorMessage(error));
+        throw error;
+      }
+    },
+    [refreshTree, setTreeError]
   );
 
   const handleOpenLaneFile = useCallback(
@@ -407,7 +494,10 @@ export function useLaneWorkspace({
     handleSaveTab,
     refreshOpenTabsFromDisk,
     handleRenameFile,
-    handleOpenOverlayFile,
+    handleMoveEntry,
+    handleTrashEntry,
+    handleCreateFile,
+    handleCreateFolder,
     handleOpenLaneFile,
   };
 }

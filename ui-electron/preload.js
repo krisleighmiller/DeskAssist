@@ -21,6 +21,15 @@ contextBridge.exposeInMainWorld("assistantApi", {
   readFile: (path, maxChars = 200000) => ipcRenderer.invoke("file:read", { path, maxChars }),
   saveFile: (path, content) => ipcRenderer.invoke("file:save", { path, content }),
   renameFile: (path, newName) => ipcRenderer.invoke("file:rename", { path, newName }),
+  // M2: browser-driven workspace mutations. All four are constrained to
+  // the active casefile root (validated in main.js via ensureInWorkspace).
+  createFile: (parentDir, name) =>
+    ipcRenderer.invoke("file:createFile", { parentDir, name }),
+  createFolder: (parentDir, name) =>
+    ipcRenderer.invoke("file:createFolder", { parentDir, name }),
+  moveEntry: (sourcePath, destinationPath) =>
+    ipcRenderer.invoke("file:move", { sourcePath, destinationPath }),
+  trashEntry: (path) => ipcRenderer.invoke("file:trash", { path }),
 
   // Notes, comparison (M3).
   getNote: (laneId) => ipcRenderer.invoke("casefile:getNote", { laneId }),

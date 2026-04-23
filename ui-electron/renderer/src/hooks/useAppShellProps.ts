@@ -6,6 +6,7 @@ import {
 } from "../components/ChatTab";
 import type { AppShellProps } from "../components/AppShell";
 import type { OpenTab } from "../components/EditorPane";
+import type { RightTabKey } from "../components/RightPanel";
 import type { TerminalLaneContext } from "./useTerminalManager";
 import type {
   ApiKeyStatus,
@@ -22,7 +23,6 @@ import type {
   LaneAttachmentInput,
   LaneComparisonDto,
   LaneUpdateInput,
-  OverlayTreeDto,
   PromptDraftDto,
   PromptInputDto,
   PromptSummaryDto,
@@ -50,10 +50,6 @@ interface ShellViewModelState {
   providerModels: ProviderModels;
   tree: FileTreeNode | null;
   treeError: string | null;
-  overlayTrees: OverlayTreeDto[];
-  overlaysLoading: boolean;
-  overlaysError: string | null;
-  showOverlays: boolean;
   comparisonSessions: ComparisonSession[];
   focusedComparisonSession: ComparisonSession | null;
   sessionTabs: OpenTab[];
@@ -76,6 +72,10 @@ interface ShellViewModelState {
   inboxSources: InboxSourceDto[];
   inboxLoading: boolean;
   inboxError: string | null;
+  // M2: lifted right-panel tab state so non-RightPanel surfaces can
+  // request a switch (e.g. FileTree triggering a comparison should
+  // jump the user to the Lanes tab).
+  activeRightTab: RightTabKey;
 }
 
 interface ShellViewModelActions {
@@ -84,12 +84,22 @@ interface ShellViewModelActions {
   onSwitchLane: (laneId: string) => void | Promise<void>;
   onStatusChange: (status: ApiKeyStatus) => void;
   onModelsChange: (models: ProviderModels) => void;
-  onToggleOverlays: () => void;
   onOpenFile: (path: string) => void | Promise<void>;
-  onOpenOverlayFile: (path: string) => void | Promise<void>;
   onAddToContext?: (path: string) => void;
   onRename?: (sourcePath: string, nextPath: string) => Promise<void>;
-  onRefreshTreeAndOverlays?: () => void;
+  onRefreshTree?: () => void;
+  // M2: browser-driven file ops + lane integration. All optional —
+  // the FileTree silently hides the corresponding menu items when a
+  // handler is missing, which keeps unit / casefile-less states sane
+  // (no active lane → no point offering a "New file" prompt).
+  onCreateFile?: (parentDir: string, name: string) => Promise<void>;
+  onCreateFolder?: (parentDir: string, name: string) => Promise<void>;
+  onMoveEntry?: (sourcePath: string, destinationPath: string) => Promise<void>;
+  onTrashEntry?: (path: string) => Promise<void>;
+  onCreateLaneFromPath?: (path: string, name: string) => Promise<void>;
+  onAttachToActiveLane?: (path: string, name: string) => Promise<void>;
+  onStartLaneComparison?: (selfLaneId: string, otherLaneId: string) => Promise<void>;
+  onActiveRightTabChange: (tab: RightTabKey) => void;
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
   onEditTab: (key: string, content: string) => void;
@@ -184,18 +194,54 @@ export function useAppShellProps({
         activePath: state.activeFilePath,
         onOpenFile: actions.onOpenFile,
         error: state.treeError,
-        hasWorkspace: Boolean(state.activeLane),
-        overlays: state.overlayTrees,
-        overlaysLoading: state.overlaysLoading,
-        overlaysError: state.overlaysError,
-        showOverlays: state.showOverlays,
-        canShowOverlays: Boolean(state.activeLane),
-        onToggleOverlays: actions.onToggleOverlays,
-        onOpenOverlayFile: actions.onOpenOverlayFile,
+        // The file tree is the user's view of the casefile. Lanes
+        // exist to scope what the chat agent sees — they are NOT a
+        // gate on the user's ability to browse, open, or edit files.
+        // (Cursor-style file tree behaviour: any file in the casefile
+        // is fair game; the active lane only changes highlighting.)
+        // So everything here keys off `state.casefile`. The one
+        // exception is `onAttachToActiveLane`, which by definition
+        // requires an active lane.
+        hasWorkspace: Boolean(state.casefile),
         casefileRoot: state.casefile?.root ?? null,
         onAddToContext: state.casefile ? actions.onAddToContext : undefined,
-        onRename: state.activeLane ? actions.onRename : undefined,
-        onRefresh: state.activeLane ? actions.onRefreshTreeAndOverlays : undefined,
+        onRename: state.casefile ? actions.onRename : undefined,
+        onRefresh: state.casefile ? actions.onRefreshTree : undefined,
+        // Active lane drives highlighting / lane-scoped menu items
+        // only — file ops below are casefile-wide.
+        activeLaneRoot: state.activeLane?.root ?? null,
+        // Roots beyond the lane's own write root that should still be
+        // tinted as "in the active lane" — currently the lane's
+        // read-only attachment roots. Empty when the lane has no
+        // attachments or there's no active lane. The FileTree treats
+        // this list together with `activeLaneRoot` for its colour cue.
+        activeLaneScopeRoots: state.activeLane?.attachments
+          ? state.activeLane.attachments
+              .map((att) => att.root)
+              .filter((root): root is string => Boolean(root))
+          : undefined,
+        activeLaneId: state.activeLaneId,
+        lanes: state.casefile
+          ? state.casefile.lanes.map((lane) => ({
+              id: lane.id,
+              name: lane.name,
+              root: lane.root,
+            }))
+          : undefined,
+        onCreateFile: state.casefile ? actions.onCreateFile : undefined,
+        onCreateFolder: state.casefile ? actions.onCreateFolder : undefined,
+        onMoveEntry: state.casefile ? actions.onMoveEntry : undefined,
+        onTrashEntry: state.casefile ? actions.onTrashEntry : undefined,
+        onCreateLaneFromPath: state.casefile
+          ? actions.onCreateLaneFromPath
+          : undefined,
+        onAttachToActiveLane: state.activeLane
+          ? actions.onAttachToActiveLane
+          : undefined,
+        onStartLaneComparison:
+          state.casefile && state.casefile.lanes.length >= 2
+            ? actions.onStartLaneComparison
+            : undefined,
       },
       editor: {
         tabs: state.sessionTabs,
@@ -241,12 +287,8 @@ export function useAppShellProps({
           // attachment / arbitrary directory, but the bridge call
           // bypasses our normal save-tab flow so the file tree
           // wouldn't otherwise re-list. Fire a refresh so the new
-          // file appears immediately in the workspace pane. Reload
-          // overlays too: the destination is often an ancestor lane's
-          // attachment (e.g. the chat picker's "ash_notes" row),
-          // which is rendered in the inherited-context section, not
-          // the main lane tree.
-          onAfterSaveOutput: actions.onRefreshTreeAndOverlays,
+          // file appears immediately in the workspace pane.
+          onAfterSaveOutput: actions.onRefreshTree,
         },
         notes: {
           value: state.noteState.content,
@@ -313,5 +355,7 @@ export function useAppShellProps({
     },
     activeLane: terminalLane,
     casefileRoot: state.casefile?.root ?? null,
+    activeRightTab: state.activeRightTab,
+    onActiveRightTabChange: actions.onActiveRightTabChange,
   };
 }

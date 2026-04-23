@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
 const fsSync = require("fs");
@@ -33,32 +33,71 @@ let activeLaneRoot = null;
 
 // Filesystem watcher for the active casefile + extra overlay roots.
 // We notify the renderer any time something inside one of the watched
-// directories changes so the file tree, the inherited-context overlay
-// section, and any other workspace-derived UI can re-list.
+// directories changes so the file tree (and any other workspace-derived
+// UI) can re-list.
 //
-// Why the casefile root, not just the active lane root? Lanes are
-// typically siblings under the casefile root, and ancestor lanes are
-// surfaced to the renderer as `_ancestors/<id>/...` overlays. If we
-// only watched the active lane, an external rename in a sibling
-// (== ancestor) lane wouldn't refresh the inherited-context pane —
-// which was the bug from the user's screenshot where Ratings.md still
-// showed under its original chat-output filename inside an overlay.
+// Implementation note. We deliberately do NOT use Node's recursive
+// `fs.watch(root, { recursive: true })`. On Linux that mode walks the
+// entire tree and creates a per-subdirectory inotify watch with no
+// way to exclude paths. A casefile that contains a normal repo
+// (`node_modules/`, `.git/`, `.venv/`, build outputs, etc.) easily
+// produces tens of thousands of watches, which:
+//   * exhausts `fs.inotify.max_user_watches` for the whole user
+//     session — every other app's file watcher (file managers,
+//     editors, sync clients) starts failing too, which the user
+//     experiences as "the desktop froze";
+//   * leaks inotify watches across rename/move events.
 //
-// `extraWatchRoots` covers attachment / context roots that live
-// *outside* the casefile root (uncommon but supported). The renderer
-// reports those via the `workspace:registerWatchRoots` IPC after each
-// `listOverlayTrees` call.
-//
-// fs.watch on Linux uses inotify which (unlike kqueue / ReadDirectoryChangesW)
-// is not recursive. We pass `{ recursive: true }` anyway: Node falls back
-// to a per-directory walk on Linux internally, which is fine for typical
-// casefile sizes (lanes hold notes + small attachments, not a node_modules
-// tree). If a future user opens a giant casefile and the watcher becomes
-// expensive, we can swap this for chokidar with a `depth: 4` cap.
+// Instead we walk each registered root manually, skip a fixed set of
+// noisy directories (`IGNORED_DIRS`), skip symlinks (so a stray
+// `lib -> ..` cannot blow the walk up), and cap the total number of
+// per-directory watchers we will install. If a directory is created
+// inside a watched tree the per-parent watcher fires, and we walk
+// that new subtree on demand.
 const activeWatchers = new Map(); // path -> fs.FSWatcher
 let extraWatchRoots = []; // overlay roots outside the casefile, set by renderer
 let workspaceChangeNotifyTimer = null;
 const WORKSPACE_CHANGE_DEBOUNCE_MS = 150;
+
+// Directories that are essentially never interesting to surface in the
+// file tree, never edited by hand, and routinely contain hundreds of
+// thousands of files. Skipping them protects both the recursive walk
+// (`buildTreeAt`) and the watcher (`attachSubtree`).
+const IGNORED_DIRS = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  ".casefile",
+  "node_modules",
+  ".venv",
+  "venv",
+  "env",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+  ".tox",
+  "dist",
+  "build",
+  "out",
+  "target",
+  ".next",
+  ".nuxt",
+  ".cache",
+  ".gradle",
+  ".idea",
+  ".vscode",
+  ".terraform",
+  ".direnv",
+]);
+
+// Hard cap on the number of per-directory watchers we will install
+// across all registered roots. Cheap insurance against a user opening
+// a casefile that points at, say, `~/` — without this cap a recursive
+// walk would still try to install hundreds of thousands of watches
+// even with IGNORED_DIRS in place.
+const MAX_WATCHED_DIRS = 4096;
+let watchCapReachedNotified = false;
 
 function notifyWorkspaceChanged() {
   // Coalesce bursts of inotify events (e.g. a `cp -r` of a directory
@@ -72,83 +111,194 @@ function notifyWorkspaceChanged() {
   }, WORKSPACE_CHANGE_DEBOUNCE_MS);
 }
 
-function stopAllWatchers() {
-  for (const watcher of activeWatchers.values()) {
-    try {
-      watcher.close();
-    } catch {
-      // Closing an already-closed watcher throws on some platforms; ignore.
-    }
+function detachDirWatcher(dir) {
+  const watcher = activeWatchers.get(dir);
+  if (!watcher) return;
+  try {
+    watcher.close();
+  } catch {
+    // Closing an already-closed watcher throws on some platforms; ignore.
   }
-  activeWatchers.clear();
+  activeWatchers.delete(dir);
+}
+
+function stopAllWatchers() {
+  for (const dir of Array.from(activeWatchers.keys())) {
+    detachDirWatcher(dir);
+  }
   if (workspaceChangeNotifyTimer) {
     clearTimeout(workspaceChangeNotifyTimer);
     workspaceChangeNotifyTimer = null;
   }
+  watchCapReachedNotified = false;
 }
 
-function watchOne(root) {
-  if (!root || activeWatchers.has(root)) return;
-  try {
-    const watcher = fsSync.watch(
-      root,
-      { recursive: true, persistent: false },
-      // We don't care about which file changed — the renderer always
-      // re-fetches the whole subtree. So just fire the debounced
-      // notifier on every event.
-      () => notifyWorkspaceChanged()
-    );
-    watcher.on("error", (err) => {
-      // Don't crash the main process if the watch breaks (e.g. user
-      // deleted the directory from the shell). Log, drop the entry, and
-      // let the next reconcileWatchers() call re-attach if appropriate.
-      console.warn("[main] watcher error on", root, ":", err && err.message);
-      try {
-        watcher.close();
-      } catch {
-        // Ignore — already in the process of dying.
-      }
-      activeWatchers.delete(root);
-    });
-    activeWatchers.set(root, watcher);
-  } catch (err) {
-    // ENOENT / EACCES on the root — surface as a single warning,
-    // don't keep retrying. The user can refresh manually if needed.
-    console.warn("[main] failed to watch", root, ":", err && err.message);
+function detachSubtreeWatchers(root) {
+  // Drop the watcher for `root` and every descendant directory we have
+  // a watcher for. Used when a directory disappears (rename / delete)
+  // so we don't keep stale FDs around.
+  const prefix = root + path.sep;
+  for (const dir of Array.from(activeWatchers.keys())) {
+    if (dir === root || dir.startsWith(prefix)) {
+      detachDirWatcher(dir);
+    }
   }
 }
 
+function attachDirWatcher(dir) {
+  // Install a single non-recursive watcher on `dir`. New entries
+  // created inside `dir` fire this watcher and are reconciled by
+  // `reconcileChild` below. Idempotent.
+  if (!dir || activeWatchers.has(dir)) return;
+  if (activeWatchers.size >= MAX_WATCHED_DIRS) {
+    if (!watchCapReachedNotified) {
+      watchCapReachedNotified = true;
+      console.warn(
+        `[main] watcher cap reached (${MAX_WATCHED_DIRS} dirs); ` +
+          "additional subdirectories will not auto-refresh. " +
+          "Consider opening a smaller casefile root."
+      );
+    }
+    return;
+  }
+  let watcher;
+  try {
+    watcher = fsSync.watch(dir, { persistent: false }, (eventType, filename) => {
+      notifyWorkspaceChanged();
+      if (filename) {
+        // A `rename` event fires both for created and deleted entries
+        // (inotify IN_CREATE / IN_DELETE / IN_MOVED_*). Reconcile the
+        // affected child in the background so we attach watchers to
+        // brand-new subdirectories and drop watchers for vanished
+        // ones. We never block the inotify callback on filesystem IO.
+        const child = path.join(dir, filename);
+        setImmediate(() => {
+          reconcileChild(child).catch(() => {
+            // Reconciliation errors are best-effort; the next watcher
+            // event (or a manual refresh) will retry.
+          });
+        });
+      }
+    });
+  } catch (err) {
+    // ENOENT / EACCES on the directory — surface as a single warning
+    // and move on. The next reconcile pass will retry if appropriate.
+    console.warn("[main] failed to watch", dir, ":", err && err.message);
+    return;
+  }
+  watcher.on("error", (err) => {
+    console.warn("[main] watcher error on", dir, ":", err && err.message);
+    detachDirWatcher(dir);
+  });
+  activeWatchers.set(dir, watcher);
+}
+
+async function attachSubtree(root) {
+  // Iteratively walk `root`, attaching a non-recursive watcher per
+  // real subdirectory we visit. Skips IGNORED_DIRS by basename and
+  // skips directory symlinks so a self-referential link cannot loop
+  // the walk. Bounded by MAX_WATCHED_DIRS via attachDirWatcher.
+  if (!root) return;
+  if (IGNORED_DIRS.has(path.basename(root))) return;
+  let rootStat;
+  try {
+    rootStat = await fs.lstat(root);
+  } catch {
+    return;
+  }
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return;
+  const stack = [root];
+  while (stack.length > 0) {
+    if (activeWatchers.size >= MAX_WATCHED_DIRS) break;
+    const dir = stack.pop();
+    attachDirWatcher(dir);
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      // `Dirent` from `readdir({withFileTypes: true})` reports the
+      // entry's own type without following symlinks, so a symlink to
+      // a directory has `isDirectory() === false` and is naturally
+      // skipped here. `entry.isSymbolicLink()` is checked anyway in
+      // case Node's behaviour ever shifts.
+      if (typeof entry.isSymbolicLink === "function" && entry.isSymbolicLink()) {
+        continue;
+      }
+      if (IGNORED_DIRS.has(entry.name)) continue;
+      stack.push(path.join(dir, entry.name));
+    }
+  }
+}
+
+async function reconcileChild(p) {
+  // Called from a watcher callback when an entry inside a watched
+  // directory was created, renamed, or deleted. If `p` is a new
+  // directory we now want to watch, walk it. If it has disappeared,
+  // drop watchers for it and any descendants.
+  if (!p) return;
+  if (IGNORED_DIRS.has(path.basename(p))) return;
+  let stat;
+  try {
+    stat = await fs.lstat(p);
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      detachSubtreeWatchers(p);
+    }
+    return;
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return;
+  if (!activeWatchers.has(p)) {
+    await attachSubtree(p);
+  }
+}
+
+let watchedRoots = new Set();
+
 function reconcileWatchers() {
-  // Compute the desired set of roots from the current state and bring
-  // the live watcher map in line — start any missing watchers, stop
-  // any that are no longer needed. Called whenever the casefile root
-  // or the extra overlay roots change.
+  // Bring the per-directory watcher set in line with the desired set
+  // of roots. Called whenever the casefile root or the extra overlay
+  // roots change. Synchronous from the caller's point of view; the
+  // per-subtree walk runs in the background.
   const desired = new Set();
   if (activeCasefileRoot) desired.add(activeCasefileRoot);
   for (const root of extraWatchRoots) {
     if (!root) continue;
-    // Skip roots already covered by the casefile-root recursive watch
-    // — Node would happily start a redundant watcher otherwise.
     if (
       activeCasefileRoot &&
       (root === activeCasefileRoot ||
         root.startsWith(`${activeCasefileRoot}${path.sep}`))
     ) {
+      // Already covered by the casefile-root walk.
       continue;
     }
     desired.add(root);
   }
-  for (const existing of Array.from(activeWatchers.keys())) {
-    if (!desired.has(existing)) {
-      try {
-        activeWatchers.get(existing).close();
-      } catch {
-        // Ignore close-time errors, same rationale as stopAllWatchers.
+  // If the desired root set is unchanged, leave the existing
+  // per-directory watchers in place. The watcher callbacks keep them
+  // honest on subsequent create/delete events.
+  let same = desired.size === watchedRoots.size;
+  if (same) {
+    for (const r of desired) {
+      if (!watchedRoots.has(r)) {
+        same = false;
+        break;
       }
-      activeWatchers.delete(existing);
     }
   }
-  for (const root of desired) watchOne(root);
+  if (same && watchedRoots.size > 0) return;
+  // Desired set changed — drop everything and rewalk. Coverage gap is
+  // a few ms; renderer refresh is debounced anyway.
+  stopAllWatchers();
+  watchedRoots = new Set(desired);
+  for (const root of desired) {
+    void attachSubtree(root).catch((err) => {
+      console.warn("[main] attachSubtree failed for", root, ":", err && err.message);
+    });
+  }
 }
 let apiKeysCache = {
   openai: "",
@@ -427,16 +577,23 @@ function createWindow() {
 }
 
 function ensureInWorkspace(targetPath) {
-  if (!activeLaneRoot) {
-    throw new Error("No active lane (open a casefile first)");
+  // Containment is enforced against the *casefile* root, not the active
+  // lane root. The file tree shows the entire casefile (M2.1 — see the
+  // "show full tree, color the active lane" change), so user-driven
+  // file ops naturally need to act on anything inside the casefile.
+  // Lane-scoped restrictions for AI-initiated ops are still enforced
+  // separately by the Python backend's `WorkspaceFilesystem` (lane-
+  // bound), which is what actually limits what tools can touch.
+  if (!activeCasefileRoot) {
+    throw new Error("No casefile open");
   }
-  const resolvedWorkspace = path.resolve(activeLaneRoot);
+  const resolvedWorkspace = path.resolve(activeCasefileRoot);
   const resolvedTarget = path.resolve(targetPath);
   if (
     resolvedTarget !== resolvedWorkspace &&
     !resolvedTarget.startsWith(`${resolvedWorkspace}${path.sep}`)
   ) {
-    throw new Error("Path escapes lane root");
+    throw new Error("Path escapes casefile root");
   }
   return resolvedTarget;
 }
@@ -469,7 +626,18 @@ async function buildTreeAt(directory, depth = 0, maxDepth = 4, virtualPath = nul
   }
   entries.sort((a, b) => a.name.localeCompare(b.name));
   for (const entry of entries) {
-    if (entry.name === ".casefile") continue;
+    // Skip noisy directories (`.git`, `node_modules`, build outputs,
+    // virtualenvs, etc.) for the same reason `attachSubtree` skips
+    // them: they routinely hold hundreds of thousands of files, are
+    // never user-edited from the tree, and recursively walking them
+    // on every workspace:list call freezes the main process.
+    if (IGNORED_DIRS.has(entry.name)) continue;
+    // Directory symlinks are skipped to avoid walk loops. With
+    // `withFileTypes: true`, `entry.isDirectory()` already returns
+    // false for symlinks; the explicit check is defensive.
+    if (typeof entry.isSymbolicLink === "function" && entry.isSymbolicLink()) {
+      continue;
+    }
     const entryPath = path.join(directory, entry.name);
     const childVirtual = virtualPath ? `${virtualPath}/${entry.name}` : null;
     if (entry.isDirectory()) {
@@ -701,7 +869,14 @@ ipcMain.handle("casefile:choose", async () => {
   const defaultPath = activeCasefileRoot
     ? path.dirname(activeCasefileRoot)
     : app.getPath("documents");
-  const result = await dialog.showOpenDialog({
+  // Attach the dialog to the main window so it's tracked as a true
+  // child window. Without this the Linux portal-backed file picker can
+  // stay visible after the user picks a directory — the promise
+  // resolves but the OS never tears the window down because it has no
+  // parent to dismiss it against. Passing `mainWindow` here also
+  // disables interaction with the workbench while the picker is open
+  // (matches the user's intuition for a modal "open" dialog).
+  const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory", "createDirectory"],
     title: "Open Casefile",
     defaultPath,
@@ -730,7 +905,9 @@ ipcMain.handle("casefile:chooseLaneRoot", async () => {
   // only when no casefile is open yet (in which case there's no lane to
   // register anyway, but we still want a sane default).
   const defaultPath = activeCasefileRoot || app.getPath("documents");
-  const result = await dialog.showOpenDialog({
+  // Parent-window so the dialog is properly modal and dismisses on
+  // pick (see `casefile:choose` for the longer rationale).
+  const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory", "createDirectory"],
     title: "Choose Directory",
     defaultPath,
@@ -1102,11 +1279,16 @@ ipcMain.handle("casefile:readOverlayFile", async (_, args = {}) => {
 });
 
 ipcMain.handle("workspace:list", async (_, args = {}) => {
-  const maxDepth = Number.isInteger(args.maxDepth) ? args.maxDepth : 4;
-  if (!activeLaneRoot) {
-    throw new Error("No active lane (open a casefile first)");
+  const maxDepth = Number.isInteger(args.maxDepth) ? args.maxDepth : 6;
+  // M2.1: list from the casefile root so the user always sees the full
+  // tree. The renderer marks subtree(s) belonging to the active lane
+  // with a "in-active-lane" CSS class for the colour cue. Going through
+  // `buildTreeAt` (no containment check) is fine here: we're explicitly
+  // rooting at the casefile, not honouring a caller-supplied path.
+  if (!activeCasefileRoot) {
+    throw new Error("No casefile open");
   }
-  return buildTree(activeLaneRoot, 0, Math.max(1, Math.min(maxDepth, 8)));
+  return buildTreeAt(activeCasefileRoot, 0, Math.max(1, Math.min(maxDepth, 8)));
 });
 
 ipcMain.handle("file:read", async (_, args = {}) => {
@@ -1206,6 +1388,184 @@ ipcMain.handle("file:rename", async (_, args = {}) => {
   }
   await fs.rename(sourcePath, destinationPath);
   return { oldPath: sourcePath, newPath: destinationPath, renamed: true };
+});
+
+// Validate that a basename is acceptable as a directory entry name. The
+// rules match `file:rename` for consistency: no path separators, no
+// reserved navigation segments, no empty / whitespace-only strings.
+function validateBasename(name) {
+  const trimmed = typeof name === "string" ? name.trim() : "";
+  if (!trimmed) {
+    throw new Error("name must be a non-empty string");
+  }
+  if (
+    trimmed.includes("/") ||
+    trimmed.includes("\\") ||
+    trimmed === "." ||
+    trimmed === ".."
+  ) {
+    throw new Error("name must not contain path separators or be '.'/'..'");
+  }
+  return trimmed;
+}
+
+// Create a new (empty) file inside the active lane.  The caller supplies
+// a parent directory (absolute, must already be inside the lane root)
+// and a basename (single segment, no separators).  We refuse to clobber
+// an existing entry; if you need to overwrite, save through the editor.
+ipcMain.handle("file:createFile", async (_, args = {}) => {
+  const parentPath = ensureInWorkspace(args.parentDir || "");
+  const name = validateBasename(args.name);
+  const destinationPath = ensureInWorkspace(path.join(parentPath, name));
+  // The parent must exist and be a directory; otherwise the user picked
+  // a stale tree entry. We do not implicitly create parents here — that
+  // is what `file:createFolder` is for.
+  let parentStat;
+  try {
+    parentStat = await fs.stat(parentPath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      throw new Error(`Parent directory does not exist: ${parentPath}`);
+    }
+    throw err;
+  }
+  if (!parentStat.isDirectory()) {
+    throw new Error("Parent path is not a directory");
+  }
+  // O_EXCL semantics: fail if the target already exists. This avoids
+  // race-y "check-then-write" patterns and matches what the user would
+  // expect from a "new file" action.
+  try {
+    const handle = await fs.open(destinationPath, "wx");
+    await handle.close();
+  } catch (err) {
+    if (err && err.code === "EEXIST") {
+      throw new Error(`A file or folder named "${name}" already exists`);
+    }
+    throw err;
+  }
+  return { path: destinationPath, created: true };
+});
+
+// Create a new directory inside the active lane.  Like `file:createFile`
+// we require the parent to exist and refuse to clobber an existing
+// entry of any kind.
+ipcMain.handle("file:createFolder", async (_, args = {}) => {
+  const parentPath = ensureInWorkspace(args.parentDir || "");
+  const name = validateBasename(args.name);
+  const destinationPath = ensureInWorkspace(path.join(parentPath, name));
+  let parentStat;
+  try {
+    parentStat = await fs.stat(parentPath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      throw new Error(`Parent directory does not exist: ${parentPath}`);
+    }
+    throw err;
+  }
+  if (!parentStat.isDirectory()) {
+    throw new Error("Parent path is not a directory");
+  }
+  try {
+    await fs.mkdir(destinationPath); // not recursive — fail on existing
+  } catch (err) {
+    if (err && err.code === "EEXIST") {
+      throw new Error(`A file or folder named "${name}" already exists`);
+    }
+    throw err;
+  }
+  return { path: destinationPath, created: true };
+});
+
+// Move (or rename) a file/directory inside the active lane.  Both the
+// source and destination must resolve inside the current lane root —
+// this handler is intentionally NOT a generic mv across lanes/overlays.
+// We refuse to overwrite an existing destination so a stray drag in the
+// tree can't silently destroy data; the caller can issue a follow-up
+// trash + retry if they want overwrite semantics.
+ipcMain.handle("file:move", async (_, args = {}) => {
+  const sourcePath = ensureInWorkspace(args.sourcePath || "");
+  const destinationPath = ensureInWorkspace(args.destinationPath || "");
+  if (sourcePath === destinationPath) {
+    return { sourcePath, destinationPath, moved: false };
+  }
+  // Source must exist; we don't pre-stat for a perf reason but we want
+  // a clean error if it's already gone (e.g. the user trashed it from
+  // a terminal between the right-click and the menu pick).
+  try {
+    await fs.access(sourcePath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      throw new Error(`Source no longer exists: ${sourcePath}`);
+    }
+    throw err;
+  }
+  // Forbid moving a directory into itself / its own descendants —
+  // fs.rename silently turns this into ENOTEMPTY or worse on some
+  // platforms. Compare with a trailing separator so a/b doesn't match
+  // a/bc.
+  const srcWithSep = sourcePath + path.sep;
+  if (
+    destinationPath === sourcePath ||
+    destinationPath.startsWith(srcWithSep)
+  ) {
+    throw new Error("Cannot move a directory into itself");
+  }
+  // Same overwrite guard as `file:rename`. Race-y but acceptable: an
+  // attacker who can write to the lane already has full control; this
+  // is a UX guard against the common "drop on the wrong row" mistake.
+  try {
+    await fs.access(destinationPath);
+    throw new Error(
+      `A file or folder already exists at the destination: ${destinationPath}`
+    );
+  } catch (err) {
+    if (err && err.code !== "ENOENT") throw err;
+  }
+  // Ensure the destination's parent exists. We allow moves into a
+  // nested sub-path the user typed by hand (e.g. drop "foo.md" into
+  // "subdir" the tree had not yet expanded), but we do NOT create
+  // arbitrary missing parent chains — that would mask typos.
+  const destParent = path.dirname(destinationPath);
+  let parentStat;
+  try {
+    parentStat = await fs.stat(destParent);
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      throw new Error(`Destination parent directory does not exist: ${destParent}`);
+    }
+    throw err;
+  }
+  if (!parentStat.isDirectory()) {
+    throw new Error("Destination parent is not a directory");
+  }
+  await fs.rename(sourcePath, destinationPath);
+  return { sourcePath, destinationPath, moved: true };
+});
+
+// Move a file or directory to the OS trash via Electron's shell API.
+// We deliberately do not offer permanent delete from the renderer; if
+// the user wants that, they can empty the OS trash.  shell.trashItem
+// uses the platform's recycle bin / Trash semantics so the operation
+// is recoverable.
+ipcMain.handle("file:trash", async (_, args = {}) => {
+  const targetPath = ensureInWorkspace(args.path || "");
+  // Refuse to trash the lane root itself — that would leave the
+  // active lane pointing at a hole. Lane removal is a separate flow
+  // (`casefile:removeLane`) which preserves on-disk content.
+  if (activeLaneRoot && path.resolve(targetPath) === path.resolve(activeLaneRoot)) {
+    throw new Error("Cannot trash the active lane's root directory");
+  }
+  try {
+    await fs.access(targetPath);
+  } catch (err) {
+    if (err && err.code === "ENOENT") {
+      throw new Error(`File or folder no longer exists: ${targetPath}`);
+    }
+    throw err;
+  }
+  await shell.trashItem(targetPath);
+  return { path: targetPath, trashed: true };
 });
 
 ipcMain.handle("chat:send", async (_, payload = {}) => {
@@ -1398,7 +1758,7 @@ ipcMain.handle("casefile:readInboxItem", async (_, args = {}) => {
 ipcMain.handle("casefile:chooseInboxRoot", async () => {
   // Reuse the same dialog as the lane-root picker so users get a
   // consistent "pick a directory" experience for any external mount.
-  const result = await dialog.showOpenDialog({
+  const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory"],
     title: "Choose inbox folder",
   });

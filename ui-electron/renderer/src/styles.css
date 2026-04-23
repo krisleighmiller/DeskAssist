@@ -478,17 +478,29 @@ a {
   color: #f1f5f9;
 }
 
+/* The twisty / icon columns sit inside a `display: flex` row, so they
+   need an explicit `flex: 0 0 <px>` instead of just `width`. Without
+   `flex-shrink: 0`, the file row's empty twisty span (which has no
+   visible glyph, only whitespace) collapses to zero width and the
+   file's icon + name slide left of where the directory's icon + name
+   sit at the same depth. That looked like files were indented an
+   extra level past their sibling directories. */
 .tree-row .twisty {
-  width: 12px;
-  display: inline-block;
-  text-align: center;
+  flex: 0 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: #94a3b8;
 }
 
-.tree-row .icon {
-  width: 14px;
-  display: inline-block;
-  color: #94a3b8;
+/* The file row's bullet uses `.twisty.file-bullet` so it sits in the
+   same column as the directory's chevron — there is no separate icon
+   column anymore. The styles below tweak the bullet so it visually
+   reads as a file marker rather than a third arrow direction. */
+.tree-row .twisty.file-bullet {
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1;
 }
 
 .tree-children {
@@ -1928,12 +1940,64 @@ button.destructive:hover:not(:disabled) {
   opacity: 0.6;
 }
 
+/* Drop-target highlight while a tree-node payload is being dragged
+   over a directory row. The row itself stays clickable; we paint the
+   outline inside so it doesn't shift surrounding layout. */
+.tree-row.drag-over {
+  background: #1e3a5f;
+  outline: 1px dashed #60a5fa;
+  outline-offset: -2px;
+}
+
+/* Small badge marking a tree row whose path equals a registered lane
+   root. Helps users recognise the difference between "this folder is
+   a lane" (eligible for Compare with…) and "this folder is just a
+   subdirectory of the active lane". */
+.lane-badge {
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #c4b5fd;
+  background: #312e81;
+  border-radius: 2px;
+}
+
+/* M2: row of toolbar buttons under the file tree. The original layout
+   stacked Refresh + the overlay toggle vertically; now we cluster the
+   action buttons (Refresh / + File / + Folder) on one line. */
+.file-tree-toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 8px 0;
+}
+.file-tree-toolbar-row .file-tree-refresh {
+  margin: 0;
+}
+
 .tree-row.selected {
   background: #1e293b;
 }
 
 .tree-row.selected.active {
   background: #1e40af;
+}
+
+/* M2.1: rows whose path falls inside the active lane's scope (its
+   write root *or* any of its read-only attachment roots) are tinted
+   so the user can see at a glance which directories the active lane
+   covers. The previous overlay sections (`_ancestors`, `_attachments`,
+   …) used to do this by fragmenting the tree; now the tree stays
+   unified and colour does the work. We tint the *name* span and the
+   leading glyph rather than the row background so the active / selected
+   backgrounds keep working without stacking conflicts. */
+.tree-row.in-active-lane > span:not(.twisty):not(.lane-badge) {
+  color: #93c5fd;
+}
+.tree-row.in-active-lane .twisty {
+  color: #60a5fa;
 }
 
 /* Suppress text selection while shift-clicking a range — otherwise the

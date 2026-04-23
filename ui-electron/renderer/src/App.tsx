@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
-import type { CasefileSnapshot, ChatMessage, RegisterLaneInput } from "./types";
+import type {
+  CasefileSnapshot,
+  ChatMessage,
+  LaneAttachmentInput,
+  RegisterLaneInput,
+} from "./types";
 import { api } from "./lib/api";
 import { AppShell } from "./components/AppShell";
+import type { RightTabKey } from "./components/RightPanel";
 import {
   EMPTY_LANE_SESSION,
+  chatTurnDelta,
   errorMessage,
   normalizeChatTurn,
   sessionKeyFor,
@@ -132,12 +139,6 @@ export function App(): JSX.Element {
     handleRemoveLane,
     handleHardResetCasefile,
     handleSoftResetCasefile,
-    showOverlays,
-    setShowOverlays,
-    overlayTrees,
-    overlaysLoading,
-    overlaysError,
-    reloadOverlays,
   } = useContextAndOverlays({
     casefile,
     activeLaneId,
@@ -157,7 +158,10 @@ export function App(): JSX.Element {
     handleSaveTab,
     refreshOpenTabsFromDisk,
     handleRenameFile,
-    handleOpenOverlayFile,
+    handleMoveEntry,
+    handleTrashEntry,
+    handleCreateFile,
+    handleCreateFolder,
     handleOpenLaneFile,
   } = useLaneWorkspace({
     casefile,
@@ -167,7 +171,6 @@ export function App(): JSX.Element {
     updateSession,
     setLaneSessions,
     setTreeError,
-    reloadOverlays,
   });
 
   // Two unrelated concerns split into two effects so we re-fetch only
@@ -226,6 +229,87 @@ export function App(): JSX.Element {
   const handleChooseLaneRoot = useCallback(async () => {
     return api().chooseLaneRoot();
   }, []);
+
+  // ----- M2: right-panel tab + browser-driven lane actions -----
+
+  const [activeRightTab, setActiveRightTab] = useState<RightTabKey>("chat");
+
+  // Promote a tree directory into a new lane in the current casefile.
+  // Defaults to `kind: "repo"` because that's by far the dominant case
+  // for "I dragged this folder over from the file tree" — non-repo
+  // lanes are usually created up-front via the LanesTab, where the
+  // full kind picker is exposed. Users can change kind later.
+  const handleCreateLaneFromPath = useCallback(
+    async (path: string, name: string) => {
+      try {
+        const snapshot = await api().registerLane({
+          name,
+          kind: "repo",
+          root: path,
+        });
+        setCasefile(snapshot);
+        // Jump to the Lanes tab so the user sees the newly-registered
+        // lane and can edit kind / parent / attachments without
+        // hunting for it.
+        setActiveRightTab("lanes");
+      } catch (error) {
+        setTreeError(errorMessage(error));
+        throw error;
+      }
+    },
+    []
+  );
+
+  // Append a new read-only attachment to the active lane. The bridge's
+  // `updateLaneAttachments` is a full-replacement contract, so we
+  // re-derive the existing list from the current snapshot instead of
+  // assuming caller-side state is fresh.
+  const handleAttachToActiveLane = useCallback(
+    async (path: string, name: string) => {
+      if (!casefile || !activeLaneId) return;
+      const lane = casefile.lanes.find((l) => l.id === activeLaneId);
+      if (!lane) return;
+      const existing: LaneAttachmentInput[] = (lane.attachments ?? []).map(
+        (a) => ({ name: a.name, root: a.root })
+      );
+      // Reject duplicates client-side with a clear message instead of
+      // letting the bridge's "duplicate attachment name" error surface
+      // through the generic catch — gives the user a chance to retry
+      // with a different prefix without losing context.
+      if (existing.some((a) => a.name === name)) {
+        setTreeError(
+          `Lane "${lane.name}" already has an attachment named "${name}".`
+        );
+        return;
+      }
+      try {
+        await handleUpdateLaneAttachments(activeLaneId, [
+          ...existing,
+          { name, root: path },
+        ]);
+      } catch {
+        // handleUpdateLaneAttachments already surfaces via setTreeError.
+      }
+    },
+    [activeLaneId, casefile, handleUpdateLaneAttachments]
+  );
+
+  // Trigger a comparison from the FileTree's "Compare with…" picker.
+  // Switches to the Lanes tab so the user sees the diff result; the
+  // existing AppShell auto-switch effect will then route them back to
+  // the chat tab as soon as they open the comparison-chat session.
+  const handleStartLaneComparisonFromTree = useCallback(
+    async (selfLaneId: string, otherLaneId: string) => {
+      try {
+        await handleCompareLanes(selfLaneId, otherLaneId);
+        setActiveRightTab("lanes");
+      } catch (error) {
+        setTreeError(errorMessage(error));
+        throw error;
+      }
+    },
+    [handleCompareLanes]
+  );
 
   // ----- Chat -----
 
@@ -326,7 +410,13 @@ export function App(): JSX.Element {
         resumePendingToolCalls: true,
         systemPromptId: selectedPromptId,
       });
-      const delta = Array.isArray(response.messages) ? response.messages : [];
+      // Accept both the preferred `messages` array and the legacy
+      // single `message` form. Without this fallback, a bridge that
+      // returns only `response.message` after a tool resume would
+      // silently drop the assistant's reply on the floor — the chat
+      // would just spin down with no visible response. Matches the
+      // handling in `sendMessage` and `sendComparisonChat`.
+      const delta = chatTurnDelta(response) ?? [];
       const nextPending = Array.isArray(response.pendingApprovals)
         ? response.pendingApprovals
         : [];
@@ -378,10 +468,9 @@ export function App(): JSX.Element {
   // FileTree highlighting only makes sense for file tabs (not diff tabs).
   const activeFilePath =
     session.tabs.find((t) => t.key === session.activeTabKey && t.kind === "file")?.path ?? null;
-  const refreshTreeAndOverlays = useCallback(() => {
+  const refreshTreeAction = useCallback(() => {
     void refreshTree();
-    void reloadOverlays();
-  }, [refreshTree, reloadOverlays]);
+  }, [refreshTree]);
 
   const shellProps = useAppShellProps({
     state: {
@@ -394,10 +483,6 @@ export function App(): JSX.Element {
       providerModels,
       tree,
       treeError,
-      overlayTrees,
-      overlaysLoading,
-      overlaysError,
-      showOverlays,
       comparisonSessions,
       focusedComparisonSession,
       sessionTabs: session.tabs,
@@ -425,6 +510,7 @@ export function App(): JSX.Element {
       inboxSources,
       inboxLoading,
       inboxError,
+      activeRightTab,
     },
     actions: {
       onProviderChange: setProvider,
@@ -432,12 +518,18 @@ export function App(): JSX.Element {
       onSwitchLane: handleSwitchLane,
       onStatusChange: setKeyStatus,
       onModelsChange: setProviderModels,
-      onToggleOverlays: () => setShowOverlays((value) => !value),
       onOpenFile: handleOpenFile,
-      onOpenOverlayFile: handleOpenOverlayFile,
       onAddToContext: handleAddToContext,
       onRename: handleRenameFile,
-      onRefreshTreeAndOverlays: refreshTreeAndOverlays,
+      onRefreshTree: refreshTreeAction,
+      onCreateFile: handleCreateFile,
+      onCreateFolder: handleCreateFolder,
+      onMoveEntry: handleMoveEntry,
+      onTrashEntry: handleTrashEntry,
+      onCreateLaneFromPath: handleCreateLaneFromPath,
+      onAttachToActiveLane: handleAttachToActiveLane,
+      onStartLaneComparison: handleStartLaneComparisonFromTree,
+      onActiveRightTabChange: setActiveRightTab,
       onSelectTab: handleSelectTab,
       onCloseTab: handleCloseTab,
       onEditTab: handleEditTab,

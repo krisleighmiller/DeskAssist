@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FileTreeNode, OverlayTreeDto } from "../types";
+import type { FileTreeNode } from "../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+
+/** Lightweight summary of the lanes in the active casefile. We only
+ * need (id, name, root) here — the FileTree uses these to detect
+ * which directory rows correspond to a registered lane root and to
+ * populate the "Compare with…" picker. Lifted to a local interface
+ * so we don't drag the full `Lane` type (and its `attachments`
+ * reverse dependency) into the tree. */
+export interface FileTreeLaneInfo {
+  id: string;
+  name: string;
+  root: string;
+}
 
 interface FileTreeProps {
   root: FileTreeNode | null;
@@ -8,17 +20,14 @@ interface FileTreeProps {
   hasWorkspace: boolean;
   error: string | null;
   onOpenFile: (path: string) => void;
-  // M3.5: optional overlay (ancestor / attachment / context) trees and toggle
-  // state. When `showOverlays` is true the parent component fetches the
-  // overlays via the bridge and passes them in; the tree renders them as
-  // collapsible siblings under the main lane root.
-  overlays?: OverlayTreeDto[];
-  overlaysLoading?: boolean;
-  overlaysError?: string | null;
-  showOverlays?: boolean;
-  canShowOverlays?: boolean;
-  onToggleOverlays?: () => void;
-  onOpenOverlayFile?: (virtualPath: string) => void;
+  // NOTE: pre-M2.1 versions also rendered ancestor / attachment /
+  // context overlay trees as separate sections below the main tree.
+  // That UI was confusing — users saw `_ancestors/...` / `_attachments/...`
+  // virtual paths next to real lane files with no clear meaning. The
+  // overlay system still drives AI scope behind the scenes (see
+  // `src/assistant_app/casefile/scope.py`); the tree just no longer
+  // visualises it. The associated props (`overlays`, `showOverlays`,
+  // `onToggleOverlays`, `onOpenOverlayFile`, …) were dropped.
   /** M3.5c+: casefile root, used to compute relative paths for the
    * right-click "Copy relative path" / "Add to casefile context" actions
    * and to populate drag payloads. When null, only absolute-path actions
@@ -39,6 +48,46 @@ interface FileTreeProps {
    * parent should re-fetch the workspace tree (and overlays, if open).
    * The button is hidden when this prop is omitted. */
   onRefresh?: () => void;
+  // ----- M2: browser-driven workspace mutations -----
+  /** Lane root the tree is currently rooted at. Used to compute the
+   * lane-relative paths shown in the Move… prompt and to validate
+   * destinations when typed by hand. */
+  activeLaneRoot?: string | null;
+  /** Additional roots (besides `activeLaneRoot`) that belong to the
+   * active lane's scope — typically the lane's read-only attachment
+   * roots. Tree rows at or under any of these are tinted with the
+   * `in-active-lane` colour cue. */
+  activeLaneScopeRoots?: string[];
+  /** Active lane id, used to skip the "Attach to current lane" action
+   * when the right-clicked node *is* the active lane's own root. */
+  activeLaneId?: string | null;
+  /** All lanes in the open casefile. The FileTree uses this to:
+   *   - tag rows whose path equals a lane root with the lane name,
+   *   - enable the "Compare with…" action only on lane-root rows,
+   *   - populate the compare picker.
+   * When omitted the lane-aware actions are simply hidden. */
+  lanes?: FileTreeLaneInfo[];
+  /** Create a new (empty) file at `<parentDir>/<name>`. The bridge
+   * validates the parent and refuses to clobber an existing entry. */
+  onCreateFile?: (parentDir: string, name: string) => Promise<void> | void;
+  /** Create a new directory at `<parentDir>/<name>`. */
+  onCreateFolder?: (parentDir: string, name: string) => Promise<void> | void;
+  /** Move `sourcePath` to `destinationPath` (both lane-absolute). Used
+   * by both the Move… prompt and the drag-and-drop drop handler. */
+  onMoveEntry?: (sourcePath: string, destinationPath: string) => Promise<void> | void;
+  /** Move the entry to the OS trash. The parent is responsible for
+   * confirming the action with the user; the FileTree just calls
+   * straight through to the bridge. */
+  onTrashEntry?: (path: string) => Promise<void> | void;
+  /** Register the right-clicked directory as a new lane in the open
+   * casefile. The parent owns the registration form / dialog. */
+  onCreateLaneFromPath?: (path: string, defaultName: string) => Promise<void> | void;
+  /** Attach the right-clicked directory to the active lane as a
+   * read-only overlay under the chosen prefix. */
+  onAttachToActiveLane?: (path: string, defaultName: string) => Promise<void> | void;
+  /** Start a comparison between two lanes. Invoked when the user picks
+   * a target lane from the "Compare with…" sub-menu. */
+  onStartLaneComparison?: (selfLaneId: string, otherLaneId: string) => Promise<void> | void;
 }
 
 function compareNodes(a: FileTreeNode, b: FileTreeNode): number {
@@ -59,6 +108,33 @@ interface MenuState {
   selectedPaths: string[];
 }
 
+/** Return true when `nodePath` is at or under any of the supplied
+ * roots. Both `/` and `\` are accepted as separators so the check
+ * works on Windows and POSIX without normalising every node up front. */
+function pathInAnyRoot(
+  nodePath: string,
+  primary: string | null | undefined,
+  extras: string[] | null | undefined
+): boolean {
+  const candidates: string[] = [];
+  if (primary) candidates.push(primary);
+  if (extras) {
+    for (const root of extras) {
+      if (root && !candidates.includes(root)) candidates.push(root);
+    }
+  }
+  for (const root of candidates) {
+    if (
+      nodePath === root ||
+      nodePath.startsWith(`${root}/`) ||
+      nodePath.startsWith(`${root}\\`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 interface NodeProps {
   node: FileTreeNode;
   expanded: Set<string>;
@@ -66,9 +142,34 @@ interface NodeProps {
   activePath: string | null;
   selected: Set<string>;
   depth: number;
+  /** Path of the row currently being dragged over (drop target highlight).
+   * Only set for directory rows that accept moves. */
+  dragOverPath: string | null;
   onRowClick: (event: React.MouseEvent, node: FileTreeNode) => void;
   onContextMenu: (event: React.MouseEvent, node: FileTreeNode) => void;
   onDragStartNode: (event: React.DragEvent, node: FileTreeNode) => void;
+  /** Optional drop handlers. Only provided when the parent has wired
+   * `onMoveEntry` AND the row is a real (non-overlay) directory. The
+   * TreeNode itself decides per-row whether to actually attach them. */
+  onDragOverDir?: (event: React.DragEvent, node: FileTreeNode) => void;
+  onDragLeaveDir?: (event: React.DragEvent, node: FileTreeNode) => void;
+  onDropOnDir?: (event: React.DragEvent, node: FileTreeNode) => void;
+  /** Map of `lane root path → lane name`. Looked up per-row to add a
+   * "lane" badge next to directory rows that correspond to registered
+   * lanes. Cheaper than walking the lanes array on every render. */
+  laneRootByPath?: Map<string, string>;
+  /** Absolute path of the currently active lane root, if any. Rows
+   * whose path equals or descends from this root get a `in-active-lane`
+   * CSS class so the user can see at a glance which subtree the active
+   * lane covers (M2.1 colour cue replacing the old overlay sections). */
+  activeLaneRoot?: string | null;
+  /** Additional roots that belong to the active lane's scope but live
+   * outside its write root — currently the lane's read-only attachment
+   * roots (e.g. `ModelA` lane writes under `TEST_TASK/ash` but also
+   * scopes in `TEST_TASK/ash_notes` as the `notes` attachment). Rows
+   * at or under any of these paths receive the same `in-active-lane`
+   * tint as the lane root itself. */
+  activeLaneScopeRoots?: string[];
 }
 
 function TreeNode({
@@ -78,37 +179,65 @@ function TreeNode({
   activePath,
   selected,
   depth,
+  dragOverPath,
   onRowClick,
   onContextMenu,
   onDragStartNode,
+  onDragOverDir,
+  onDragLeaveDir,
+  onDropOnDir,
+  laneRootByPath,
+  activeLaneRoot,
+  activeLaneScopeRoots,
 }: NodeProps): JSX.Element {
   const isSelected = selected.has(node.path);
   const selClass = isSelected ? " selected" : "";
+  // True when this row is at or below any of the active lane's scope
+  // roots — the lane's own write root plus any attachment roots. Used
+  // purely for the colour cue; the row stays clickable and its file
+  // ops are identical to any other casefile-internal row.
+  const inActiveLane =
+    !node.path.startsWith("_") &&
+    pathInAnyRoot(node.path, activeLaneRoot, activeLaneScopeRoots);
+  const laneClass = inActiveLane ? " in-active-lane" : "";
   if (node.type === "file") {
     const isActive = activePath === node.path;
     return (
       <div
-        className={`tree-row${isActive ? " active" : ""}${selClass}`}
-        style={{ paddingLeft: depth * 10 + 8 }}
+        className={`tree-row${isActive ? " active" : ""}${selClass}${laneClass}`}
+        style={{ paddingLeft: depth * 16 + 4 }}
         onClick={(event) => onRowClick(event, node)}
         onContextMenu={(event) => onContextMenu(event, node)}
         title={node.path}
         draggable
         onDragStart={(event) => onDragStartNode(event, node)}
       >
-        <span className="twisty"> </span>
-        <span className="icon">·</span>
+        {/* The bullet sits in the same column as a directory's
+            arrow — that way file rows and directory rows at the same
+            depth visually align on their leading glyph, not on the
+            first letter of the name. There is intentionally no second
+            "icon" column for files. */}
+        <span className="twisty file-bullet">·</span>
         <span>{node.name}</span>
       </div>
     );
   }
   const isOpen = expanded.has(node.path);
   const sorted = [...(node.children ?? [])].sort(compareNodes);
+  // Overlay nodes use virtual paths starting with "_" — they live outside
+  // the lane and are read-only, so they never accept drops even if the
+  // parent wired up move handlers.
+  const isOverlay = node.path.startsWith("_");
+  const acceptsDrop = !isOverlay && Boolean(onDropOnDir);
+  const dragOverClass = dragOverPath === node.path ? " drag-over" : "";
+  const laneBadge = laneRootByPath?.get(node.path);
+  // Per-child dragOverPath threading: pass it down so deeper directory
+  // rows can highlight too. Files don't read it.
   return (
     <div>
       <div
-        className={`tree-row${selClass}`}
-        style={{ paddingLeft: depth * 10 + 4 }}
+        className={`tree-row${selClass}${dragOverClass}${laneClass}`}
+        style={{ paddingLeft: depth * 16 + 4 }}
         onClick={(event) => {
           // Plain clicks on a directory toggle expansion; modifier-clicks
           // are pure selection ops and must NOT collapse the row out from
@@ -122,10 +251,16 @@ function TreeNode({
         title={node.path}
         draggable
         onDragStart={(event) => onDragStartNode(event, node)}
+        onDragOver={acceptsDrop && onDragOverDir ? (event) => onDragOverDir(event, node) : undefined}
+        onDragLeave={acceptsDrop && onDragLeaveDir ? (event) => onDragLeaveDir(event, node) : undefined}
+        onDrop={acceptsDrop && onDropOnDir ? (event) => onDropOnDir(event, node) : undefined}
       >
+        {/* Directories are marked by the chevron only; the previous
+            box icon (▣) was removed so directory rows and file rows
+            share the same single-glyph leading column. */}
         <span className="twisty">{isOpen ? "▾" : "▸"}</span>
-        <span className="icon">▣</span>
         <span>{node.name}</span>
+        {laneBadge && <span className="lane-badge" title={`Lane: ${laneBadge}`}>lane</span>}
       </div>
       {isOpen && sorted.length > 0 && (
         <div>
@@ -138,9 +273,16 @@ function TreeNode({
               activePath={activePath}
               selected={selected}
               depth={depth + 1}
+              dragOverPath={dragOverPath}
               onRowClick={onRowClick}
               onContextMenu={onContextMenu}
               onDragStartNode={onDragStartNode}
+              onDragOverDir={onDragOverDir}
+              onDragLeaveDir={onDragLeaveDir}
+              onDropOnDir={onDropOnDir}
+              laneRootByPath={laneRootByPath}
+              activeLaneRoot={activeLaneRoot}
+              activeLaneScopeRoots={activeLaneScopeRoots}
             />
           ))}
         </div>
@@ -165,37 +307,6 @@ function relativeFromBase(absolute: string, base: string): string | null {
   if (!b) return null;
   if (a === b) return ".";
   if (a.startsWith(b + "/")) return a.slice(b.length + 1);
-  return null;
-}
-
-/** Translate a virtual overlay path (e.g. `_ancestors/task/ash_notes`) to
- * the real on-disk absolute path by joining the matching overlay's `root`
- * with the path segment after the prefix. Returns null if no overlay
- * prefix matches the input — callers should treat that as "leave the
- * payload virtual". The match is on full path segments so `_ancestors/foo`
- * does not match `_ancestors/foobar`. We try the longest prefixes first
- * because main.js can register nested overlays (e.g. an attachment
- * mounted under an ancestor). */
-function resolveVirtualToReal(
-  virtualPath: string,
-  overlays: OverlayTreeDto[] | undefined
-): string | null {
-  if (!overlays || overlays.length === 0) return null;
-  const candidates = overlays
-    .filter((o) => typeof o.root === "string" && o.root.length > 0)
-    .slice()
-    .sort((a, b) => b.prefix.length - a.prefix.length);
-  for (const overlay of candidates) {
-    const prefix = overlay.prefix;
-    if (virtualPath === prefix) {
-      return overlay.root;
-    }
-    if (virtualPath.startsWith(prefix + "/")) {
-      const rest = virtualPath.slice(prefix.length + 1);
-      const base = overlay.root.replace(/[\\/]+$/, "");
-      return rest ? `${base}/${rest}` : base;
-    }
-  }
   return null;
 }
 
@@ -256,9 +367,7 @@ export function parseDragPayload(raw: string): FileTreeDragPayload[] {
  * visible, so they cannot be part of a range). */
 function flattenVisible(
   root: FileTreeNode | null,
-  expanded: Set<string>,
-  overlays: OverlayTreeDto[] | undefined,
-  showOverlays: boolean | undefined
+  expanded: Set<string>
 ): string[] {
   const out: string[] = [];
   const walk = (node: FileTreeNode) => {
@@ -269,12 +378,37 @@ function flattenVisible(
     }
   };
   if (root) walk(root);
-  if (showOverlays && overlays) {
-    for (const overlay of overlays) {
-      if (overlay.tree) walk(overlay.tree);
-    }
-  }
   return out;
+}
+
+/** Pick the path separator used by an absolute path. We sniff per path
+ * rather than assume `process.platform` because the Electron renderer
+ * doesn't have access to `process.platform` at runtime and because the
+ * bridge sometimes returns POSIX paths even on Windows (overlay roots
+ * for read-only attachments registered from a different drive layout).
+ */
+function pathSepFor(samplePath: string): "/" | "\\" {
+  return samplePath.includes("\\") && !samplePath.includes("/") ? "\\" : "/";
+}
+
+/** Join `parent` and `name` using the parent's native separator. Strips
+ * any trailing separators on `parent` first so we don't end up with
+ * `foo//bar` on POSIX or `C:\foo\\bar` on Windows. */
+function joinPath(parent: string, name: string): string {
+  const sep = pathSepFor(parent);
+  const base = parent.replace(/[\\/]+$/, "");
+  return `${base}${sep}${name}`;
+}
+
+/** True when `candidate` is `ancestor` or sits inside it. Used to block
+ * moves that would relocate a directory into one of its own children
+ * (which the bridge rejects, but checking client-side gives a clearer
+ * error message and keeps the drag UI from highlighting an illegal
+ * drop target). */
+function isPathOrDescendant(candidate: string, ancestor: string): boolean {
+  if (candidate === ancestor) return true;
+  const sep = pathSepFor(ancestor);
+  return candidate.startsWith(ancestor + sep);
 }
 
 export function FileTree({
@@ -283,17 +417,21 @@ export function FileTree({
   hasWorkspace,
   error,
   onOpenFile,
-  overlays,
-  overlaysLoading,
-  overlaysError,
-  showOverlays,
-  canShowOverlays,
-  onToggleOverlays,
-  onOpenOverlayFile,
   casefileRoot,
   onAddToContext,
   onRename,
   onRefresh,
+  activeLaneRoot,
+  activeLaneScopeRoots,
+  activeLaneId,
+  lanes,
+  onCreateFile,
+  onCreateFolder,
+  onMoveEntry,
+  onTrashEntry,
+  onCreateLaneFromPath,
+  onAttachToActiveLane,
+  onStartLaneComparison,
 }: FileTreeProps): JSX.Element {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -302,6 +440,18 @@ export function FileTree({
   // shift-click range origin, mirroring File-Explorer / Finder behaviour.
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [anchor, setAnchor] = useState<string | null>(null);
+  // Drag-and-drop highlight: which directory row the user is currently
+  // hovering over with a tree-node payload. Null when nothing is being
+  // dragged or the cursor is outside any drop target.
+  const [dragOverPath, setDragOverPath] = useState<string | null>(null);
+  // Compare-with picker: a second context menu spawned from the main
+  // menu's "Compare with…" item. We don't reuse `menu` because that one
+  // closes on item-select, and we want the picker to live independently.
+  const [pickerMenu, setPickerMenu] = useState<{
+    x: number;
+    y: number;
+    items: ContextMenuItem[];
+  } | null>(null);
 
   useEffect(() => {
     if (root) {
@@ -313,23 +463,6 @@ export function FileTree({
       });
     }
   }, [root]);
-
-  // Auto-expand newly-arriving overlay roots so the user sees their
-  // contents on first toggle without an extra click each.
-  useEffect(() => {
-    if (!showOverlays || !overlays) return;
-    setExpanded((prev) => {
-      let changed = false;
-      const next = new Set(prev);
-      for (const overlay of overlays) {
-        if (overlay.tree && !next.has(overlay.tree.path)) {
-          next.add(overlay.tree.path);
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [showOverlays, overlays]);
 
   // Whenever the tree root changes (different workspace / lane), drop
   // the selection and anchor — keeping them around would orphan paths
@@ -346,9 +479,29 @@ export function FileTree({
 
   // Memoised because the visible-order list is rebuilt for every shift-click.
   const visibleOrder = useMemo(
-    () => flattenVisible(root, expanded, overlays, showOverlays),
-    [root, expanded, overlays, showOverlays]
+    () => flattenVisible(root, expanded),
+    [root, expanded]
   );
+
+  // Map of lane-root absolute path → lane name. Built once per `lanes`
+  // change so each row can do an O(1) lookup instead of scanning the
+  // lanes array on every render.
+  const laneRootByPath = useMemo(() => {
+    const m = new Map<string, string>();
+    if (lanes) for (const lane of lanes) m.set(lane.root, lane.name);
+    return m;
+  }, [lanes]);
+
+  /** Resolve the lane id for a given absolute path, or null if it isn't
+   * a registered lane root. The renderer uses this when the user picks
+   * "Compare with…" on a tree row to find the source lane id. */
+  const laneIdAtPath = (absPath: string): string | null => {
+    if (!lanes) return null;
+    for (const lane of lanes) {
+      if (lane.root === absPath) return lane.id;
+    }
+    return null;
+  };
 
   const toggle = (p: string) => {
     setExpanded((prev) => {
@@ -404,14 +557,7 @@ export function FileTree({
     setSelected(new Set([path]));
     setAnchor(path);
     if (node.type === "file") {
-      // Overlay-tree files use virtual paths and have a different opener;
-      // route them through the appropriate callback.
-      const isVirtual = node.path.startsWith("_");
-      if (isVirtual && onOpenOverlayFile) {
-        onOpenOverlayFile(node.path);
-      } else {
-        onOpenFile(node.path);
-      }
+      onOpenFile(node.path);
     }
   };
 
@@ -432,24 +578,12 @@ export function FileTree({
     setMenu({ x: event.clientX, y: event.clientY, node, selectedPaths: snapshot });
   };
 
-  /** Build a `FileTreeDragPayload` for an absolute (or virtual) tree-node
-   * path. For overlay nodes (virtual paths like `_ancestors/<lane>/...`)
-   * `absolutePath` carries the *real* on-disk path resolved through the
-   * overlay's `root`, so drop targets like the lane attachment editor get
-   * a path the Python bridge can actually resolve. The virtual path stays
-   * available via `virtualPath` for consumers (e.g. the chat composer's
-   * text-fallback) that want to surface the model-facing prefix. */
+  /** Build a `FileTreeDragPayload` for a tree-node absolute path. The
+   * `virtualPath` field remains in the payload type for downstream
+   * consumers (chat composer, context editor) but is no longer
+   * populated here — the FileTree now only renders real on-disk lane
+   * paths since the overlay sections were removed. */
   const buildPayload = (path: string, type: "file" | "dir"): FileTreeDragPayload => {
-    const isVirtual = path.startsWith("_");
-    if (isVirtual) {
-      const real = resolveVirtualToReal(path, overlays);
-      return {
-        relativePath: null,
-        absolutePath: real ?? path,
-        virtualPath: path,
-        type,
-      };
-    }
     const relativePath = casefileRoot ? relativeFromBase(path, casefileRoot) : null;
     return { relativePath, absolutePath: path, type };
   };
@@ -479,7 +613,97 @@ export function FileTree({
     // Plain-text fallback so the payload drops cleanly into any text
     // input (e.g. the chat composer).
     event.dataTransfer.setData("text/plain", plainText);
-    event.dataTransfer.effectAllowed = "copy";
+    // Use "copyMove" so the OS arrow shows a copy cursor for non-tree
+    // drop targets (composer, context editor) while still letting the
+    // FileTree's own drop handler treat the gesture as a move. The
+    // dropEffect is decided per-target in onDragOver.
+    event.dataTransfer.effectAllowed = "copyMove";
+  };
+
+  // ---------- M2: drag-and-drop move within the tree ----------
+  //
+  // The FileTree accepts its OWN drag payloads on directory rows and
+  // turns them into `onMoveEntry(source, dest)` calls. External drags
+  // (URLs, OS files) are ignored because we deliberately don't read
+  // `text/uri-list` or `Files` here — those would conflate "import a
+  // file" with "move within the workspace" and the import semantics
+  // belong elsewhere.
+
+  /** Read the FILETREE drag payload from a DataTransfer. Returns []
+   * when the source isn't a tree drag (so the drop handler can bail
+   * silently rather than throwing on JSON parse). */
+  const readTreePayload = (dt: DataTransfer): FileTreeDragPayload[] => {
+    const raw = dt.getData(FILETREE_DRAG_MIME);
+    if (!raw) return [];
+    try {
+      return parseDragPayload(raw);
+    } catch {
+      return [];
+    }
+  };
+
+  /** True iff every payload entry is a non-overlay path that can legally
+   * move into `destDir` (i.e. is not destDir itself, not an ancestor of
+   * destDir, and is on the same separator/root family). */
+  const canDropOnDir = (payloads: FileTreeDragPayload[], destDir: string): boolean => {
+    if (payloads.length === 0) return false;
+    if (!onMoveEntry) return false;
+    if (destDir.startsWith("_")) return false;
+    for (const p of payloads) {
+      const src = p.absolutePath;
+      if (!src || src.startsWith("_")) return false;
+      // Block moves of the destination itself, and any ancestor of it.
+      if (isPathOrDescendant(destDir, src)) return false;
+      // Block dropping a node onto its current parent — that's a no-op
+      // and just adds noise to the tree refresh.
+      const parentOfSrc = src.replace(/[\\/][^\\/]+$/, "");
+      if (parentOfSrc === destDir) return false;
+    }
+    return true;
+  };
+
+  const handleDragOverDir = (event: React.DragEvent, node: FileTreeNode) => {
+    const payloads = readTreePayload(event.dataTransfer);
+    if (!canDropOnDir(payloads, node.path)) {
+      // Important: do NOT preventDefault — the row should not show a
+      // drop cursor for invalid targets. Also clear any stale highlight
+      // we set on a previous row.
+      if (dragOverPath === node.path) setDragOverPath(null);
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (dragOverPath !== node.path) setDragOverPath(node.path);
+  };
+
+  const handleDragLeaveDir = (_event: React.DragEvent, node: FileTreeNode) => {
+    if (dragOverPath === node.path) setDragOverPath(null);
+  };
+
+  const handleDropOnDir = (event: React.DragEvent, node: FileTreeNode) => {
+    setDragOverPath(null);
+    const payloads = readTreePayload(event.dataTransfer);
+    if (!canDropOnDir(payloads, node.path) || !onMoveEntry) return;
+    event.preventDefault();
+    // Fire moves sequentially. Multi-file moves are rare here (drag
+    // typically carries a single row) and serialising keeps the bridge
+    // contract simple; if any one fails, surface the error and stop so
+    // the tree state stays consistent with what the user can see.
+    void (async () => {
+      for (const payload of payloads) {
+        const src = payload.absolutePath;
+        const basename = src.split(/[\\/]/).pop() ?? src;
+        const dest = joinPath(node.path, basename);
+        try {
+          await onMoveEntry(src, dest);
+        } catch (err) {
+          window.alert(
+            `Move failed: ${err instanceof Error ? err.message : String(err)}`
+          );
+          return;
+        }
+      }
+    })();
   };
 
   if (error) {
@@ -574,10 +798,10 @@ export function FileTree({
         : []),
       // Rename is intentionally single-target only: bulk rename is a
       // distinct UX (templates, find/replace, ...) and would be more
-      // confusing than useful as a menu entry. Overlay nodes (virtual
-      // paths) and the lane root itself are not renameable from here —
-      // overlays live outside the lane and the root rename is a
-      // casefile-level operation handled in the toolbar.
+      // confusing than useful as a menu entry. The underscore-prefix
+      // guard is a leftover from when the tree rendered virtual overlay
+      // nodes — kept as a defensive check, even though no overlay
+      // entries reach this code path now that overlays are gone.
       ...(onRename
         ? [
             {
@@ -612,9 +836,265 @@ export function FileTree({
                 // Don't let the user rename the workspace root from the
                 // tree — that's a casefile-level decision.
                 (root != null && menu.node.path === root.path),
+            },
+          ]
+        : []),
+      // ---------- M2: file ops ----------
+      // New file / new folder act on the right-clicked dir, or on the
+      // parent dir of a right-clicked file. The underscore guard is
+      // defensive; the tree no longer renders overlay nodes.
+      ...(onCreateFile && !menu.node.path.startsWith("_") && !multi
+        ? [
+            {
+              label: "New file…",
+              onSelect: () => {
+                const parentDir =
+                  menu.node.type === "dir"
+                    ? menu.node.path
+                    : menu.node.path.replace(/[\\/][^\\/]+$/, "");
+                const name = window.prompt("New file name:", "untitled.txt");
+                if (name == null) return;
+                const trimmed = name.trim();
+                if (!trimmed) return;
+                if (trimmed.includes("/") || trimmed.includes("\\")) {
+                  window.alert(
+                    "Name must not contain path separators ('/' or '\\')."
+                  );
+                  return;
+                }
+                void Promise.resolve(onCreateFile(parentDir, trimmed)).catch(
+                  (err) => {
+                    window.alert(
+                      `Create file failed: ${err instanceof Error ? err.message : String(err)}`
+                    );
+                  }
+                );
+              },
+            },
+          ]
+        : []),
+      ...(onCreateFolder && !menu.node.path.startsWith("_") && !multi
+        ? [
+            {
+              label: "New folder…",
+              onSelect: () => {
+                const parentDir =
+                  menu.node.type === "dir"
+                    ? menu.node.path
+                    : menu.node.path.replace(/[\\/][^\\/]+$/, "");
+                const name = window.prompt("New folder name:", "new-folder");
+                if (name == null) return;
+                const trimmed = name.trim();
+                if (!trimmed) return;
+                if (trimmed.includes("/") || trimmed.includes("\\")) {
+                  window.alert(
+                    "Name must not contain path separators ('/' or '\\')."
+                  );
+                  return;
+                }
+                void Promise.resolve(onCreateFolder(parentDir, trimmed)).catch(
+                  (err) => {
+                    window.alert(
+                      `Create folder failed: ${err instanceof Error ? err.message : String(err)}`
+                    );
+                  }
+                );
+              },
+            },
+          ]
+        : []),
+      ...(onMoveEntry && casefileRoot
+        ? [
+            {
+              label: "Move…",
+              onSelect: () => {
+                const target = menu.node;
+                const sep = pathSepFor(casefileRoot);
+                // Move is casefile-wide, not lane-scoped: lanes only
+                // affect what the chat agent sees, not what the user
+                // can move where. The prompt accepts (and pre-fills)
+                // a casefile-relative path.
+                const current = relativeFromBase(target.path, casefileRoot);
+                if (current == null || current === ".") {
+                  window.alert(
+                    "This entry isn't inside the current casefile."
+                  );
+                  return;
+                }
+                const proposed = window.prompt(
+                  `Move "${target.name}" to (casefile-relative path):`,
+                  current
+                );
+                if (proposed == null) return;
+                const cleaned = proposed
+                  .trim()
+                  .replace(/^[\\/]+/, "")
+                  .replace(/[\\/]+$/, "");
+                if (!cleaned || cleaned === current) return;
+                // Normalise typed POSIX-style separators to the
+                // casefile's native separator so the bridge sees a
+                // consistent path.
+                const normalised = cleaned.split(/[\\/]/).join(sep);
+                const dest = `${casefileRoot.replace(/[\\/]+$/, "")}${sep}${normalised}`;
+                void Promise.resolve(onMoveEntry(target.path, dest)).catch(
+                  (err) => {
+                    window.alert(
+                      `Move failed: ${err instanceof Error ? err.message : String(err)}`
+                    );
+                  }
+                );
+              },
+              disabled:
+                multi ||
+                menu.node.path.startsWith("_") ||
+                (root != null && menu.node.path === root.path),
+            },
+          ]
+        : []),
+      ...(onTrashEntry
+        ? [
+            {
+              label: multi ? `Move ${count} items to Trash` : "Move to Trash",
+              onSelect: () => {
+                // The bridge uses Electron's `shell.trashItem`, so this
+                // is recoverable from the OS trash. Still confirm to
+                // avoid accidental triggering — it's a destructive
+                // single-keypress action otherwise.
+                const description = multi
+                  ? `${count} selected items`
+                  : `"${menu.node.name}"`;
+                const ok = window.confirm(
+                  `Move ${description} to the OS Trash?\n\n` +
+                  `You can restore items from your system Trash if needed.`
+                );
+                if (!ok) return;
+                void (async () => {
+                  for (const p of paths) {
+                    if (p.startsWith("_")) continue;
+                    if (root != null && p === root.path) continue;
+                    try {
+                      await onTrashEntry(p);
+                    } catch (err) {
+                      window.alert(
+                        `Trash failed for ${p}: ${err instanceof Error ? err.message : String(err)}`
+                      );
+                      return;
+                    }
+                  }
+                })();
+              },
+              disabled: paths.every(
+                (p) => p.startsWith("_") || (root != null && p === root.path)
+              ),
               separator: true,
             },
           ]
+        : []),
+      // ---------- M2: lane integration ----------
+      // Single-target, directory-only, real (non-overlay) actions for
+      // promoting browser selections into lane workflows.
+      ...(onCreateLaneFromPath &&
+      !multi &&
+      menu.node.type === "dir" &&
+      !menu.node.path.startsWith("_") &&
+      // Don't offer "Create lane from this folder" on a path that's
+      // already a registered lane root — registering the same dir
+      // twice would conflict.
+      !laneRootByPath.has(menu.node.path)
+        ? [
+            {
+              label: "Create lane from this folder…",
+              onSelect: () => {
+                const target = menu.node;
+                const defaultName = target.name;
+                const name = window.prompt(
+                  `New lane name (kind defaults to "repo"; edit later from the Lanes tab):`,
+                  defaultName
+                );
+                if (name == null) return;
+                const trimmed = name.trim();
+                if (!trimmed) return;
+                void Promise.resolve(
+                  onCreateLaneFromPath(target.path, trimmed)
+                ).catch((err) => {
+                  window.alert(
+                    `Create lane failed: ${err instanceof Error ? err.message : String(err)}`
+                  );
+                });
+              },
+            },
+          ]
+        : []),
+      ...(onAttachToActiveLane &&
+      activeLaneId &&
+      !multi &&
+      menu.node.type === "dir" &&
+      !menu.node.path.startsWith("_") &&
+      // Skip if the target IS the active lane's own root — attaching a
+      // lane to itself is meaningless. Sub-directories of the active
+      // lane are still allowed: they let the user pin a specific
+      // sub-tree as a named overlay even though it's already in scope.
+      !(activeLaneRoot && menu.node.path === activeLaneRoot)
+        ? [
+            {
+              label: "Attach to current lane…",
+              onSelect: () => {
+                const target = menu.node;
+                const defaultPrefix = target.name;
+                const prefix = window.prompt(
+                  `Attachment prefix for "${target.name}" (shown under _attachments/<prefix>):`,
+                  defaultPrefix
+                );
+                if (prefix == null) return;
+                const trimmed = prefix.trim();
+                if (!trimmed) return;
+                void Promise.resolve(
+                  onAttachToActiveLane(target.path, trimmed)
+                ).catch((err) => {
+                  window.alert(
+                    `Attach failed: ${err instanceof Error ? err.message : String(err)}`
+                  );
+                });
+              },
+            },
+          ]
+        : []),
+      // "Compare with…" only on a directory row that EQUALS a registered
+      // lane root, with at least one other lane available. The selected
+      // lane is the left side; the picker chooses the right side.
+      ...(onStartLaneComparison &&
+      !multi &&
+      menu.node.type === "dir" &&
+      laneRootByPath.has(menu.node.path) &&
+      lanes &&
+      lanes.length >= 2
+        ? (() => {
+            const selfId = laneIdAtPath(menu.node.path);
+            const others = lanes.filter((l) => l.id !== selfId);
+            if (!selfId || others.length === 0) return [];
+            return [
+              {
+                label: "Compare with…",
+                onSelect: () => {
+                  // Build the picker as a second context menu pinned at
+                  // the same anchor. Each item triggers the comparison.
+                  const items: ContextMenuItem[] = others.map((other) => ({
+                    label: other.name,
+                    onSelect: () => {
+                      void Promise.resolve(
+                        onStartLaneComparison(selfId, other.id)
+                      ).catch((err) => {
+                        window.alert(
+                          `Compare failed: ${err instanceof Error ? err.message : String(err)}`
+                        );
+                      });
+                    },
+                  }));
+                  setPickerMenu({ x: menu.x, y: menu.y, items });
+                },
+              },
+            ];
+          })()
         : []),
     ];
   })();
@@ -633,30 +1113,101 @@ export function FileTree({
         }
       }}
     >
-      {(onRefresh || (canShowOverlays && onToggleOverlays)) && (
+      {(onRefresh || onCreateFile || onCreateFolder) && (
         <div className="file-tree-toolbar">
-          {onRefresh && (
-            <button
-              type="button"
-              className="file-tree-refresh"
-              onClick={onRefresh}
-              title="Refresh file tree"
-              aria-label="Refresh file tree"
-            >
-              ⟳ Refresh
-            </button>
-          )}
-          {canShowOverlays && onToggleOverlays && (
-            <label className="overlay-toggle">
-              <input
-                type="checkbox"
-                checked={Boolean(showOverlays)}
-                onChange={onToggleOverlays}
-              />
-              <span>Show ancestor / attachment / context files</span>
-              {overlaysLoading && <span className="muted"> (loading…)</span>}
-            </label>
-          )}
+          <div className="file-tree-toolbar-row">
+            {onRefresh && (
+              <button
+                type="button"
+                className="file-tree-refresh"
+                onClick={onRefresh}
+                title="Refresh file tree"
+                aria-label="Refresh file tree"
+              >
+                ⟳ Refresh
+              </button>
+            )}
+            {/* Toolbar shortcuts for "new file/folder at the default
+                target". Right-clicking any directory in the tree gives
+                you a per-folder version of the same action. Default
+                target prefers the active lane root (so the existing
+                lane-driven workflow keeps working), and falls back to
+                the casefile root when no lane is active — file ops
+                are casefile-wide; lanes only affect chat scope. */}
+            {(() => {
+              const defaultTarget = activeLaneRoot ?? casefileRoot ?? null;
+              if (!defaultTarget) return null;
+              const targetLabel = activeLaneRoot ? "lane root" : "casefile root";
+              return (
+                <>
+                  {onCreateFile && (
+                    <button
+                      type="button"
+                      className="file-tree-refresh"
+                      onClick={() => {
+                        const name = window.prompt(
+                          "New file name:",
+                          "untitled.txt"
+                        );
+                        if (name == null) return;
+                        const trimmed = name.trim();
+                        if (!trimmed) return;
+                        if (trimmed.includes("/") || trimmed.includes("\\")) {
+                          window.alert(
+                            "Name must not contain path separators."
+                          );
+                          return;
+                        }
+                        void Promise.resolve(
+                          onCreateFile(defaultTarget, trimmed)
+                        ).catch((err) => {
+                          window.alert(
+                            `Create file failed: ${err instanceof Error ? err.message : String(err)}`
+                          );
+                        });
+                      }}
+                      title={`New file at ${targetLabel}`}
+                      aria-label={`New file at ${targetLabel}`}
+                    >
+                      + File
+                    </button>
+                  )}
+                  {onCreateFolder && (
+                    <button
+                      type="button"
+                      className="file-tree-refresh"
+                      onClick={() => {
+                        const name = window.prompt(
+                          "New folder name:",
+                          "new-folder"
+                        );
+                        if (name == null) return;
+                        const trimmed = name.trim();
+                        if (!trimmed) return;
+                        if (trimmed.includes("/") || trimmed.includes("\\")) {
+                          window.alert(
+                            "Name must not contain path separators."
+                          );
+                          return;
+                        }
+                        void Promise.resolve(
+                          onCreateFolder(defaultTarget, trimmed)
+                        ).catch((err) => {
+                          window.alert(
+                            `Create folder failed: ${err instanceof Error ? err.message : String(err)}`
+                          );
+                        });
+                      }}
+                      title={`New folder at ${targetLabel}`}
+                      aria-label={`New folder at ${targetLabel}`}
+                    >
+                      + Folder
+                    </button>
+                  )}
+                </>
+              );
+            })()}
+          </div>
         </div>
       )}
       <TreeNode
@@ -666,56 +1217,34 @@ export function FileTree({
         activePath={activePath}
         selected={selected}
         depth={0}
+        dragOverPath={dragOverPath}
         onRowClick={handleRowClick}
         onContextMenu={handleContextMenu}
         onDragStartNode={handleDragStartNode}
+        onDragOverDir={onMoveEntry ? handleDragOverDir : undefined}
+        onDragLeaveDir={onMoveEntry ? handleDragLeaveDir : undefined}
+        onDropOnDir={onMoveEntry ? handleDropOnDir : undefined}
+        laneRootByPath={laneRootByPath}
+        activeLaneRoot={activeLaneRoot}
+        activeLaneScopeRoots={activeLaneScopeRoots}
       />
-      {showOverlays && overlays && overlays.length > 0 && (
-        <div className="overlay-section">
-          <div className="overlay-section-title">Inherited context</div>
-          {overlays.map((overlay) => (
-            <div key={overlay.prefix} className="overlay-group">
-              {/* Per-overlay header so the user can tell at a glance
-                  whether a directory called "notes" is the active
-                  lane's `_attachments/notes` (a configured attachment)
-                  or an ancestor lane named "notes" (an `_ancestors/...`
-                  root). Without this label every overlay tree just
-                  rendered as its basename, which made it impossible to
-                  tell where a given file actually lived. */}
-              <div className="overlay-group-header" title={overlay.root}>
-                <span className="overlay-group-prefix">{overlay.prefix}</span>
-                {overlay.label && overlay.label !== overlay.prefix && (
-                  <span className="overlay-group-label">{overlay.label}</span>
-                )}
-              </div>
-              {overlay.tree ? (
-                <TreeNode
-                  node={overlay.tree}
-                  expanded={expanded}
-                  toggle={toggle}
-                  activePath={activePath}
-                  selected={selected}
-                  depth={0}
-                  onRowClick={handleRowClick}
-                  onContextMenu={handleContextMenu}
-                  onDragStartNode={handleDragStartNode}
-                />
-              ) : (
-                <div className="empty">{overlay.error || "unavailable"}</div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {showOverlays && overlaysError && (
-        <div className="empty">Overlay error: {overlaysError}</div>
-      )}
       {menu && (
         <ContextMenu
           x={menu.x}
           y={menu.y}
           items={menuItems}
           onClose={() => setMenu(null)}
+        />
+      )}
+      {/* Secondary "Compare with…" picker. Rendered after the primary
+          menu so its outside-click handler doesn't immediately close
+          on the same gesture that opened it. */}
+      {pickerMenu && (
+        <ContextMenu
+          x={pickerMenu.x}
+          y={pickerMenu.y}
+          items={pickerMenu.items}
+          onClose={() => setPickerMenu(null)}
         />
       )}
     </div>

@@ -313,6 +313,29 @@ export interface AssistantApi {
     path: string,
     newName: string
   ) => Promise<{ oldPath: string; newPath: string; renamed: boolean }>;
+  /** Create a new (empty) file at `<parentDir>/<name>` inside the
+   * active lane.  Refuses to clobber an existing entry. */
+  createFile: (
+    parentDir: string,
+    name: string
+  ) => Promise<{ path: string; created: boolean }>;
+  /** Create a new directory at `<parentDir>/<name>` inside the active
+   * lane.  Refuses to clobber an existing entry. */
+  createFolder: (
+    parentDir: string,
+    name: string
+  ) => Promise<{ path: string; created: boolean }>;
+  /** Move (or rename) a file or directory inside the active lane.
+   * Both paths must resolve inside the lane root; the bridge refuses
+   * to overwrite an existing destination. */
+  moveEntry: (
+    sourcePath: string,
+    destinationPath: string
+  ) => Promise<{ sourcePath: string; destinationPath: string; moved: boolean }>;
+  /** Move a file or directory inside the active lane to the OS trash
+   * via Electron's shell.trashItem (recoverable). The lane root itself
+   * cannot be trashed; lane removal is a separate flow. */
+  trashEntry: (path: string) => Promise<{ path: string; trashed: boolean }>;
 
   // Notes (M3).
   getNote: (laneId: string) => Promise<string>;

@@ -30,6 +30,13 @@ export interface AppShellProps {
   apiKeysDialog: Omit<ComponentProps<typeof ApiKeysDialog>, "onClose">;
   activeLane: TerminalLaneContext | null;
   casefileRoot: string | null;
+  /** M2: right-panel tab state is owned by `App` so non-RightPanel
+   * surfaces (the FileTree's "Compare with…" action) can switch tabs
+   * after triggering an action. The auto-switch effect below still
+   * lives here because it reacts to comparison session changes that
+   * AppShell already routes through. */
+  activeRightTab: RightTabKey;
+  onActiveRightTabChange: (tab: RightTabKey) => void;
 }
 
 export function AppShell({
@@ -38,6 +45,8 @@ export function AppShell({
   apiKeysDialog,
   activeLane,
   casefileRoot,
+  activeRightTab,
+  onActiveRightTabChange,
 }: AppShellProps): JSX.Element {
   const {
     leftPaneWidth,
@@ -67,7 +76,6 @@ export function AppShell({
     casefileRoot,
     setTerminalOpen,
   });
-  const [rightTab, setRightTab] = useState<RightTabKey>("chat");
   const [keysOpen, setKeysOpen] = useState(false);
 
   useEffect(() => {
@@ -77,12 +85,16 @@ export function AppShell({
     };
   }, []);
 
+  // Auto-switch to the chat tab when the focused session becomes a
+  // comparison session — comparison chats are only visible inside the
+  // chat tab, and a freshly-opened compare-chat would otherwise stay
+  // hidden behind whichever tab the user was previously on.
   useEffect(() => {
     const activeSessionId = workbench.rightPanel.chat.activeSessionId;
     if (activeSessionId?.startsWith("compare:")) {
-      setRightTab("chat");
+      onActiveRightTabChange("chat");
     }
-  }, [workbench.rightPanel.chat.activeSessionId]);
+  }, [workbench.rightPanel.chat.activeSessionId, onActiveRightTabChange]);
 
   return (
     <div className="app">
@@ -108,8 +120,8 @@ export function AppShell({
         onResizeRightPane={setRightPaneWidth}
         rightPanel={{
           ...workbench.rightPanel,
-          activeTab: rightTab,
-          onTabChange: setRightTab,
+          activeTab: activeRightTab,
+          onTabChange: onActiveRightTabChange,
         }}
         terminalOpen={terminalOpen}
         terminalHeight={terminalHeight}

@@ -6,7 +6,6 @@ import type {
   ContextManifestDto,
   LaneAttachmentInput,
   LaneUpdateInput,
-  OverlayTreeDto,
   UpdateLaneResult,
 } from "../types";
 import { DEFAULT_AUTO_INCLUDE_MAX_BYTES, errorMessage } from "./appModelTypes";
@@ -18,9 +17,16 @@ interface UseContextAndOverlaysArgs {
   onError: (message: string) => void;
 }
 
+// NOTE: this hook used to also fetch and expose ancestor / attachment /
+// context overlay trees for the FileTree UI. The tree no longer
+// renders those overlays as separate sections (the user-facing
+// "Inherited context" panel was confusing), so the hook now only
+// covers the casefile-context manifest and lane management actions.
+// Scope resolution for AI chat is unaffected — that lives entirely in
+// `src/assistant_app/casefile/scope.py` and the bridge.
 export function useContextAndOverlays({
   casefile,
-  activeLaneId,
+  activeLaneId: _activeLaneId,
   onCasefileChange,
   onError,
 }: UseContextAndOverlaysArgs) {
@@ -32,17 +38,12 @@ export function useContextAndOverlays({
   const [contextManifest, setContextManifest] = useState<ContextManifestDto | null>(null);
   const [contextBusy, setContextBusy] = useState(false);
   const [contextError, setContextError] = useState<string | null>(null);
-  const [showOverlays, setShowOverlays] = useState(false);
-  const [overlayTrees, setOverlayTrees] = useState<OverlayTreeDto[]>([]);
-  const [overlaysLoading, setOverlaysLoading] = useState(false);
-  const [overlaysError, setOverlaysError] = useState<string | null>(null);
 
-  // Cancellation tokens for the in-flight context / overlay fetches.
-  // Without these, an older request resolving after a newer one (e.g.
-  // because the user switched lanes during a slow read) would clobber
-  // fresh state with stale data. (#5)
+  // Cancellation token for in-flight context fetch. Without it, an
+  // older request resolving after a newer one (e.g. because the user
+  // switched lanes during a slow read) would clobber fresh state with
+  // stale data. (#5)
   const contextRequestRef = useRef(0);
-  const overlayRequestRef = useRef(0);
 
   const reloadContext = useCallback(async () => {
     if (!casefileRoot) {
@@ -195,50 +196,19 @@ export function useContextAndOverlays({
     [onCasefileChange, onError]
   );
 
-  const reloadOverlays = useCallback(async () => {
-    if (!casefileRoot || !activeLaneId || !showOverlays) {
-      setOverlayTrees([]);
+  // The FileTree no longer subscribes to overlay roots, so the
+  // workspace-watch registration shrinks to "register no extra
+  // roots". Kept as a single best-effort call when the casefile
+  // changes so a previously-active overlay watcher is cleared.
+  useEffect(() => {
+    void (async () => {
       try {
-        // `registerWatchRoots` is part of the required AssistantApi
-        // surface (see types.ts). The previous `?.` here masked real
-        // bugs (e.g. preload script not exposing it). If it's truly
-        // missing, we want a clear error in the console. (#18)
         await api().registerWatchRoots([]);
       } catch (error) {
         console.warn("registerWatchRoots(empty) failed", error);
       }
-      return;
-    }
-    const token = ++overlayRequestRef.current;
-    setOverlaysLoading(true);
-    try {
-      const overlays = await api().listOverlayTrees(activeLaneId, 4);
-      if (token !== overlayRequestRef.current) return;
-      setOverlayTrees(overlays);
-      setOverlaysError(null);
-      const roots = overlays
-        .map((overlay) => overlay.root)
-        .filter((root): root is string => typeof root === "string" && root.length > 0);
-      try {
-        await api().registerWatchRoots(roots);
-      } catch (error) {
-        // Watch registration is best-effort — the UI will still
-        // render, just without filesystem-change notifications.
-        console.warn("registerWatchRoots failed", error);
-      }
-    } catch (error) {
-      if (token !== overlayRequestRef.current) return;
-      setOverlaysError(errorMessage(error));
-    } finally {
-      if (token === overlayRequestRef.current) {
-        setOverlaysLoading(false);
-      }
-    }
-  }, [activeLaneId, casefileRoot, showOverlays]);
-
-  useEffect(() => {
-    void reloadOverlays();
-  }, [reloadOverlays]);
+    })();
+  }, [casefileRoot]);
 
   return {
     contextManifest,
@@ -252,11 +222,5 @@ export function useContextAndOverlays({
     handleRemoveLane,
     handleHardResetCasefile,
     handleSoftResetCasefile,
-    showOverlays,
-    setShowOverlays,
-    overlayTrees,
-    overlaysLoading,
-    overlaysError,
-    reloadOverlays,
   };
 }
