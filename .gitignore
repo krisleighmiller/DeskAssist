@@ -23,3 +23,8 @@ docs/Notes_Should_Be_Ignored/
 screenshots_for_context/
 
 ui-electron/renderer/dist/
+
+# Per-repo casefile metadata (lanes, chat logs, prompts, etc.) created
+# when DeskAssist is opened against this checkout. It's a local working
+# state, not source.
+.casefile/
