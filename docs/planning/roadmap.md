@@ -1,295 +1,367 @@
-# Engineering Roadmap
 
-This document translates the product roadmap in [`../../README.md`](../../README.md) into implementation-oriented workstreams.
+# DeskAssist V1 Execution Milestones
 
-It is meant to answer:
+## Do not add complexity. Do not skip ahead. Do not redesign the product.
 
-- what to build first
-- which code areas are likely to move
-- what each phase is trying to prove
-- which workstreams are blocked on others
+## Purpose
 
-## Planning Principles
+DeskAssist V1 is **not** being built as a repo-analysis tool with miscellaneous extras. It is being built as a **unified context-switching workspace with scoped AI**. The purpose of these milestones is to make implementation follow that product direction without drifting into extra systems, speculative abstractions, or UI inventions that are not required yet.
 
-- Favor improvements to the core loops over surface-area growth.
-- Preserve the current scoped-work strengths while improving product clarity.
-- Prefer incremental refactors around known seams instead of broad rewrites.
-- Keep integrations and non-core modules behind explicit boundaries.
+## Global build rules
 
-## Workstream Dependency Shape
+These rules apply to every milestone:
 
-```mermaid
-flowchart LR
-  Shell[ShellReliability] --> Browser[BrowserDrivenWorkflow]
-  Shell --> Scope[ScopedContextUX]
-  Browser --> Scope
-  Scope --> Home[HomeAndResume]
-  Browser --> Artifacts[ArtifactUnification]
-  Home --> Personal[NonCodeContextValidation]
-  Artifacts --> Personal
-  Scope --> Extensions[ExtensionFoundation]
-  Home --> Extensions
-```
+* Do not introduce new top-level concepts unless they are explicitly required by the milestone.
+* Do not build integrations, plugins, automation systems, or agent orchestration.
+* Do not invent new persistence systems unless a milestone explicitly requires them.
+* Do not broaden scope because something “might be useful later.”
+* Do not replace working casefile/lane/scope mechanics just to make naming prettier.
+* Prefer the smallest implementation that satisfies the milestone exit criteria.
+* If a milestone is incomplete, do not start the next one.
 
-## Workstream 1: Shell Reliability
+## Architectural guardrails
 
-Goal:
+These are fixed unless explicitly changed:
 
-Make the application feel stable enough for daily use.
+* Keep the Electron main / preload / renderer / Python bridge split.
+* Keep scope resolution in Python.
+* Keep comparison chat read-only by construction.
+* Keep active-lane containment enforcement in Electron main for filesystem operations.
+* Treat `lane` as the current implementation of a scoped context, not the whole product identity.
+* Treat `context` as the product-facing work unit.
 
-Why it comes first:
+---
 
-- every other workflow is harder to evaluate when layout and panel behavior feel fragile
-- the current README explicitly identifies shell roughness as the first user-facing issue to solve
+## Milestone 1 — Stable Shell
 
-Likely code hotspots:
+### Goal
 
-- [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx)
-- [`ui-electron/renderer/src/components/Splitter.tsx`](../../ui-electron/renderer/src/components/Splitter.tsx)
-- [`ui-electron/renderer/src/components/RightPanel.tsx`](../../ui-electron/renderer/src/components/RightPanel.tsx)
-- [`ui-electron/renderer/src/styles.css`](../../ui-electron/renderer/src/styles.css)
-- [`ui-electron/main.js`](../../ui-electron/main.js)
+Make the current workbench reliable enough that layout problems stop dominating evaluation.
 
-Focus areas:
+### This milestone includes
 
-- pane sizing and persistence
-- right-panel usability at narrow widths
-- tab and panel predictability
-- terminal panel behavior
-- clearer hierarchy between browser, editor, and chat/context areas
+* pane resizing behaves predictably
+* sensible minimum widths
+* right panel remains usable while editing and chatting
+* terminal can open/close without destabilizing unrelated state
+* layout state persists sensibly
+* obvious panel-collapse/fighting behavior is fixed
 
-Exit criteria:
+### This milestone does **not** include
 
-- the workbench remains usable across common window sizes
-- resize behavior is predictable and recoverable
-- terminal, editor, and right panel can coexist without layout fights
-- common navigation actions no longer feel brittle
+* home dashboard
+* artifact unification
+* casefile switching system
+* journal
+* integrations
+* redesign of product concepts
 
-## Workstream 2: Browser-Driven Workflow
+### Exit criteria
 
-Goal:
+This milestone is complete only when:
 
-Turn the file browser into a real control surface for work, not just a tree viewer.
+* the editor does not collapse into unusability in normal use
+* the third/chat column remains usable at common window sizes
+* resizing does not corrupt layout state
+* terminal, editor, browser, and right panel can coexist without fighting each other
 
-Why it follows shell reliability:
+This milestone corresponds to the shell reliability work already identified in the docs.
 
-- browser-centered actions depend on the layout already being trustworthy
-- file and context actions should feel native to the main workspace, not layered on top of a shaky shell
+---
 
-Likely code hotspots:
+## Milestone 2 — Browser Is a Real Control Surface
 
-- [`ui-electron/renderer/src/components/FileTree.tsx`](../../ui-electron/renderer/src/components/FileTree.tsx)
-- [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx)
-- [`ui-electron/main.js`](../../ui-electron/main.js)
-- [`ui-electron/preload.js`](../../ui-electron/preload.js)
+### Goal
 
-Focus areas:
+Make the browser the natural place to begin work, not just a tree viewer.
 
-- create file
-- create folder
-- delete or move
-- richer browser context actions
-- create lane from browser selection
-- attach artifacts to the current context from the browser
-- launch compare and scope actions from browser selection
+### This milestone includes
 
-Exit criteria:
+* create file
+* create folder
+* delete entry
+* move entry, or a first safe relocate flow
+* rename works cleanly
+* open from browser into editor
+* create scoped context from current selection
+* compare from current selection
+* attach selected material to current scoped work where already supported by existing mechanics
 
-- a user can manage basic workspace structure without leaving DeskAssist
-- browser actions feed directly into scope and compare workflows
-- lane creation no longer feels like a setup detour disconnected from the files being worked on
+### This milestone does **not** include
 
-## Workstream 3: Scoped Context UX
+* new storage abstractions
+* cross-casefile navigation
+* artifact home
+* plugin hooks
+* generic action framework
+* major UI redesign beyond what is needed to support these actions
 
-Goal:
+### Exit criteria
 
-Make DeskAssist's differentiator visible and understandable.
+This milestone is complete only when:
 
-Why it is critical:
+* a user can manage normal workspace structure without leaving DeskAssist
+* lane/context creation no longer feels detached from actual files
+* compare can be started from the browser
+* browser actions feel connected to real work rather than to setup screens
 
-- the code already has a meaningful scope system
-- the current UX makes that system feel more like internal setup than product value
+This is already the intent of the existing browser-driven workflow docs; the key is to keep it narrow and finish it fully.
 
-Likely code hotspots:
+---
 
-- [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx)
-- [`ui-electron/renderer/src/components/ChatTab.tsx`](../../ui-electron/renderer/src/components/ChatTab.tsx)
-- [`ui-electron/renderer/src/components/LanesTab.tsx`](../../ui-electron/renderer/src/components/LanesTab.tsx)
-- [`ui-electron/renderer/src/components/ContextEditor.tsx`](../../ui-electron/renderer/src/components/ContextEditor.tsx)
-- [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
-- [`src/assistant_app/electron_bridge.py`](../../src/assistant_app/electron_bridge.py)
+## Milestone 2.5 — Scope Model Correction
 
-Focus areas:
+### Goal
 
-- explicit current-scope display
-- better framing of lanes, comparisons, and overlays
-- clearer compare session visibility
-- narrow, widen, and switch scope controls
-- stronger empty states and onboarding copy
+Fix the core scope and session model before building the visible scope features that Milestone 3 requires.
 
-Exit criteria:
+### Why this milestone exists
 
-- a new user can tell what the AI can currently read
-- switching between single-context and comparison-context chat is intentional and obvious
-- scope stops feeling like a hidden implementation detail
+Milestones 1 and 2 are technically functional, but contain design assumptions that do not match the intended product:
 
-## Workstream 4: Home And Resume
+* The `_ancestors` virtual prefix introduces a directory hierarchy the product does not need. The AI only needs to know which paths it can access — not why they are in scope or what their structural relationship to each other is.
+* The two-lane comparison limit prevents the natural case of discussing any subset of N contexts together.
+* Read/write access is fixed by structural role (the lane root is always writable, attachments are always read-only) rather than by user intent. The user may want the root to be read-only and an attachment writable, or vice versa, depending on the work.
+* Notes, Prompts, and Inbox tabs add visual and cognitive load without providing capability beyond what the file tree already provides. Notes and prompts are files; the file tree handles files.
+* The ContextEditor manifest is a heavier and more opaque version of the @mention and drag-drop context inclusion patterns users already know from other AI IDEs.
 
-Goal:
+These need to be corrected before Milestone 3 can build a useful scope UI on top of them.
 
-Introduce a real entry point that helps the user resume work and capture new work.
+### This milestone includes
 
-Why it depends on earlier work:
+* Remove the `_ancestors` virtual prefix from the scope model; scope becomes a flat labeled list of directory entries, each with a path, label, and read/write permission
+* Per-directory read/write permissions — each directory in a session can be independently marked read-only or read-write, independent of whether it is the lane root or an attachment
+* Unified scoped session model — lane chat and N-lane comparison become one concept: a session defined by a user-declared set of directories with declared access; single-directory read-write is the common case, multi-directory replaces the two-lane comparison limit
+* Stable UUID-based session identity — sessions are keyed by a persistent UUID assigned at creation, not by casefile root and lane id
+* Right panel reduced to chat with conversation tabs only — Notes, Prompts, and Inbox tabs are removed
+* Context inclusion via @mention and drag-drop in the chat composer, replacing the separate ContextEditor manifest UI
 
-- the shell must be stable first
-- contexts and scope need clearer language before the app can present recents and resume targets coherently
+### This milestone does **not** include
 
-Likely code hotspots:
+* Cross-session reference UI (pulling a message or thread from one session into another)
+* Polished current-scope summary display in chat (that is Milestone 3)
+* Home or resume features
+* Artifact unification
+* Any new storage systems
 
-- [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx)
-- [`ui-electron/renderer/src/components/Toolbar.tsx`](../../ui-electron/renderer/src/components/Toolbar.tsx)
-- new renderer components for home and recent-context views
-- possibly new persistence for recent sessions or pinned contexts
+### Exit criteria
 
-Focus areas:
+This milestone is complete only when:
 
-- home dashboard
-- recent contexts
-- pinned work
-- resume last active chat or comparison
-- quick capture
-- jump targets into current work
+* A user can create a scoped session with any number of directories (one or N)
+* Each directory in a session can independently be declared read-only or read-write
+* The right panel shows only conversation tabs — one per session, named by its directory set
+* The `_ancestors` prefix is gone; the AI sees only flat labeled directory roots
+* Session conversation history is keyed by stable UUID, not by structural path identity
+* A user can include a file in the current conversation via @mention or drag-drop from the file tree
+* Notes, Prompts, and Inbox are not present as right-panel tabs
 
-Exit criteria:
+---
 
-- opening DeskAssist answers "where should I go next?"
-- users can move from capture to active work without reconstructing their state manually
-- the app starts to feel like a daily environment rather than only a task-specific tool
+## Milestone 3 — Scoped AI Is Obvious
 
-## Workstream 5: Artifact Unification
+### Goal
 
-Goal:
+Make DeskAssist’s main differentiator visible: the user can tell what the AI can see.
 
-Turn the current set of durable things into a clearer artifact model.
+### This milestone includes
 
-Why it matters:
+* visible current-scope summary in chat
+* clear distinction between single-context chat and comparison chat
+* better language around overlays, related context, and context files
+* narrow / widen / switch scope controls where needed
+* empty states that explain what the current scoped context is doing for the user
 
-- notes, prompts, files, inbox material, and chat outputs already behave like related artifact types
-- the current UI treats them as separate tabs and stores, which increases conceptual clutter
+### This milestone does **not** include
 
-Likely code hotspots:
+* new scoping engine
+* renderer-side duplicate scope logic
+* advanced onboarding system
+* generic tutorial framework
 
-- [`ui-electron/renderer/src/components/RightPanel.tsx`](../../ui-electron/renderer/src/components/RightPanel.tsx)
-- [`ui-electron/renderer/src/components/NotesTab.tsx`](../../ui-electron/renderer/src/components/NotesTab.tsx)
-- [`ui-electron/renderer/src/components/PromptsTab.tsx`](../../ui-electron/renderer/src/components/PromptsTab.tsx)
-- [`ui-electron/renderer/src/components/InboxTab.tsx`](../../ui-electron/renderer/src/components/InboxTab.tsx)
-- [`src/assistant_app/casefile/notes.py`](../../src/assistant_app/casefile/notes.py)
-- [`src/assistant_app/casefile/prompts.py`](../../src/assistant_app/casefile/prompts.py)
-- [`src/assistant_app/casefile/inbox.py`](../../src/assistant_app/casefile/inbox.py)
+### Exit criteria
 
-Focus areas:
+This milestone is complete only when:
 
-- artifact descriptors or a shared metadata model
-- better insertion of notes and prompts into chat workflows
-- clearer distinction between owned artifacts and reference artifacts
-- fewer top-level destinations dedicated only to storage subtypes
+* a user can answer “what can the AI see right now?” without guesswork
+* a user can tell whether they are in single-context chat or comparison chat
+* scope feels like a product feature, not a hidden implementation mechanic
 
-Exit criteria:
+This milestone is directly supported by the current scoped-context UX plan and the open question about how scope should appear in the UI.
 
-- notes and prompts feel necessary and connected to work
-- artifact discovery is easier
-- the UI presents fewer isolated feature silos
+---
 
-## Workstream 6: Non-Code Context Validation
+## Milestone 4 — Cross-Context Continuity
 
-Goal:
+### Goal
 
-Validate that DeskAssist can support mixed project and personal work without broad integrations.
+Prove that DeskAssist is bigger than one active casefile.
 
-Recommended first target:
+### Why this milestone exists
 
-- journal, daily log, or scratch context
+The current docs say DeskAssist is a context-switching workspace, but current implementation still centers on one active casefile and one active lane at a time. This milestone is the bridge between “good scoped analysis workbench” and “actual second-brain workspace.”
 
-Why it comes after home and artifact work:
+### This milestone includes
 
-- the non-code context should arrive as a natural extension of the same context and artifact model, not as an unrelated special case
+* switching between casefiles/projects from inside DeskAssist
+* a lightweight recent-contexts or recent-work list
+* ability to reopen prior active work without reconstructing state manually
+* minimal user-level persistence for recent contexts
+* a visible sense that multiple contexts belong to one workspace, even if they are still backed by separate casefiles
 
-Likely code hotspots:
+### This milestone does **not** include
 
-- new renderer surfaces for quick capture and journal entry
-- persistence decisions near the casefile and artifact model
-- scope presentation for bounded non-code chat slices
+* polished dashboard
+* full artifact unification
+* journal implementation
+* external integrations
+* complex multi-workspace synchronization
 
-Exit criteria:
+### Exit criteria
 
-- a user can move between project work and personal capture naturally
-- the product proves it is broader than repo chat without needing external integrations
+This milestone is complete only when:
 
-## Workstream 7: Extension Foundation
+* a user can move between casefiles/projects without treating DeskAssist like a one-root app
+* recent work is visible and resumable
+* DeskAssist no longer feels mentally bound to one active casefile at a time
 
-Goal:
+This milestone is implied by the target shell/context model and by the user-level recent-context persistence proposed in the docs, but it is not explicit enough in the current plan. It should become explicit.
 
-Define how future integrations enter the system without reshaping the core architecture.
+---
 
-Why it comes later:
+## Milestone 5 — Home and Resume
 
-- integrations can consume the roadmap without proving the core product
-- extension boundaries are easiest to design once shell, context, and artifact boundaries are clearer
+### Goal
 
-Likely code hotspots:
+Give the app a proper starting place.
 
-- Electron main process service boundaries
-- renderer settings and registration surfaces
-- future adapter or plugin contracts near the Python bridge and domain services
+### This milestone includes
 
-Focus areas:
+* home view
+* recent contexts
+* pinned work
+* resume last active chat/comparison/context
+* quick capture entry point
+* obvious jump targets into current work
 
-- registration and discovery model
-- permissions and configuration model
-- optional background services
-- keeping the core coherent when extensions are absent
+### This milestone does **not** include
 
-Exit criteria:
+* major artifact system rewrite
+* inbox/integration hub
+* full life dashboard
+* speculative recommendation engine
 
-- a future integration can be added without changing the basic shell and scope model
-- the product still makes sense with zero extensions enabled
+### Exit criteria
 
-## Suggested Delivery Waves
+This milestone is complete only when opening DeskAssist answers:
 
-Wave 1:
+* what was I doing?
+* what can I resume?
+* what should I do next?
 
-- shell reliability
-- browser-driven workflow
-- scoped context UX
+This matches the existing product north star and roadmap, but comes after cross-context continuity rather than trying to carry that burden alone.
 
-Wave 2:
+---
 
-- home and resume
-- artifact unification
+## Milestone 6 — First Non-Code Context
 
-Wave 3:
+### Goal
 
-- non-code context validation
-- extension foundation
+Validate that DeskAssist can hold personal or non-repo work without becoming a giant platform.
 
-## Architecture Rules During Delivery
+### Recommended first implementation
 
-- Do not duplicate scope logic in the renderer.
-- Keep write safety centralized in the existing tool and bridge approval path.
-- Prefer evolving `assistantApi` deliberately over ad hoc new IPC channels.
-- Avoid broad state accretion in [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx); extract by concern as work progresses.
-- Keep comparison chat read-only by construction.
+* journal
+* daily log
+* or scratch context
 
-## Roadmap Summary
+### This milestone includes
 
-The roadmap is best understood as a sequence of clarification moves:
+* one lightweight non-code context
+* ability to switch to it like other contexts
+* ability to capture and reopen it
+* bounded AI interaction over that context
 
-1. make the shell trustworthy
-2. make browser-driven work complete
-3. make scope legible
-4. make context switching first-class
-5. make artifacts coherent
-6. validate broader mixed-mode work
-7. prepare clean extension boundaries
+### This milestone does **not** include
 
-That sequence keeps DeskAssist centered on its actual advantage: continuous, controllable, multi-context work in one environment.
+* email
+* Slack
+* texts
+* calendar
+* health tracking
+* plugin system
+
+### Exit criteria
+
+This milestone is complete only when:
+
+* a user can move from project work to a non-code context and back naturally
+* DeskAssist proves it is broader than repo work without requiring integrations
+
+This is already the recommended first non-code validation in the docs.
+
+---
+
+## Milestone 7 — Artifact Unification
+
+### Goal
+
+Make notes, prompts, files, chat outputs, and related material feel like parts of one workspace instead of isolated tabs.
+
+### This milestone includes
+
+* lightweight artifact descriptor model
+* clearer distinction between owned artifacts and reference artifacts
+* improved insertion of notes/prompts into workflows
+* fewer isolated top-level storage silos
+
+### This milestone does **not** include
+
+* generic database rewrite
+* full migration of all persistence to one backend
+* large taxonomy work beyond what the UI actually needs
+
+### Exit criteria
+
+This milestone is complete only when:
+
+* notes and prompts feel connected to work rather than like special tabs
+* artifact discovery is easier
+* the UI reflects artifact relationships better than storage subsystem boundaries
+
+This follows the current docs’ recommendation to unify artifacts conceptually before technically.
+
+---
+
+## Milestone 8 — Extensions and Integrations
+
+### Goal
+
+Create boundaries for future integrations without letting them define V1.
+
+### This milestone includes
+
+* extension boundaries
+* registration/configuration model
+* permissions model
+* optional background service boundaries
+
+### This milestone does **not** include
+
+* building all the integrations
+* reworking the core shell around extension needs
+* productizing a plugin marketplace
+
+### Exit criteria
+
+This milestone is complete only when future integrations can be added without reshaping the core shell/context/scope model.
+
+
+---
+
+# The sequence, in one line
+
+Build in this order:
+
+**stable shell → browser-driven work → scope model correction → obvious scope → cross-context continuity → home/resume → first non-code context → artifact unification → extension boundaries**
+

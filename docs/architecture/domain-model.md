@@ -159,7 +159,7 @@ The current system already has artifact types. What it lacks is a unified artifa
 
 Implementation and product meaning:
 
-Scope is the exact material the AI can read for a given conversation.
+Scope is the exact material the AI can read and write for a given conversation.
 
 Current definition:
 
@@ -167,53 +167,86 @@ Current definition:
 - serialized through [`src/assistant_app/casefile/service.py`](../../src/assistant_app/casefile/service.py)
 - consumed by the bridge in [`src/assistant_app/electron_bridge.py`](../../src/assistant_app/electron_bridge.py)
 
-What scope currently includes:
+What scope currently includes (pre-M2.5):
 
 - one lane write root for lane chat
-- read-only overlays for attachments and ancestors
-- casefile context files
-- multi-lane overlays for comparison chat
+- read-only overlays for attachments and ancestors under virtual prefixes (`_ancestors`, `_attachments`)
+- casefile context files under `_context`
+- multi-lane overlays for comparison chat under `_lanes`
+
+Known problems with the current model:
+
+- `_ancestors` prefix implies a directory hierarchy the product does not need; the AI only needs to know which paths it can access, not their structural relationship
+- read/write access is fixed by structural role (lane root = writable, overlays = read-only) rather than by user intent
+- the model is hard-coded to one writable root, preventing cases like a read-only lane root with a writable attachment
+- the two-scope shapes (lane chat vs comparison chat) are separate systems rather than one unified model
+
+M2.5 target:
+
+- scope becomes a flat labeled list of `ScopedDirectory(path, label, writable: bool)` entries
+- no structural hierarchy encoded in virtual path prefixes
+- per-directory read/write declared by the user at session creation time, not inferred from role
+- single unified model for both single-directory and multi-directory sessions
 
 Recommendation:
 
 Keep `scope` as both an internal and user-facing term.
 
-This is one of the strongest pieces of DeskAssist's product language because it directly expresses the differentiator: deliberate control over what the AI can see.
+This is one of the strongest pieces of DeskAssist's product language because it directly expresses the differentiator: deliberate control over what the AI can see and do.
 
 ## Comparison
 
 User-facing meaning:
 
-A comparison is a multi-context session where related artifacts or lanes can be inspected and discussed together.
+A comparison is a multi-directory session where related work can be inspected and discussed together. It is not necessarily a diff — it may be synthesis, analysis, or open-ended discussion across any subset of the user's named contexts.
 
 Current implementation reality:
 
 - file-level lane comparison is initiated from the `Lanes` tab
-- comparison chat opens a synthetic read-only session over multiple lanes
+- comparison chat opens a synthetic read-only session over exactly two lanes
 - the session gets its own persistent log keyed by an order-independent synthetic id
+
+Known problems with the current model:
+
+- hard-coded to exactly two lanes; the user may want to discuss any N contexts together while deliberately leaving others out
+- "comparison" implies a diff or winner/loser framing; the actual need is a flexible multi-scope session that sometimes compares, sometimes synthesizes
+- the two-lane chat and single-lane chat are separate code paths rather than one unified session model
+
+M2.5 target:
+
+- comparison becomes the multi-directory case of the unified scoped session model
+- any number of directories can participate in a single session
+- each directory's read/write permission is declared independently
+- single-directory sessions (current "lane chat") are the common case of the same model
 
 Recommendation:
 
-Keep `comparison` as a user-facing capability term.
-
-It already aligns well with both the current implementation and the product vision.
+Keep `comparison` as a user-facing capability term for the multi-directory case, but implement it as the general case of a unified scoped session rather than a separate concept.
 
 ## Attachment
 
 Implementation meaning:
 
-A lane attachment is a read-only directory associated with a lane and mounted into scope under a virtual prefix.
+A lane attachment is a directory associated with a lane and mounted into scope under a virtual prefix.
 
 Current definition:
 
 - represented by `LaneAttachment` in [`src/assistant_app/casefile/models.py`](../../src/assistant_app/casefile/models.py)
-- resolved into overlays in [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
+- resolved into read-only overlays in [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
+
+Known problem with the current model:
+
+- attachments are always read-only by construction; the user cannot declare an attachment writable
+- this prevents valid configurations like a read-only lane root with a writable attachment directory (e.g. a reference codebase alongside a notes or output directory)
+
+M2.5 target:
+
+- the read-only constraint moves from the attachment type to a per-directory permission flag
+- both the lane root and its attachments can be independently declared read-only or read-write
 
 Recommendation:
 
-Keep `attachment` as an implementation term and a secondary user-facing term.
-
-It is useful because it explains the current system well, but it should probably be framed as "related material" or "attached context" in broader product copy.
+Keep `attachment` as an implementation term for a directory associated with a session. In product copy, prefer "related directory" or "additional context." The read-only assumption should not be baked into the definition.
 
 ## Inbox Source
 

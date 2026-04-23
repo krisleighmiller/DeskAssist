@@ -95,23 +95,22 @@ Why it matters:
 - scope is the product differentiator
 - the current implementation is strong, but the user-facing explanation is weak
 
-Provisional default:
+Updated default (resolved in M2.5 planning):
 
-- always show a current-scope summary in chat
-- distinguish clearly between:
-  - write root
-  - read-only related context
-  - comparison scope
-  - casefile-wide context files
+- remove the separate ContextEditor manifest tab
+- context inclusion in chat happens via @mention and drag-drop from the file tree, matching the interaction pattern users already know from other AI IDEs
+- the file tree provides a structural color cue (which directories are in the active session's scope)
+- a current-scope summary in the chat header becomes the M3 deliverable, built on top of the corrected M2.5 scope model
 
-When to decide:
+When to act:
 
-- during the scoped-context UX phase, not after it
+- M2.5 removes the ContextEditor UI and adds @mention/drag-drop
+- M3 adds the visible scope summary in the chat panel
 
 Impact areas:
 
 - [`ui-electron/renderer/src/components/ChatTab.tsx`](../../ui-electron/renderer/src/components/ChatTab.tsx)
-- [`ui-electron/renderer/src/components/LanesTab.tsx`](../../ui-electron/renderer/src/components/LanesTab.tsx)
+- [`ui-electron/renderer/src/components/RightPanel.tsx`](../../ui-electron/renderer/src/components/RightPanel.tsx)
 - scope serialization surfaces
 
 ## 5. Where should browser-driven file operations live?
@@ -121,26 +120,16 @@ Why it matters:
 - the next phase requires create, delete, and move operations
 - the system already splits responsibility between renderer, Electron main, and Python
 
-Provisional default:
+**Settled (M2 complete):**
 
-- keep active-lane filesystem operations in Electron main
-- keep Python responsible for casefile and scope logic
-- only move file operations into Python if they need casefile-aware semantics that Electron main cannot enforce cleanly
-
-Why this default:
-
-- Electron main already owns active-lane containment and low-level file IO
-- keeping those operations there avoids unnecessary round-trips and duplicated boundary logic
-
-When to decide:
-
-- before implementing browser create, delete, and move
+- browser file operations (create, delete, move, rename) live in Electron main
+- Python remains responsible for casefile and scope logic
+- this boundary held cleanly through M2 implementation
 
 Impact areas:
 
 - [`ui-electron/main.js`](../../ui-electron/main.js)
 - [`ui-electron/preload.js`](../../ui-electron/preload.js)
-- browser context menu and file tree logic
 
 ## 6. How should home and resume state be persisted?
 
@@ -211,6 +200,55 @@ Impact areas:
 - settings and permissions
 - background processing model
 
+## 9. How should the unified scoped session be modeled at the data layer?
+
+Why it matters:
+
+- M2.5 collapses lane chat and N-lane comparison into one concept: a session defined by a user-declared set of directories with per-directory access permissions
+- the current data model has two separate shapes (`ScopeContext` for lane chat, a separate comparison model for two-lane comparison) that need to converge into one
+
+Provisional default:
+
+- replace `ScopeContext.write_root` + `read_overlays` with a flat list of `ScopedDirectory(path, label, writable: bool)` entries
+- the Python scope engine (`scope.py`) becomes the single resolver for both the single-directory and multi-directory cases
+- session history continues to be keyed per-session, but using a stable UUID assigned at session creation rather than derived from casefile root and lane id
+
+When to decide:
+
+- before starting M2.5 implementation
+
+Impact areas:
+
+- [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
+- [`src/assistant_app/casefile/models.py`](../../src/assistant_app/casefile/models.py)
+- [`src/assistant_app/casefile/service.py`](../../src/assistant_app/casefile/service.py)
+- [`src/assistant_app/chat_service.py`](../../src/assistant_app/chat_service.py)
+- session key logic in [`ui-electron/renderer/src/hooks/appModelTypes.ts`](../../ui-electron/renderer/src/hooks/appModelTypes.ts)
+
+## 10. What replaces the `_ancestors` virtual prefix in the scope model?
+
+Why it matters:
+
+- `_ancestors` was modeling a lane parent hierarchy that the product does not actually need
+- the AI only needs to know which paths it can access, not the organizational reason they are in scope
+- the current naming leaks an implementation concept into the model/tool contract
+
+Provisional default:
+
+- drop `_ancestors` entirely as a virtual prefix
+- all directories in a session are presented to the AI as flat labeled roots (e.g. `_scope/ash/`, `_scope/ash_notes/`) or under their natural names
+- the system prompt tells the model which roots are readable and which are writable rather than encoding that in path structure
+
+When to decide:
+
+- before starting M2.5 implementation; the virtual path scheme is part of the tool contract and changes must be coordinated between `scope.py`, the system prompt, and the tool registry
+
+Impact areas:
+
+- [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
+- [`src/assistant_app/prompts/charter.md`](../../src/assistant_app/prompts/charter.md)
+- [`src/assistant_app/tools/file_tools.py`](../../src/assistant_app/tools/file_tools.py)
+
 ## Summary Defaults
 
 Until the team chooses otherwise, the working defaults should be:
@@ -218,8 +256,11 @@ Until the team chooses otherwise, the working defaults should be:
 - `context` is the primary product term
 - `lane` remains the current implementation term
 - `scope` stays central and should become more visible
-- artifacts should be unified conceptually before they are unified technically
-- browser file operations stay in Electron main
+- browser file operations stay in Electron main (settled, M2 complete)
+- Notes, Prompts, and Inbox are not right-panel tabs; they are files accessible through the file tree
+- context inclusion in chat is via @mention and drag-drop, not a separate manifest UI
+- `_ancestors` prefix is being removed; scope is a flat labeled directory list with per-entry R/W permissions
+- sessions use stable UUIDs, not path-derived keys
 - home and recents should use a user-level index over casefile-backed data
 - the first non-code context should be lightweight and local
 - extensions should remain deferred until core boundaries are stronger
