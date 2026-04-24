@@ -44,7 +44,7 @@ def _setup(tmp_path: Path):
         kind="repo",
         root=task9 / "ash",
         parent_id="task-9",
-        attachments=[LaneAttachment(name="notes", root=task9 / "ash_notes")],
+        attachments=[LaneAttachment(name="notes", root=task9 / "ash_notes", mode="read")],
     )
     store.register_lane(name="Elm", kind="repo", root=task9 / "elm", parent_id="task-9")
     return family_root, store

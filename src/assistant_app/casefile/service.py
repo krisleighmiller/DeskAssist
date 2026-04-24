@@ -11,6 +11,7 @@ from assistant_app.casefile.context import (
 from assistant_app.casefile.models import (
     AttachmentMode,
     CasefileSnapshot,
+    ComparisonSessionConfig,
     DEFAULT_ATTACHMENT_MODE,
     Lane,
     LaneAttachment,
@@ -169,7 +170,20 @@ class CasefileService:
 
     def resolve_comparison_scope(self, lane_ids: list[str]) -> ScopeContext:
         snapshot = self.store.load_snapshot()
-        return resolve_comparison_scope(snapshot, lane_ids)
+        session = self.store.get_comparison_session(lane_ids)
+        return resolve_comparison_scope(
+            snapshot,
+            lane_ids,
+            comparison_attachments=session.attachments,
+        )
+
+    def get_comparison_session(self, lane_ids: list[str]) -> ComparisonSessionConfig:
+        return self.store.get_comparison_session(lane_ids)
+
+    def update_comparison_attachments(
+        self, lane_ids: list[str], attachments: list[LaneAttachment]
+    ) -> ComparisonSessionConfig:
+        return self.store.update_comparison_attachments(lane_ids, attachments)
 
     def append_comparison_chat(
         self, lane_ids: list[str], messages: list[dict[str, Any]]

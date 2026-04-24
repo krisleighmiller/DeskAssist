@@ -1,4 +1,4 @@
-"""Tests for `WorkspaceFilesystem` with read overlays (M3.5a)."""
+"""Tests for `WorkspaceFilesystem` scoped multi-root routing."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from assistant_app.casefile.models import ScopedDirectory
 from assistant_app.filesystem import WorkspaceFilesystem
 
 
@@ -120,3 +121,36 @@ def test_list_dir_inside_overlay_returns_overlay_contents(tmp_path: Path):
     target, entries = fs.list_dir("_ancestors/family")
     assert target == overlay_a.resolve()
     assert {e["name"] for e in entries} == {"rubric.md"}
+
+
+def test_scoped_directories_allow_writes_only_on_writable_mounts(tmp_path: Path):
+    write, overlay_a, overlay_b = _make(tmp_path)
+    fs = WorkspaceFilesystem(
+        write,
+        scoped_directories=(
+            ScopedDirectory(path=write, label="main", writable=True),
+            ScopedDirectory(path=overlay_a, label="notes", writable=True),
+            ScopedDirectory(path=overlay_b, label="logs", writable=False),
+        ),
+    )
+
+    target, _ = fs.save_text("_scope/notes/new.md", "hello", overwrite=False)
+    assert target == (overlay_a / "new.md").resolve()
+    assert (overlay_a / "new.md").read_text(encoding="utf-8") == "hello"
+
+    with pytest.raises(PermissionError):
+        fs.save_text("_scope/logs/new.md", "nope", overwrite=False)
+
+
+def test_scoped_directories_block_bare_writes_when_primary_root_is_not_writable(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    ref_root = tmp_path / "reference"
+    casefile_root.mkdir()
+    ref_root.mkdir()
+    fs = WorkspaceFilesystem(
+        casefile_root,
+        scoped_directories=(ScopedDirectory(path=ref_root, label="reference", writable=False),),
+    )
+
+    with pytest.raises(PermissionError):
+        fs.save_text("escape.md", "blocked", overwrite=False)

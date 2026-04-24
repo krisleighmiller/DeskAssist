@@ -124,8 +124,11 @@ export function App(): JSX.Element {
     handleCompareLanes,
     handleClearComparison,
     handleOpenComparisonChat,
+    handleUpdateComparisonAttachments,
     handleCloseComparisonChat,
     sendComparisonChat,
+    approveComparisonTools,
+    denyComparisonTools,
     handleOpenDiff,
     resetComparisonsForCasefile,
     clearActiveComparisonForLaneChat,
@@ -318,7 +321,7 @@ export function App(): JSX.Element {
       const lane = casefile?.lanes.find((l) => l.id === laneId);
       if (!lane) return;
       const existing: LaneAttachmentInput[] = (lane.attachments ?? []).map(
-        (a) => ({ name: a.name, root: a.root })
+        (a) => ({ name: a.name, root: a.root, mode: a.mode })
       );
       if (existing.some((a) => a.name === name)) {
         setTreeError(
@@ -513,18 +516,6 @@ export function App(): JSX.Element {
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [casefile]);
-
-  const handleStartLaneComparisonFromTree = useCallback(
-    async (selfLaneId: string, otherLaneId: string) => {
-      try {
-        await handleCompareLanes(selfLaneId, otherLaneId);
-      } catch (error) {
-        setTreeError(errorMessage(error));
-        throw error;
-      }
-    },
-    [handleCompareLanes]
-  );
 
   // ----- Chat -----
 
@@ -726,7 +717,6 @@ export function App(): JSX.Element {
       onTrashEntry: handleTrashEntry,
       onCreateLaneFromPath: handleCreateLaneFromPath,
       onAttachToLane: handleAttachToLane,
-      onStartLaneComparison: handleStartLaneComparisonFromTree,
       onActiveRightTabChange: setActiveRightTab,
       onSelectTab: handleSelectTab,
       onCloseTab: handleCloseTab,
@@ -739,6 +729,8 @@ export function App(): JSX.Element {
       onApproveTools: approveTools,
       onDenyTools: denyTools,
       onSendComparisonChat: sendComparisonChat,
+      onApproveComparisonTools: approveComparisonTools,
+      onDenyComparisonTools: denyComparisonTools,
       onRegisterLane: handleRegisterLane,
       onChooseLaneRoot: handleChooseLaneRoot,
       onCompareLanes: handleCompareLanes,
@@ -749,6 +741,7 @@ export function App(): JSX.Element {
       onSaveContext: handleSaveContext,
       onSetLaneParent: handleSetLaneParent,
       onUpdateLaneAttachments: handleUpdateLaneAttachments,
+      onUpdateComparisonAttachments: handleUpdateComparisonAttachments,
       onUpdateLane: handleUpdateLane,
       onRemoveLane: handleRemoveLane,
       onHardResetCasefile: handleHardResetCasefile,

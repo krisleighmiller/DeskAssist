@@ -2016,6 +2016,19 @@ ipcMain.handle("casefile:openComparison", async (_, args = {}) => {
   return response.comparison;
 });
 
+ipcMain.handle("casefile:updateComparisonAttachments", async (_, args = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneIds = normalizeLaneIds(args.laneIds);
+  const attachments = Array.isArray(args.attachments) ? args.attachments : [];
+  const response = await runPythonBridgeMeta({
+    command: "casefile:updateComparisonAttachments",
+    casefileRoot,
+    laneIds,
+    attachments,
+  });
+  return response.comparison;
+});
+
 ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
   const casefileRoot = requireCasefile();
   const laneIds = normalizeLaneIds(payload.laneIds);
@@ -2030,6 +2043,7 @@ ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
       model: payload.model || savedModel,
       messages: Array.isArray(payload.messages) ? payload.messages : [],
       userMessage: payload.userMessage || "",
+      allowWriteTools: Boolean(payload.allowWriteTools),
       resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
     },
     { attachApiKeys: true, timeoutMs: BRIDGE_CHAT_TIMEOUT_MS }

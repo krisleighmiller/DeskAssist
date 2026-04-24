@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Mapping
 
+from assistant_app.casefile.models import ScopedDirectory
 from assistant_app.tools.file_tools import (
     make_append_file_tool,
     make_delete_file_tool,
@@ -17,6 +18,7 @@ def build_default_tool_registry(
     *,
     casefile_root: Path | None = None,
     read_overlays: Mapping[str, Path] | None = None,
+    scoped_directories: tuple[ScopedDirectory, ...] | None = None,
     enable_writes: bool = True,
 ) -> ToolRegistry:
     """Build the standard tool registry rooted at `workspace_root`.
@@ -61,7 +63,11 @@ def build_default_tool_registry(
     )
     registry.register(
         "list_dir",
-        make_list_dir_tool(workspace_root, read_overlays=read_overlays),
+        make_list_dir_tool(
+            workspace_root,
+            read_overlays=read_overlays,
+            scoped_directories=scoped_directories,
+        ),
         input_schema={"path": str},
         required_params=set(),
         permission="workspace_read",
@@ -69,7 +75,11 @@ def build_default_tool_registry(
     )
     registry.register(
         "read_file",
-        make_read_file_tool(workspace_root, read_overlays=read_overlays),
+        make_read_file_tool(
+            workspace_root,
+            read_overlays=read_overlays,
+            scoped_directories=scoped_directories,
+        ),
         input_schema={"path": str, "max_chars": int},
         required_params={"path"},
         permission="workspace_read",
@@ -78,7 +88,11 @@ def build_default_tool_registry(
     if enable_writes:
         registry.register(
             "save_file",
-            make_save_file_tool(workspace_root, read_overlays=read_overlays),
+            make_save_file_tool(
+                workspace_root,
+                read_overlays=read_overlays,
+                scoped_directories=scoped_directories,
+            ),
             input_schema={"path": str, "content": str, "overwrite": bool},
             required_params={"path", "content"},
             permission="workspace_write",
@@ -86,7 +100,11 @@ def build_default_tool_registry(
         )
         registry.register(
             "append_file",
-            make_append_file_tool(workspace_root, read_overlays=read_overlays),
+            make_append_file_tool(
+                workspace_root,
+                read_overlays=read_overlays,
+                scoped_directories=scoped_directories,
+            ),
             input_schema={"path": str, "content": str},
             required_params={"path", "content"},
             permission="workspace_write",
@@ -94,7 +112,11 @@ def build_default_tool_registry(
         )
         registry.register(
             "delete_file",
-            make_delete_file_tool(workspace_root, read_overlays=read_overlays),
+            make_delete_file_tool(
+                workspace_root,
+                read_overlays=read_overlays,
+                scoped_directories=scoped_directories,
+            ),
             input_schema={"path": str},
             required_params={"path"},
             permission="workspace_write",
@@ -102,7 +124,11 @@ def build_default_tool_registry(
         )
         registry.register(
             "delete_path",
-            make_delete_path_tool(workspace_root, read_overlays=read_overlays),
+            make_delete_path_tool(
+                workspace_root,
+                read_overlays=read_overlays,
+                scoped_directories=scoped_directories,
+            ),
             input_schema={"path": str, "recursive": bool},
             required_params={"path"},
             permission="workspace_write",

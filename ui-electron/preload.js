@@ -86,9 +86,11 @@ contextBridge.exposeInMainWorld("assistantApi", {
   // Chat (against the currently active casefile + lane).
   sendChat: (payload) => ipcRenderer.invoke("chat:send", payload),
 
-  // M3.5c: comparison-chat sessions (multi-lane, read-only).
+  // M3.5c: comparison-chat sessions (multi-lane scoped chat).
   openComparison: (laneIds) =>
     ipcRenderer.invoke("casefile:openComparison", { laneIds }),
+  updateComparisonAttachments: (laneIds, attachments) =>
+    ipcRenderer.invoke("casefile:updateComparisonAttachments", { laneIds, attachments }),
   sendComparisonChat: (payload) =>
     ipcRenderer.invoke("casefile:sendComparisonChat", payload),
 

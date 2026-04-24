@@ -14,6 +14,7 @@ from assistant_app.casefile.context import (
 )
 from assistant_app.casefile.models import (
     Casefile,
+    ComparisonSessionConfig,
     CasefileSnapshot,
     DEFAULT_ATTACHMENT_MODE,
     DEFAULT_LANE_KIND,
@@ -62,6 +63,7 @@ __all__ = [
     "CONTEXT_FILE_VERSION",
     "CONTEXT_PREFIX",
     "Casefile",
+    "ComparisonSessionConfig",
     "CasefileService",
     "CasefileSnapshot",
     "CasefileStore",

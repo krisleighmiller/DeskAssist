@@ -21,6 +21,7 @@ from assistant_app.casefile import (
 )
 from assistant_app.casefile.service import (
     parse_attachments,
+    serialize_attachment,
     serialize_context_manifest,
     serialize_scope,
 )
@@ -248,22 +249,36 @@ def _resolve_chat_context(
 def _build_context_system_prompt(scope: ScopeContext) -> str | None:
     """Format the auto-injected casefile-context system message.
 
-    Returns None when there is nothing to inject (no read-only directories
+    Returns None when there is nothing to inject (no scoped directories
     and no auto-include candidates), so callers can skip prepending an empty
     message to the chat history.
     """
     candidates = scope.auto_include_candidates()
-    read_dirs = [d for d in scope.directories if not d.writable]
-    if not candidates and not read_dirs:
+    scoped_dirs = list(scope.directories)
+    if not candidates and not scoped_dirs:
         return None
     parts: list[str] = ["You are operating inside a DeskAssist scoped session."]
-    if read_dirs:
-        parts.append(
-            "You have read-only access to the following context directories. "
-            "Reference them via the listed virtual prefix:"
+    if scoped_dirs:
+        primary = next(
+            (
+                d
+                for d in scoped_dirs
+                if d.writable and d.path == scope.write_root
+            ),
+            None,
         )
-        for d in read_dirs:
-            parts.append(f"  - _scope/{d.label}/  ({d.label})")
+        if primary is not None:
+            parts.append(
+                "Bare relative paths resolve inside the primary writable directory "
+                f"({primary.label})."
+            )
+        parts.append(
+            "You can access the following scoped directories via their virtual "
+            "prefixes:"
+        )
+        for d in scoped_dirs:
+            access = "read-write" if d.writable else "read-only"
+            parts.append(f"  - _scope/{d.label}/  ({d.label}, {access})")
     if candidates:
         parts.append(
             "Casefile-wide context files (auto-included verbatim below; treat as "
@@ -294,17 +309,21 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("messages must be an array")
 
     workspace_root, casefile_root, scope = _resolve_chat_context(request)
-    # When a scope is active we layer ancestor + attachment + casefile-context
-    # roots into the tool registry as read-only overlays. The write root stays
-    # the lane's own directory, so the M2 isolation guarantee (writes can't
-    # cross sibling lanes) is preserved.
+    # When a scope is active we mount every scoped directory into the tool
+    # filesystem under its `_scope/<label>/` prefix. The primary workspace
+    # root remains the first writable directory (or casefile root fallback)
+    # for backward compatibility with bare relative paths.
     read_overlays = scope.overlay_map() if scope is not None else None
+    scoped_directories = scope.directories if scope is not None else None
+    enable_writes = True if scope is None else any(d.writable for d in scope.directories)
 
     service = ChatService(
         default_provider_name=provider,
         workspace_root=workspace_root,
         casefile_root=casefile_root,
         read_overlays=read_overlays,
+        scoped_directories=scoped_directories,
+        enable_writes=enable_writes,
     )
     parsed_history = _parse_messages(history_raw)
 
@@ -1146,6 +1165,7 @@ def _serialize_comparison_summary(
     snapshot = service.snapshot()
     sorted_ids = sorted(set(lane_ids))
     lanes = [snapshot.lane_by_id(lid) for lid in sorted_ids]
+    session = service.get_comparison_session(sorted_ids)
     return {
         "id": service.comparison_id(sorted_ids),
         "laneIds": sorted_ids,
@@ -1153,6 +1173,7 @@ def _serialize_comparison_summary(
             {"id": lane.id, "name": lane.name, "root": str(lane.root)}
             for lane in lanes
         ],
+        "attachments": [serialize_attachment(att) for att in session.attachments],
     }
 
 
@@ -1185,17 +1206,17 @@ def handle_casefile_open_comparison(request: dict[str, Any]) -> dict[str, Any]:
 def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, Any]:
     """Run one chat turn against a comparison session.
 
-    The session is read-only by construction: the registry is built with
-    ``enable_writes=False`` so no save / append / delete tool exists for
-    the model to call.  ``allowWriteTools`` and ``resumePendingToolCalls``
-    are accepted for shape parity with ``chat:send`` but the former is
-    forced to ``False`` here — there are no write tools to approve.
+    The comparison session reuses the same scoped-directory access model as
+    single-lane chat: each mounted directory is independently read-only or
+    writable, and write-tool approvals are emitted only when the model asks
+    to touch a writable path.
     """
     root = _require_casefile_root(request)
     lane_ids = _parse_lane_ids(request)
     provider = str(request.get("provider") or "openai")
     model = request.get("model")
     user_message = request.get("userMessage")
+    allow_write_tools = bool(request.get("allowWriteTools", False))
     resume_pending = bool(request.get("resumePendingToolCalls", False))
     if not resume_pending and (
         not isinstance(user_message, str) or not user_message.strip()
@@ -1216,7 +1237,8 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
         workspace_root=scope.write_root,
         casefile_root=root,
         read_overlays=scope.overlay_map(),
-        enable_writes=False,
+        scoped_directories=scope.directories,
+        enable_writes=any(d.writable for d in scope.directories),
     )
     parsed_history = _parse_messages(history_raw)
     # M4.5: charter applies to comparison sessions too. Comparison chats are
@@ -1233,16 +1255,17 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
     if resume_pending:
         response = chat.resume_pending_tool_calls(
             model=model if isinstance(model, str) else None,
-            allow_write_tools=False,
+            allow_write_tools=allow_write_tools,
         )
     else:
         response = chat.send_user_message(
             user_message,
             model=model if isinstance(model, str) else None,
-            allow_write_tools=False,
+            allow_write_tools=allow_write_tools,
         )
     history_delta = chat.history[history_before_count:]
     serialized_delta = [_serialize_message(m) for m in history_delta]
+    pending_write_approvals = chat.pending_write_tool_calls(response)
 
     persistence_error: str | None = None
     try:
@@ -1256,15 +1279,24 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
         "ok": True,
         "message": _serialize_message(response),
         "messages": serialized_delta,
-        # Comparison sessions never produce write-tool approvals (no write
-        # tools are registered) but we emit the empty list for shape parity
-        # with chat:send so the renderer can reuse its rendering code.
-        "pendingApprovals": [],
+        "pendingApprovals": pending_write_approvals,
         "comparison": _serialize_comparison_summary(service, lane_ids),
     }
     if persistence_error:
         payload["persistenceError"] = persistence_error
     return payload
+
+
+def handle_casefile_update_comparison_attachments(request: dict[str, Any]) -> dict[str, Any]:
+    root = _require_casefile_root(request)
+    lane_ids = _parse_lane_ids(request)
+    attachments = parse_attachments(request.get("attachments"))
+    service = CasefileService(root)
+    service.update_comparison_attachments(lane_ids, attachments)
+    return {
+        "ok": True,
+        "comparison": _serialize_comparison_summary(service, lane_ids),
+    }
 
 
 def handle_lane_read_file(request: dict[str, Any]) -> dict[str, Any]:
@@ -1318,6 +1350,7 @@ _HANDLERS = {
     "casefile:readOverlayFile": handle_casefile_read_overlay_file,
     "casefile:openComparison": handle_casefile_open_comparison,
     "casefile:sendComparisonChat": handle_casefile_send_comparison_chat,
+    "casefile:updateComparisonAttachments": handle_casefile_update_comparison_attachments,
     "casefile:listPrompts": handle_casefile_list_prompts,
     "casefile:getPrompt": handle_casefile_get_prompt,
     "casefile:createPrompt": handle_casefile_create_prompt,

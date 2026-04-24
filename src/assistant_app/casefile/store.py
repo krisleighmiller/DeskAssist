@@ -10,6 +10,7 @@ from typing import Any, Iterable
 from assistant_app.casefile.models import (
     Casefile,
     CasefileSnapshot,
+    ComparisonSessionConfig,
     DEFAULT_ATTACHMENT_MODE,
     DEFAULT_LANE_KIND,
     Lane,
@@ -26,6 +27,7 @@ LANES_FILE_VERSION = 2
 # with embedded tool results can be large, but 1 MB per line is already
 # generous.  Anything larger almost certainly indicates runaway content.
 MAX_CHAT_LINE_BYTES: int = 1 * 1024 * 1024  # 1 MB
+COMPARISONS_FILE_VERSION = 1
 
 _logger = logging.getLogger(__name__)
 
@@ -259,6 +261,7 @@ class CasefileStore:
             root=target.root,
             parent_id=target.parent_id,
             attachments=normalized,
+            writable=target.writable,
         )
         new_lanes = [replaced if lane.id == lane_id else lane for lane in snapshot.lanes]
         self._write_lanes_file(new_lanes, active_lane_id=snapshot.active_lane_id)
@@ -294,6 +297,7 @@ class CasefileStore:
             root=target.root,
             parent_id=parent_id,
             attachments=target.attachments,
+            writable=target.writable,
         )
         new_lanes = [replaced if lane.id == lane_id else lane for lane in snapshot.lanes]
         self._write_lanes_file(new_lanes, active_lane_id=snapshot.active_lane_id)
@@ -383,6 +387,7 @@ class CasefileStore:
                         root=lane.root,
                         parent_id=deleted_parent,
                         attachments=lane.attachments,
+                        writable=lane.writable,
                     )
                 )
             else:
@@ -445,7 +450,43 @@ class CasefileStore:
         # almost never what a "new task" reset wants.
         if self.casefile.lanes_file.exists():
             self.casefile.lanes_file.unlink()
+        if self.casefile.comparisons_file.exists():
+            self.casefile.comparisons_file.unlink()
         self.ensure_initialized()
+
+    # ----- comparison session metadata -----
+
+    def comparison_id(self, lane_ids: Iterable[str]) -> str:
+        ids = sorted({normalize_lane_id(raw) for raw in lane_ids})
+        if len(ids) < 2:
+            raise ValueError("Comparison requires at least two distinct lane ids")
+        return "_compare__" + "__".join(ids)
+
+    def get_comparison_session(
+        self, lane_ids: Iterable[str]
+    ) -> ComparisonSessionConfig:
+        comparison_id = self.comparison_id(lane_ids)
+        sessions = self._read_comparisons_file()
+        existing = sessions.get(comparison_id)
+        if existing is not None:
+            return existing
+        ids = tuple(sorted({normalize_lane_id(raw) for raw in lane_ids}))
+        return ComparisonSessionConfig(id=comparison_id, lane_ids=ids)
+
+    def update_comparison_attachments(
+        self, lane_ids: Iterable[str], attachments: Iterable[LaneAttachment]
+    ) -> ComparisonSessionConfig:
+        session = self.get_comparison_session(lane_ids)
+        normalized = self._normalize_attachments(attachments)
+        updated = ComparisonSessionConfig(
+            id=session.id,
+            lane_ids=session.lane_ids,
+            attachments=normalized,
+        )
+        sessions = self._read_comparisons_file()
+        sessions[updated.id] = updated
+        self._write_comparisons_file(sessions)
+        return updated
 
     # ----- chat history per lane -----
 
@@ -463,13 +504,7 @@ class CasefileStore:
         re-validated through ``normalize_lane_id`` so a bad caller cannot
         smuggle path separators into the filename.
         """
-        ids = sorted({normalize_lane_id(raw) for raw in lane_ids})
-        if len(ids) < 2:
-            raise ValueError("Comparison log requires at least two distinct lane ids")
-        # Leading underscore on the synthetic id keeps it out of the
-        # `[a-z0-9]`-prefixed lane-id namespace, so it can never collide with
-        # a real lane's chat log.
-        return self.casefile.chats_dir / ("_compare__" + "__".join(ids) + ".jsonl")
+        return self.casefile.chats_dir / f"{self.comparison_id(lane_ids)}.jsonl"
 
     def append_comparison_chat_messages(
         self, lane_ids: Iterable[str], messages: list[dict[str, Any]]
@@ -603,6 +638,100 @@ class CasefileStore:
             raise LanesFileError("lanes.json must be a JSON object at the top level")
         return data
 
+    def _read_comparisons_file(self) -> dict[str, ComparisonSessionConfig]:
+        path = self.casefile.comparisons_file
+        if not path.exists():
+            return {}
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise LanesFileError(f"Cannot read {path}: {exc}") from exc
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise LanesFileError(f"Malformed JSON in {path}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise LanesFileError("comparisons.json must be a JSON object at the top level")
+        version = data.get("version")
+        if version != COMPARISONS_FILE_VERSION:
+            raise LanesFileError(
+                f"Unsupported comparisons.json version: {version!r} "
+                f"(this build understands {COMPARISONS_FILE_VERSION})"
+            )
+        raw_sessions = data.get("sessions", [])
+        if not isinstance(raw_sessions, list):
+            raise LanesFileError("comparisons.json: 'sessions' must be an array")
+        out: dict[str, ComparisonSessionConfig] = {}
+        for item in raw_sessions:
+            if not isinstance(item, dict):
+                continue
+            raw_id = item.get("id")
+            raw_lane_ids = item.get("lane_ids")
+            if not isinstance(raw_id, str) or not isinstance(raw_lane_ids, list):
+                continue
+            try:
+                lane_ids = tuple(sorted({normalize_lane_id(raw) for raw in raw_lane_ids}))
+            except ValueError:
+                continue
+            if len(lane_ids) < 2:
+                continue
+            comparison_id = self.comparison_id(lane_ids)
+            if raw_id != comparison_id:
+                continue
+            raw_attachments = item.get("attachments", [])
+            if not isinstance(raw_attachments, list):
+                raw_attachments = []
+            parsed_attachments: list[LaneAttachment] = []
+            for raw_att in raw_attachments:
+                if not isinstance(raw_att, dict):
+                    continue
+                att_name = raw_att.get("name")
+                att_root = raw_att.get("root")
+                if not isinstance(att_name, str) or not isinstance(att_root, str):
+                    continue
+                try:
+                    normalized_name = normalize_attachment_name(att_name)
+                except ValueError:
+                    continue
+                parsed_attachments.append(
+                    LaneAttachment(
+                        name=normalized_name,
+                        root=self._resolve_lane_root(Path(att_root)),
+                        mode="read"
+                        if raw_att.get("mode") == "read"
+                        else DEFAULT_ATTACHMENT_MODE,
+                    )
+                )
+            out[comparison_id] = ComparisonSessionConfig(
+                id=comparison_id,
+                lane_ids=lane_ids,
+                attachments=tuple(parsed_attachments),
+            )
+        return out
+
+    def _write_comparisons_file(
+        self, sessions: dict[str, ComparisonSessionConfig]
+    ) -> None:
+        payload = {
+            "version": COMPARISONS_FILE_VERSION,
+            "sessions": [
+                {
+                    "id": session.id,
+                    "lane_ids": list(session.lane_ids),
+                    "attachments": [
+                        self._serialize_attachment(attachment)
+                        for attachment in session.attachments
+                    ],
+                }
+                for session in sorted(sessions.values(), key=lambda entry: entry.id)
+            ],
+        }
+        meta = self.casefile.metadata_dir
+        meta.mkdir(parents=True, exist_ok=True)
+        tmp = self.casefile.comparisons_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(self.casefile.comparisons_file)
+
     def _serialize_attachment(self, attachment: LaneAttachment) -> dict[str, Any]:
         try:
             rel = attachment.root.relative_to(self.casefile.root)
@@ -702,7 +831,7 @@ class CasefileStore:
                         LaneAttachment(
                             name=normalized_name,
                             root=self._resolve_lane_root(Path(att_root)),
-                            mode="write" if raw_att.get("mode") == "write" else DEFAULT_ATTACHMENT_MODE,
+                            mode="read" if raw_att.get("mode") == "read" else DEFAULT_ATTACHMENT_MODE,
                         )
                     )
                 attachments = tuple(parsed)
@@ -754,7 +883,7 @@ class CasefileStore:
                 LaneAttachment(
                     name=normalized_name,
                     root=resolved,
-                    mode=DEFAULT_ATTACHMENT_MODE,
+                    mode=attachment.mode,
                 )
             )
         return tuple(out)

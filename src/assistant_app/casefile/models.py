@@ -52,7 +52,10 @@ def coerce_lane_kind(value: object) -> LaneKind:
 # discussed (`ash/`). Attachments are exposed to chats as virtual roots
 # (`_scope/<name>/...`). `mode` controls whether the AI can write to them.
 AttachmentMode = Literal["read", "write"]
-DEFAULT_ATTACHMENT_MODE: AttachmentMode = "read"
+# New attachments default to "write" so a freshly-attached sibling directory
+# is treated like the lane root (also writable by default). The user can
+# always demote a directory to read-only via the AI-scope context menu.
+DEFAULT_ATTACHMENT_MODE: AttachmentMode = "write"
 
 
 @dataclass(slots=True, frozen=True)
@@ -63,8 +66,8 @@ class LaneAttachment:
     sees. It is normalized by the store to be filesystem-safe.
     `root` is an absolute directory path. It may live anywhere on disk;
     attachments are explicitly allowed to point outside the casefile.
-    `mode` controls AI access: "read" (default) is read-only; "write" gives
-    the AI write access to this directory.
+    `mode` controls AI access: "write" (default) gives the AI write access;
+    "read" demotes the directory to a read-only reference context.
     """
 
     name: str
@@ -102,6 +105,19 @@ class Lane:
 
 
 @dataclass(slots=True, frozen=True)
+class ComparisonSessionConfig:
+    """Persistent casefile-local metadata for one canonical comparison session.
+
+    Comparison chat identity is still derived from the sorted lane-id set; this
+    record only carries session-local scope additions (currently attachments).
+    """
+
+    id: str
+    lane_ids: tuple[str, ...]
+    attachments: tuple[LaneAttachment, ...] = field(default_factory=tuple)
+
+
+@dataclass(slots=True, frozen=True)
 class Casefile:
     """A casefile: a directory plus its `.casefile/` metadata folder."""
 
@@ -118,6 +134,10 @@ class Casefile:
     @property
     def chats_dir(self) -> Path:
         return self.metadata_dir / "chats"
+
+    @property
+    def comparisons_file(self) -> Path:
+        return self.metadata_dir / "comparisons.json"
 
     @property
     def context_file(self) -> Path:

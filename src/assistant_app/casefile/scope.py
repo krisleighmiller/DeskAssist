@@ -10,7 +10,7 @@ from assistant_app.casefile.context import (
     ContextManifestStore,
     ResolvedContextFile,
 )
-from assistant_app.casefile.models import CasefileSnapshot, ScopedDirectory
+from assistant_app.casefile.models import CasefileSnapshot, LaneAttachment, ScopedDirectory
 
 # All in-scope directories (excluding the write root) are surfaced to the
 # model under this flat prefix: `_scope/<label>/`.  The label is the
@@ -73,9 +73,8 @@ class ScopeContext:
         """Primary write root: first writable directory, or casefile_root as fallback.
 
         The fallback keeps the comparison-chat code path working without changes:
-        comparison sessions set all directories read-only and use casefile_root
-        as a dummy write root (writes are blocked by ``enable_writes=False``
-        in the tool registry).
+        when a session has no writable directories, callers still get a stable
+        root for bare relative reads while write tools remain disabled.
         """
         for d in self.directories:
             if d.writable:
@@ -189,16 +188,16 @@ def resolve_comparison_scope(
     *,
     manifest: ContextManifest | None = None,
     context_files: tuple[ResolvedContextFile, ...] | None = None,
+    comparison_attachments: Iterable[LaneAttachment] | None = None,
 ) -> ScopeContext:
-    """Compute the read-only ``ScopeContext`` for a multi-lane session.
+    """Compute the ``ScopeContext`` for a multi-lane session.
 
-    Every directory is read-only.  Each participating lane (and its
-    attachments and ancestors) gets a ``_scope/<label>/`` entry.  Labels are
-    de-duplicated so two lanes with the same name get ``name`` and ``name_2``.
-
-    The ``write_root`` property falls back to ``casefile_root`` — no writes
-    are possible in a comparison session (the caller must build the tool
-    registry with ``enable_writes=False``).
+    Each selected lane contributes its own root and direct attachments with
+    their current access mode. Comparison-session-specific attachments are
+    appended as first-class scope entries. Ancestor lanes and ancestor
+    attachments remain read-only inherited context. Labels are de-duplicated
+    so two directories that would otherwise share a label get ``name_2``,
+    ``name_3``, etc.
     """
     from assistant_app.casefile.context import ContextManifestStore  # avoid cycle
 
@@ -223,21 +222,24 @@ def resolve_comparison_scope(
     seen_paths: set[Path] = set()
     dirs: list[ScopedDirectory] = []
 
-    def _add(path: Path, name: str) -> None:
+    def _add(path: Path, name: str, *, writable: bool) -> None:
         if path in seen_paths:
             return
         seen_paths.add(path)
         label = _unique_label(_slug(name), seen_labels)
-        dirs.append(ScopedDirectory(path=path, label=label, writable=False))
+        dirs.append(ScopedDirectory(path=path, label=label, writable=writable))
 
     for lane in lanes:
-        _add(lane.root, lane.name)
+        _add(lane.root, lane.name, writable=lane.writable)
         for att in lane.attachments:
-            _add(att.root, att.name)
+            _add(att.root, att.name, writable=(att.mode == "write"))
+    for att in comparison_attachments or ():
+        _add(att.root, att.name, writable=(att.mode == "write"))
+    for lane in lanes:
         for ancestor in snapshot.ancestors_of(lane.id):
-            _add(ancestor.root, ancestor.name)
+            _add(ancestor.root, ancestor.name, writable=False)
             for att in ancestor.attachments:
-                _add(att.root, att.name)
+                _add(att.root, att.name, writable=False)
 
     return ScopeContext(
         lane_id=comparison_id_for_lanes(ids),

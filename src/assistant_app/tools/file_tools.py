@@ -3,22 +3,29 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Mapping
 
+from assistant_app.casefile.models import ScopedDirectory
 from assistant_app.filesystem import WorkspaceFilesystem
 
 
 def _build_fs(
     workspace_root: Path,
     read_overlays: Mapping[str, Path] | None,
+    scoped_directories: tuple[ScopedDirectory, ...] | None = None,
 ) -> WorkspaceFilesystem:
-    return WorkspaceFilesystem(workspace_root, read_overlays=read_overlays)
+    return WorkspaceFilesystem(
+        workspace_root,
+        read_overlays=read_overlays,
+        scoped_directories=scoped_directories,
+    )
 
 
 def make_list_dir_tool(
     workspace_root: Path,
     *,
     read_overlays: Mapping[str, Path] | None = None,
+    scoped_directories: tuple[ScopedDirectory, ...] | None = None,
 ):
-    fs = _build_fs(workspace_root, read_overlays)
+    fs = _build_fs(workspace_root, read_overlays, scoped_directories)
 
     def list_dir(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params.get("path", "."))
@@ -35,8 +42,9 @@ def make_read_file_tool(
     workspace_root: Path,
     *,
     read_overlays: Mapping[str, Path] | None = None,
+    scoped_directories: tuple[ScopedDirectory, ...] | None = None,
 ):
-    fs = _build_fs(workspace_root, read_overlays)
+    fs = _build_fs(workspace_root, read_overlays, scoped_directories)
 
     def read_file(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params.get("path", ""))
@@ -57,8 +65,9 @@ def make_save_file_tool(
     workspace_root: Path,
     *,
     read_overlays: Mapping[str, Path] | None = None,
+    scoped_directories: tuple[ScopedDirectory, ...] | None = None,
 ):
-    fs = _build_fs(workspace_root, read_overlays)
+    fs = _build_fs(workspace_root, read_overlays, scoped_directories)
 
     def save_file(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params["path"])
@@ -77,8 +86,9 @@ def make_append_file_tool(
     workspace_root: Path,
     *,
     read_overlays: Mapping[str, Path] | None = None,
+    scoped_directories: tuple[ScopedDirectory, ...] | None = None,
 ):
-    fs = _build_fs(workspace_root, read_overlays)
+    fs = _build_fs(workspace_root, read_overlays, scoped_directories)
 
     def append_file(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params["path"])
@@ -96,8 +106,9 @@ def make_delete_file_tool(
     workspace_root: Path,
     *,
     read_overlays: Mapping[str, Path] | None = None,
+    scoped_directories: tuple[ScopedDirectory, ...] | None = None,
 ):
-    fs = _build_fs(workspace_root, read_overlays)
+    fs = _build_fs(workspace_root, read_overlays, scoped_directories)
 
     def delete_file(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params["path"])
@@ -114,8 +125,9 @@ def make_delete_path_tool(
     workspace_root: Path,
     *,
     read_overlays: Mapping[str, Path] | None = None,
+    scoped_directories: tuple[ScopedDirectory, ...] | None = None,
 ):
-    fs = _build_fs(workspace_root, read_overlays)
+    fs = _build_fs(workspace_root, read_overlays, scoped_directories)
 
     def delete_path(params: dict[str, object]) -> dict[str, object]:
         raw_path = str(params["path"])

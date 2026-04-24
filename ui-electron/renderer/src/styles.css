@@ -1053,6 +1053,43 @@ a {
   border-color: #6366f1;
 }
 
+.compare-lanes-dialog {
+  min-width: 420px;
+}
+
+.compare-lanes-source {
+  color: #e5e7eb;
+  font-weight: 600;
+}
+
+.compare-lanes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.compare-lanes-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.compare-lanes-option input {
+  margin: 0;
+}
+
+.compare-lanes-option-label {
+  color: #e5e7eb;
+}
+
 /* ----- Lanes tab ----- */
 
 .lanes {
@@ -2461,13 +2498,21 @@ button.destructive:hover:not(:disabled) {
    ================================================================ */
 .scope-header {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
   padding: 4px 10px;
   border-bottom: 1px solid #1f2937;
   background: #0c1425;
   flex-wrap: wrap;
   font-size: 11px;
+}
+
+.scope-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
 }
 
 .scope-header-toggle {

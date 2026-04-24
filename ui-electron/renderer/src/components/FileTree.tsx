@@ -95,9 +95,10 @@ interface FileTreeProps {
    * A secondary lane-picker menu is shown before the label prompt.
    * M2.5: replaces the old single-target `onAttachToActiveLane`. */
   onAttachToLane?: (path: string, laneId: string, name: string) => Promise<void> | void;
-  /** Start a comparison between two lanes. Invoked when the user picks
-   * a target lane from the "Compare with…" sub-menu. */
-  onStartLaneComparison?: (selfLaneId: string, otherLaneId: string) => Promise<void> | void;
+  /** Open a comparison chat across the selected lanes. The first lane id
+   * is the lane whose root was right-clicked; additional ids come from
+   * the multi-lane picker opened by "Compare with…". */
+  onOpenComparisonChat?: (laneIds: string[]) => Promise<void> | void;
   /** Switch the active lane to the lane whose root was right-clicked.
    * Added in M2.5 so lane switching works without the Lanes tab. */
   onSwitchLane?: (laneId: string) => void | Promise<void>;
@@ -447,6 +448,88 @@ function isPathOrDescendant(candidate: string, ancestor: string): boolean {
   return candidate.startsWith(ancestor + sep);
 }
 
+interface CompareLaneDialogProps {
+  sourceLaneName: string;
+  candidates: FileTreeLaneInfo[];
+  onSubmit: (laneIds: string[]) => void;
+  onCancel: () => void;
+}
+
+function CompareLaneDialog({
+  sourceLaneName,
+  candidates,
+  onSubmit,
+  onCancel,
+}: CompareLaneDialogProps): JSX.Element {
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+
+  const toggle = (laneId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(laneId)) next.delete(laneId);
+      else next.add(laneId);
+      return next;
+    });
+  };
+
+  const submit = (event?: React.FormEvent) => {
+    if (event) event.preventDefault();
+    const orderedIds = candidates.filter((lane) => selectedIds.has(lane.id)).map((lane) => lane.id);
+    if (orderedIds.length === 0) return;
+    onSubmit(orderedIds);
+  };
+
+  return (
+    <div
+      className="dialog-backdrop"
+      onClick={onCancel}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <div
+        className="dialog compare-lanes-dialog"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h3>Open compare chat</h3>
+        <p className="muted">
+          <span className="compare-lanes-source">Source lane: {sourceLaneName}</span>
+          <br />
+          Choose one or more additional lanes to include in this read-only comparison chat.
+        </p>
+        <form onSubmit={submit}>
+          <div className="compare-lanes-list" role="group" aria-label="Lanes to compare">
+            {candidates.map((lane) => (
+              <label key={lane.id} className="compare-lanes-option">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(lane.id)}
+                  onChange={() => toggle(lane.id)}
+                />
+                <span className="compare-lanes-option-label">{lane.name}</span>
+              </label>
+            ))}
+          </div>
+          <div className="actions">
+            <button type="button" onClick={onCancel}>
+              Cancel
+            </button>
+            <button type="submit" disabled={selectedIds.size === 0}>
+              Open compare chat
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export function FileTree({
   root,
   activePath,
@@ -468,7 +551,7 @@ export function FileTree({
   onTrashEntry,
   onCreateLaneFromPath,
   onAttachToLane,
-  onStartLaneComparison,
+  onOpenComparisonChat,
   onSwitchLane,
   onUpdateLaneName,
   onRemoveLane,
@@ -495,13 +578,18 @@ export function FileTree({
   // can't call preventDefault, and the drop event never fires. We clear it
   // in onDragEnd so a cancelled drag doesn't poison subsequent ones.
   const dragSourceRef = useRef<FileTreeDragPayload[] | null>(null);
-  // Compare-with picker: a second context menu spawned from the main
-  // menu's "Compare with…" item. We don't reuse `menu` because that one
-  // closes on item-select, and we want the picker to live independently.
+  // Secondary lane-target picker used by actions like "Attach to lane…".
+  // We keep it separate from `menu` because the primary context menu
+  // closes on item-select.
   const [pickerMenu, setPickerMenu] = useState<{
     x: number;
     y: number;
     items: ContextMenuItem[];
+  } | null>(null);
+  const [compareDialog, setCompareDialog] = useState<{
+    sourceLaneId: string;
+    sourceLaneName: string;
+    candidates: FileTreeLaneInfo[];
   } | null>(null);
   // Single-field text-input dialog state. We render `<InputDialog />`
   // when this is non-null and resolve the stashed promise on submit /
@@ -1393,7 +1481,7 @@ export function FileTree({
       // "Compare with…" only on a directory row that EQUALS a registered
       // lane root, with at least one other lane available. The selected
       // lane is the left side; the picker chooses the right side.
-      ...(onStartLaneComparison &&
+      ...(onOpenComparisonChat &&
       !multi &&
       menu.node.type === "dir" &&
       laneRootByPath.has(menu.node.path) &&
@@ -1407,19 +1495,11 @@ export function FileTree({
               {
                 label: "Compare with…",
                 onSelect: () => {
-                  // Build the picker as a second context menu pinned at
-                  // the same anchor. Each item triggers the comparison.
-                  const items: ContextMenuItem[] = others.map((other) => ({
-                    label: other.name,
-                    onSelect: () => {
-                      void Promise.resolve(
-                        onStartLaneComparison(selfId, other.id)
-                      ).catch((err) => {
-                        console.error("FileTree compare failed:", err);
-                      });
-                    },
-                  }));
-                  setPickerMenu({ x: menu.x, y: menu.y, items });
+                  setCompareDialog({
+                    sourceLaneId: selfId,
+                    sourceLaneName: laneRootByPath.get(menu.node.path) ?? menu.node.name,
+                    candidates: others,
+                  });
                 },
               },
             ];
@@ -1587,15 +1667,29 @@ export function FileTree({
           onClose={() => setMenu(null)}
         />
       )}
-      {/* Secondary "Compare with…" picker. Rendered after the primary
-          menu so its outside-click handler doesn't immediately close
-          on the same gesture that opened it. */}
+      {/* Secondary lane-target picker. Rendered after the primary menu
+          so its outside-click handler doesn't immediately close on
+          the same gesture that opened it. */}
       {pickerMenu && (
         <ContextMenu
           x={pickerMenu.x}
           y={pickerMenu.y}
           items={pickerMenu.items}
           onClose={() => setPickerMenu(null)}
+        />
+      )}
+      {compareDialog && (
+        <CompareLaneDialog
+          sourceLaneName={compareDialog.sourceLaneName}
+          candidates={compareDialog.candidates}
+          onCancel={() => setCompareDialog(null)}
+          onSubmit={(laneIds) => {
+            const allLaneIds = [compareDialog.sourceLaneId, ...laneIds];
+            setCompareDialog(null);
+            void Promise.resolve(onOpenComparisonChat?.(allLaneIds)).catch((err) => {
+              console.error("FileTree open compare chat failed:", err);
+            });
+          }}
         />
       )}
       {inputDialog && (

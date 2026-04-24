@@ -212,7 +212,9 @@ export interface ComparisonSession {
   id: string;
   laneIds: string[];
   lanes: ComparisonLaneSummary[];
+  attachments: LaneAttachmentDto[];
   messages: ChatMessage[];
+  pendingApprovals?: ToolCall[];
   skippedCorruptLines?: number;
 }
 
@@ -222,6 +224,7 @@ export interface ComparisonChatSendPayload {
   model?: string | null;
   messages: ChatMessage[];
   userMessage: string;
+  allowWriteTools?: boolean;
   resumePendingToolCalls?: boolean;
 }
 
@@ -430,6 +433,10 @@ export interface AssistantApi {
 
   // M3.5c: comparison-chat sessions (multi-lane, read-only).
   openComparison: (laneIds: string[]) => Promise<ComparisonSession>;
+  updateComparisonAttachments: (
+    laneIds: string[],
+    attachments: LaneAttachmentInput[]
+  ) => Promise<Omit<ComparisonSession, "messages">>;
   sendComparisonChat: (
     payload: ComparisonChatSendPayload
   ) => Promise<ComparisonChatSendResponse>;

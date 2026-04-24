@@ -3,6 +3,7 @@ import type {
   CasefileSnapshot,
   ChatMessage,
   ComparisonSession,
+  LaneAttachmentInput,
   Lane,
   Provider,
   ToolCall,
@@ -53,6 +54,14 @@ interface RightPanelProps {
       session: ComparisonSession | null;
       busy: boolean;
       onSend: (text: string) => void;
+      onApproveTools: () => void;
+      onDenyTools: () => void;
+      onSetLaneWritable?: (laneId: string, writable: boolean) => void;
+      onSetAttachmentMode?: (laneId: string, attName: string, mode: "read" | "write") => void;
+      onUpdateAttachments?: (
+        laneIds: string[],
+        attachments: LaneAttachmentInput[]
+      ) => Promise<void>;
     };
     onAfterSaveOutput?: (path: string) => void;
   };

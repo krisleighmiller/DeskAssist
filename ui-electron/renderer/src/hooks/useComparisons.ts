@@ -3,6 +3,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { languageFromPath } from "../lib/language";
 import {
+  chatTurnDelta,
   diffTabKey,
   errorMessage,
   normalizeChatTurn,
@@ -11,10 +12,21 @@ import {
 import type {
   CasefileSnapshot,
   ComparisonSession,
+  LaneAttachmentInput,
   LaneComparisonDto,
   Provider,
   ProviderModels,
 } from "../types";
+
+function normalizeComparisonSession(session: ComparisonSession): ComparisonSession {
+  return {
+    ...session,
+    attachments: Array.isArray(session.attachments) ? session.attachments : [],
+    pendingApprovals: Array.isArray(session.pendingApprovals)
+      ? session.pendingApprovals
+      : [],
+  };
+}
 
 interface UseComparisonsArgs {
   casefile: CasefileSnapshot | null;
@@ -72,6 +84,20 @@ export function useComparisons({
     []
   );
 
+  const replaceComparisonSession = useCallback(
+    (
+      comparisonId: string,
+      produce: (prev: ComparisonSession) => ComparisonSession
+    ) => {
+      setComparisonSessions((prev) =>
+        prev.map((entry) =>
+          entry.id === comparisonId ? normalizeComparisonSession(produce(entry)) : entry
+        )
+      );
+    },
+    []
+  );
+
   const handleCompareLanes = useCallback(
     async (leftLaneId: string, rightLaneId: string) => {
       if (!casefile) return;
@@ -99,7 +125,7 @@ export function useComparisons({
     async (laneIds: string[]) => {
       if (!casefile || laneIds.length < 2) return;
       try {
-        const opened = await api().openComparison(laneIds);
+        const opened = normalizeComparisonSession(await api().openComparison(laneIds));
         setComparisonSessions((prev) => {
           const existing = prev.findIndex((entry) => entry.id === opened.id);
           if (existing >= 0) {
@@ -115,6 +141,35 @@ export function useComparisons({
       }
     },
     [casefile, onError]
+  );
+
+  const handleUpdateComparisonAttachments = useCallback(
+    async (laneIds: string[], attachments: LaneAttachmentInput[]) => {
+      if (!casefile || laneIds.length < 2) return;
+      try {
+        const updated = await api().updateComparisonAttachments(laneIds, attachments);
+        const normalized = normalizeComparisonSession({
+          ...updated,
+          messages:
+            comparisonSessions.find((entry) => entry.id === updated.id)?.messages ?? [],
+          pendingApprovals:
+            comparisonSessions.find((entry) => entry.id === updated.id)?.pendingApprovals ?? [],
+        });
+        setComparisonSessions((prev) => {
+          const existing = prev.findIndex((entry) => entry.id === normalized.id);
+          if (existing >= 0) {
+            const next = prev.slice();
+            next[existing] = normalized;
+            return next;
+          }
+          return [...prev, normalized];
+        });
+      } catch (error) {
+        onError(errorMessage(error));
+        throw error;
+      }
+    },
+    [casefile, comparisonSessions, onError]
   );
 
   const handleCloseComparisonChat = useCallback((comparisonId: string) => {
@@ -139,14 +194,10 @@ export function useComparisons({
       if (busyComparisonIds.has(targetId)) return;
       const historyBeforeTurn = target.messages;
       setComparisonBusyId(targetId, true);
-      const replaceMessages = (produce: (prev: ComparisonSession) => ComparisonSession) => {
-        setComparisonSessions((prev) =>
-          prev.map((entry) => (entry.id === targetId ? produce(entry) : entry))
-        );
-      };
-      replaceMessages((prev) => ({
+      replaceComparisonSession(targetId, (prev) => ({
         ...prev,
         messages: [...prev.messages, { role: "user", content: value }],
+        pendingApprovals: [],
       }));
       try {
         const response = await api().sendComparisonChat({
@@ -155,19 +206,31 @@ export function useComparisons({
           model: providerModels[provider] || null,
           messages: historyBeforeTurn,
           userMessage: value,
+          allowWriteTools: false,
           resumePendingToolCalls: false,
         });
         const nextMessages = normalizeChatTurn(historyBeforeTurn, value, response);
-        replaceMessages((prev) => ({ ...prev, messages: nextMessages }));
+        const nextPending = Array.isArray(response.pendingApprovals)
+          ? response.pendingApprovals
+          : [];
+        replaceComparisonSession(targetId, (prev) => ({
+          ...prev,
+          laneIds: response.comparison?.laneIds ?? prev.laneIds,
+          lanes: response.comparison?.lanes ?? prev.lanes,
+          attachments: response.comparison?.attachments ?? prev.attachments,
+          messages: nextMessages,
+          pendingApprovals: nextPending,
+        }));
       } catch (error) {
         const errMsg = errorMessage(error);
-        replaceMessages((prev) => ({
+        replaceComparisonSession(targetId, (prev) => ({
           ...prev,
           messages: [
             ...historyBeforeTurn,
             { role: "user", content: value },
             { role: "assistant", content: `Error: ${errMsg}` },
           ],
+          pendingApprovals: [],
         }));
       } finally {
         setComparisonBusyId(targetId, false);
@@ -179,9 +242,75 @@ export function useComparisons({
       focusedComparisonSession,
       provider,
       providerModels,
+      replaceComparisonSession,
       setComparisonBusyId,
     ]
   );
+
+  const approveComparisonTools = useCallback(async () => {
+    const target = focusedComparisonSession;
+    if (!target || !casefile) return;
+    const targetId = target.id;
+    if (busyComparisonIds.has(targetId) || (target.pendingApprovals?.length ?? 0) === 0) return;
+    const historyBeforeTurn = target.messages;
+    setComparisonBusyId(targetId, true);
+    try {
+      const response = await api().sendComparisonChat({
+        laneIds: target.laneIds,
+        provider,
+        model: providerModels[provider] || null,
+        messages: historyBeforeTurn,
+        userMessage: "",
+        allowWriteTools: true,
+        resumePendingToolCalls: true,
+      });
+      const delta = chatTurnDelta(response) ?? [];
+      const nextPending = Array.isArray(response.pendingApprovals)
+        ? response.pendingApprovals
+        : [];
+      replaceComparisonSession(targetId, (prev) => ({
+        ...prev,
+        laneIds: response.comparison?.laneIds ?? prev.laneIds,
+        lanes: response.comparison?.lanes ?? prev.lanes,
+        attachments: response.comparison?.attachments ?? prev.attachments,
+        messages: [...historyBeforeTurn, ...delta],
+        pendingApprovals: nextPending,
+      }));
+    } catch (error) {
+      const errMsg = errorMessage(error);
+      replaceComparisonSession(targetId, (prev) => ({
+        ...prev,
+        messages: [
+          ...historyBeforeTurn,
+          { role: "assistant", content: `Error: ${errMsg}` },
+        ],
+        pendingApprovals: [],
+      }));
+    } finally {
+      setComparisonBusyId(targetId, false);
+    }
+  }, [
+    busyComparisonIds,
+    casefile,
+    focusedComparisonSession,
+    provider,
+    providerModels,
+    replaceComparisonSession,
+    setComparisonBusyId,
+  ]);
+
+  const denyComparisonTools = useCallback(() => {
+    const target = focusedComparisonSession;
+    if (!target || (target.pendingApprovals?.length ?? 0) === 0) return;
+    replaceComparisonSession(target.id, (prev) => ({
+      ...prev,
+      messages: [
+        ...prev.messages,
+        { role: "assistant", content: "Write operation request denied." },
+      ],
+      pendingApprovals: [],
+    }));
+  }, [focusedComparisonSession, replaceComparisonSession]);
 
   const handleOpenDiff = useCallback(
     async (path: string) => {
@@ -257,8 +386,11 @@ export function useComparisons({
     handleCompareLanes,
     handleClearComparison,
     handleOpenComparisonChat,
+    handleUpdateComparisonAttachments,
     handleCloseComparisonChat,
     sendComparisonChat,
+    approveComparisonTools,
+    denyComparisonTools,
     handleOpenDiff,
     resetComparisonsForCasefile,
     clearActiveComparisonForLaneChat,

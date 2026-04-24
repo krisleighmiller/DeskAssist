@@ -4,6 +4,7 @@ import type {
   CasefileSnapshot,
   ChatMessage,
   ComparisonSession,
+  LaneAttachmentInput,
   Lane,
   Provider,
   ToolCall,
@@ -11,6 +12,7 @@ import type {
 import { api } from "../lib/api";
 import { FILETREE_DRAG_MIME, parseDragPayload } from "./FileTree";
 import { ContextMenu } from "./ContextMenu";
+import { InputDialog } from "./InputDialog";
 import { SaveOutputPicker, suggestSaveFilename } from "./SaveOutputPicker";
 
 /** Identifier for a single chat session entry in the session list. Lane
@@ -116,6 +118,14 @@ interface CompareChatProps {
    * comparison opened — we still surface what we know. */
   lanes: Lane[];
   onSend: (text: string) => void;
+  onApproveTools: () => void;
+  onDenyTools: () => void;
+  onSetLaneWritable?: (laneId: string, writable: boolean) => void;
+  onSetAttachmentMode?: (laneId: string, attName: string, mode: "read" | "write") => void;
+  onUpdateAttachments?: (
+    laneIds: string[],
+    attachments: LaneAttachmentInput[]
+  ) => Promise<void>;
   onClose: () => void;
 }
 
@@ -337,24 +347,67 @@ function MessageRow({
   );
 }
 
-/** Single-lane chat body: provider/key/badge strip, message list with
- * per-message Save..., approval panel for write-tool requests, send
- * form with @mention and drag-drop context inclusion. */
-/** Displays the AI scope for the current lane as a compact row of
- * labelled pills — one per directory in scope — each tagged with a
- * (RW) or (RO) access badge. Right-clicking a pill reveals management
- * actions (toggle AI access for the root, remove an attachment). */
-function ScopeHeader({
-  lane,
-  onSetLaneWritable,
-  onRemoveAttachment,
-  onSetAttachmentMode,
+interface ScopeHeaderEntry {
+  key: string;
+  label: string;
+  path: string;
+  writable: boolean;
+  onToggleWritable?: () => void;
+  onRemove?: () => void;
+  removeLabel?: string;
+}
+
+function ApprovalPanel({
+  pendingApprovals,
+  busy,
+  onApprove,
+  onDeny,
 }: {
-  lane: Lane;
-  onSetLaneWritable?: (writable: boolean) => void;
-  onRemoveAttachment?: (attName: string) => void;
-  onSetAttachmentMode?: (attName: string, mode: "read" | "write") => void;
-}): JSX.Element {
+  pendingApprovals: ToolCall[];
+  busy: boolean;
+  onApprove: () => void;
+  onDeny: () => void;
+}): JSX.Element | null {
+  if (pendingApprovals.length === 0) return null;
+  return (
+    <div className="approval-panel">
+      <div className="summary">
+        {`Approval required for write tools:\n` +
+          pendingApprovals
+            .map((call) => {
+              const input =
+                call && typeof call.input === "object" ? JSON.stringify(call.input) : "{}";
+              const compactInput = input.length > 240 ? `${input.slice(0, 240)}...` : input;
+              return `- ${call.name}: ${compactInput}`;
+            })
+            .join("\n")}
+      </div>
+      <div className="approval-actions">
+        <button type="button" onClick={onApprove} disabled={busy}>
+          Approve and Continue
+        </button>
+        <button type="button" onClick={onDeny} disabled={busy}>
+          Deny
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Displays the AI scope as a compact row of labelled pills — one per
+ * directory in scope — each tagged with a (RW) or (RO) badge. Right-clicking
+ * a pill reveals any management actions available for that directory. */
+function ScopeHeader({
+  entries,
+  extraAction,
+}: {
+  entries: ScopeHeaderEntry[];
+  extraAction?: {
+    label: string;
+    onClick: () => void;
+    disabled?: boolean;
+  };
+}): JSX.Element | null {
   const [scopeMenu, setScopeMenu] = useState<{
     x: number;
     y: number;
@@ -362,86 +415,65 @@ function ScopeHeader({
   } | null>(null);
   const [open, setOpen] = useState(true);
 
-  const rootWritable = lane.writable !== false;
+  if (entries.length === 0) return null;
 
-  const handleRootContext = (event: React.MouseEvent) => {
+  const handleEntryContext = (event: React.MouseEvent, entry: ScopeHeaderEntry) => {
     event.preventDefault();
     const items: Parameters<typeof ContextMenu>[0]["items"] = [];
-    if (onSetLaneWritable) {
+    if (entry.onToggleWritable) {
       items.push({
-        label: rootWritable
-          ? "Set AI access: read-only"
-          : "Set AI access: writable",
-        onSelect: () => onSetLaneWritable(!rootWritable),
+        label: entry.writable ? "Set AI access: read-only" : "Set AI access: writable",
+        onSelect: entry.onToggleWritable,
+      });
+    }
+    if (entry.onRemove) {
+      items.push({
+        label: entry.removeLabel ?? `Remove "${entry.label}" from scope`,
+        onSelect: entry.onRemove,
       });
     }
     if (items.length === 0) return;
     setScopeMenu({ x: event.clientX, y: event.clientY, items });
   };
-
-  const handleAttachContext = (
-    event: React.MouseEvent,
-    att: NonNullable<Lane["attachments"]>[number]
-  ) => {
-    event.preventDefault();
-    const items: Parameters<typeof ContextMenu>[0]["items"] = [];
-    const attWritable = att.mode === "write";
-    if (onSetAttachmentMode) {
-      items.push({
-        label: attWritable ? "Set AI access: read-only" : "Set AI access: writable",
-        onSelect: () => onSetAttachmentMode(att.name, attWritable ? "read" : "write"),
-      });
-    }
-    if (onRemoveAttachment) {
-      items.push({
-        label: `Remove "${att.name}" from scope`,
-        onSelect: () => onRemoveAttachment(att.name),
-      });
-    }
-    if (items.length === 0) return;
-    setScopeMenu({ x: event.clientX, y: event.clientY, items });
-  };
-
-  const rootName = lane.root.split(/[\\/]/).pop() ?? lane.root;
 
   return (
     <div className="scope-header">
-      <button
-        type="button"
-        className="scope-header-toggle"
-        onClick={() => setOpen((v) => !v)}
-        title={open ? "Hide AI scope" : "Show AI scope"}
-        aria-expanded={open}
-        aria-label="Toggle AI scope visibility"
-      >
-        AI scope {open ? "▾" : "▸"}
-      </button>
+      <div className="scope-header-row">
+        <button
+          type="button"
+          className="scope-header-toggle"
+          onClick={() => setOpen((v) => !v)}
+          title={open ? "Hide AI scope" : "Show AI scope"}
+          aria-expanded={open}
+          aria-label="Toggle AI scope visibility"
+        >
+          AI scope {open ? "▾" : "▸"}
+        </button>
+        {extraAction && (
+          <button
+            type="button"
+            className="link-button"
+            onClick={extraAction.onClick}
+            disabled={extraAction.disabled}
+          >
+            {extraAction.label}
+          </button>
+        )}
+      </div>
       {open && (
         <div className="scope-header-pills" role="list" aria-label="Directories in AI scope">
-          <span
-            className={`scope-pill ${rootWritable ? "scope-pill-rw" : "scope-pill-ro"}`}
-            role="listitem"
-            title={`${lane.root} — ${rootWritable ? "AI may write" : "AI read-only"}`}
-            onContextMenu={handleRootContext}
-          >
-            {rootName}
-            <span className="scope-pill-badge">{rootWritable ? "RW" : "RO"}</span>
-          </span>
-          {(lane.attachments ?? []).map((att) => {
-            const attWritable = att.mode === "write";
-            return (
-              <span
-                key={att.name}
-                className={`scope-pill ${attWritable ? "scope-pill-rw" : "scope-pill-ro"}`}
-                role="listitem"
-                title={`${att.root} — ${attWritable ? "AI may write" : "AI read-only"}`}
-                onContextMenu={(e) => handleAttachContext(e, att)}
-              >
-                {att.name}
-                <span className="scope-pill-badge">{attWritable ? "RW" : "RO"}</span>
-              </span>
-            );
-          })}
+          {entries.map((entry) => (
+            <span
+              key={entry.key}
+              className={`scope-pill ${entry.writable ? "scope-pill-rw" : "scope-pill-ro"}`}
+              role="listitem"
+              title={`${entry.path} — ${entry.writable ? "AI may write" : "AI read-only"}`}
+              onContextMenu={(event) => handleEntryContext(event, entry)}
+            >
+              {entry.label}
+              <span className="scope-pill-badge">{entry.writable ? "RW" : "RO"}</span>
+            </span>
+          ))}
         </div>
       )}
       {scopeMenu && (
@@ -506,6 +538,7 @@ function LaneChatBody({
     }
     // Trigger @mention picker when @ is typed at the start of a word.
     if (event.key === "@" && !mentionActive) {
+      event.preventDefault();
       setMentionActive(true);
       setMentionPath("");
     }
@@ -573,6 +606,34 @@ function LaneChatBody({
   const elapsedMs = busyStart === null ? 0 : Math.max(0, now - busyStart);
   const lastToolNames = chat.busy ? summariseLastToolCalls(chat.messages) : null;
   const saveLanes = chat.activeLane ? [chat.activeLane] : [];
+  const scopeEntries: ScopeHeaderEntry[] = chat.activeLane
+    ? [
+        {
+          key: `${chat.activeLane.id}:root`,
+          label: chat.activeLane.name,
+          path: chat.activeLane.root,
+          writable: chat.activeLane.writable !== false,
+          onToggleWritable: chat.onSetLaneWritable
+            ? () => chat.onSetLaneWritable!(chat.activeLane!.writable === false)
+            : undefined,
+        },
+        ...(chat.activeLane.attachments ?? []).map((att) => ({
+          key: `${chat.activeLane!.id}:att:${att.name}`,
+          label: att.name,
+          path: att.root,
+          writable: att.mode === "write",
+          onToggleWritable: chat.onSetAttachmentMode
+            ? () =>
+                chat.onSetAttachmentMode!(
+                  att.name,
+                  att.mode === "write" ? "read" : "write"
+                )
+            : undefined,
+          onRemove: chat.onRemoveAttachment ? () => chat.onRemoveAttachment!(att.name) : undefined,
+          removeLabel: `Remove "${att.name}" from scope`,
+        })),
+      ]
+    : [];
 
   return (
     <div className="chat">
@@ -616,14 +677,7 @@ function LaneChatBody({
           </span>
         )}
       </div>
-      {chat.activeLane && (
-        <ScopeHeader
-          lane={chat.activeLane}
-          onSetLaneWritable={chat.onSetLaneWritable}
-          onRemoveAttachment={chat.onRemoveAttachment}
-          onSetAttachmentMode={chat.onSetAttachmentMode}
-        />
-      )}
+      <ScopeHeader entries={scopeEntries} />
       <div className="chat-messages" ref={messagesRef}>
         {chat.messages.length === 0 && (
           <div style={{ color: "#6b7280", fontStyle: "italic" }}>
@@ -654,31 +708,12 @@ function LaneChatBody({
           </div>
         )}
       </div>
-      {chat.pendingApprovals.length > 0 && (
-        <div className="approval-panel">
-          <div className="summary">
-            {`Approval required for write tools:\n` +
-              chat.pendingApprovals
-                .map((call) => {
-                  const input =
-                    call && typeof call.input === "object"
-                      ? JSON.stringify(call.input)
-                      : "{}";
-                  const compactInput = input.length > 240 ? `${input.slice(0, 240)}...` : input;
-                  return `- ${call.name}: ${compactInput}`;
-                })
-                .join("\n")}
-          </div>
-          <div className="approval-actions">
-            <button type="button" onClick={chat.onApproveTools} disabled={chat.busy}>
-              Approve and Continue
-            </button>
-            <button type="button" onClick={chat.onDenyTools} disabled={chat.busy}>
-              Deny
-            </button>
-          </div>
-        </div>
-      )}
+      <ApprovalPanel
+        pendingApprovals={chat.pendingApprovals}
+        busy={chat.busy}
+        onApprove={chat.onApproveTools}
+        onDeny={chat.onDenyTools}
+      />
       {mentionActive && (
         <div className="chat-mention-picker">
           <input
@@ -744,9 +779,9 @@ function LaneChatBody({
   );
 }
 
-/** Multi-lane comparison chat body: read-only across every lane in the
- * session, no write-tool approval flow, Save... picker offers all
- * lanes' attachments + roots. */
+/** Multi-lane comparison chat body. Comparison sessions share the same
+ * scoped-directory access model as lane chat, plus optional comparison-local
+ * attachments persisted per canonical lane-set session. */
 function CompareChatBody({
   chat,
   onAfterSave,
@@ -758,6 +793,8 @@ function CompareChatBody({
   const messagesRef = useRef<HTMLDivElement>(null);
   const [busyStart, setBusyStart] = useState<number | null>(null);
   const [now, setNow] = useState<number>(() => Date.now());
+  const [pendingAttachmentRoot, setPendingAttachmentRoot] = useState<string | null>(null);
+  const [attachmentDraftName, setAttachmentDraftName] = useState("");
 
   useEffect(() => {
     if (chat.busy) {
@@ -777,7 +814,7 @@ function CompareChatBody({
     if (messagesRef.current) {
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
     }
-  }, [chat.session.messages, chat.busy]);
+  }, [chat.session.messages, chat.session.pendingApprovals, chat.busy]);
 
   const submit = () => {
     const value = input.trim();
@@ -796,6 +833,88 @@ function CompareChatBody({
   const keyMissing = !providerHasKey(chat.provider, chat.keyStatus);
   const laneNames = chat.session.lanes.map((l) => l.name).join(" ↔ ");
   const elapsedMs = busyStart === null ? 0 : Math.max(0, now - busyStart);
+  const lastToolNames = chat.busy ? summariseLastToolCalls(chat.session.messages) : null;
+  const pendingApprovals = chat.session.pendingApprovals ?? [];
+  const scopeEntries: ScopeHeaderEntry[] = [
+    ...chat.lanes.flatMap((lane) => [
+      {
+        key: `${lane.id}:root`,
+        label: lane.name,
+        path: lane.root,
+        writable: lane.writable !== false,
+        onToggleWritable: chat.onSetLaneWritable
+          ? () => chat.onSetLaneWritable!(lane.id, lane.writable === false)
+          : undefined,
+      },
+      ...(lane.attachments ?? []).map((att) => ({
+        key: `${lane.id}:att:${att.name}`,
+        label: `${lane.name} · ${att.name}`,
+        path: att.root,
+        writable: att.mode === "write",
+        onToggleWritable: chat.onSetAttachmentMode
+          ? () =>
+              chat.onSetAttachmentMode!(
+                lane.id,
+                att.name,
+                att.mode === "write" ? "read" : "write"
+              )
+          : undefined,
+      })),
+    ]),
+    ...(chat.session.attachments ?? []).map((att) => ({
+      key: `compare:att:${att.name}`,
+      label: `Comparison · ${att.name}`,
+      path: att.root,
+      writable: att.mode === "write",
+      onToggleWritable: chat.onUpdateAttachments
+        ? () =>
+            void chat.onUpdateAttachments!(
+              chat.session.laneIds,
+              (chat.session.attachments ?? []).map((entry) =>
+                entry.name === att.name
+                  ? {
+                      name: entry.name,
+                      root: entry.root,
+                      mode: entry.mode === "write" ? "read" : "write",
+                    }
+                  : {
+                      name: entry.name,
+                      root: entry.root,
+                      mode: entry.mode,
+                    }
+              )
+            )
+        : undefined,
+      onRemove: chat.onUpdateAttachments
+        ? () =>
+            void chat.onUpdateAttachments!(
+              chat.session.laneIds,
+              (chat.session.attachments ?? [])
+                .filter((entry) => entry.name !== att.name)
+                .map((entry) => ({
+                  name: entry.name,
+                  root: entry.root,
+                  mode: entry.mode,
+                }))
+            )
+        : undefined,
+      removeLabel: `Remove comparison attachment "${att.name}"`,
+    })),
+  ];
+  const writableEntryCount = scopeEntries.filter((entry) => entry.writable).length;
+
+  const handleAddAttachment = async () => {
+    if (!chat.onUpdateAttachments) return;
+    try {
+      const root = await api().chooseLaneRoot();
+      if (!root) return;
+      const defaultName = root.split(/[\\/]/).pop() ?? "attachment";
+      setAttachmentDraftName(defaultName);
+      setPendingAttachmentRoot(root);
+    } catch (error) {
+      console.error("Comparison attachment chooser failed:", error);
+    }
+  };
 
   return (
     <div className="chat">
@@ -816,20 +935,47 @@ function CompareChatBody({
           </button>
         </div>
         <span style={{ color: "#9ca3af", fontSize: 12 }}>
-          Read-only across {chat.session.laneIds.length} lanes; no write tools
-          available.
+          {writableEntryCount > 0
+            ? `${writableEntryCount} scoped director${writableEntryCount === 1 ? "y is" : "ies are"} writable; write tools still require approval.`
+            : `Read-only across ${chat.session.laneIds.length} lanes and comparison attachments.`}
         </span>
         {keyMissing && (
           <span style={{ color: "#fbbf24" }}>
             No API key configured for {chat.provider}. Open API Keys to add one.
           </span>
         )}
+        {chat.busy && (
+          <span
+            className="chat-busy-pill"
+            title="The agent is working on your request"
+            aria-live="polite"
+          >
+            <span className="chat-working-spinner" aria-hidden="true" />
+            <span>
+              {lastToolNames ? `Tools: ${lastToolNames}` : "Thinking"}
+              <span className="muted"> · {formatElapsed(elapsedMs)}</span>
+            </span>
+          </span>
+        )}
       </div>
+      <ScopeHeader
+        entries={scopeEntries}
+        extraAction={
+          chat.onUpdateAttachments
+            ? {
+                label: "Add attachment...",
+                onClick: () => void handleAddAttachment(),
+                disabled: chat.busy,
+              }
+            : undefined
+        }
+      />
       <div className="chat-messages" ref={messagesRef}>
         {chat.session.messages.length === 0 && (
           <div style={{ color: "#6b7280", fontStyle: "italic" }}>
-            Ask the model to compare these lanes. It can read every file
-            under <code>_lanes/&lt;id&gt;/</code> for each lane.
+            Ask the model to compare these lanes. Each scoped directory is
+            available through its scope label, and writable entries can be
+            modified after approval.
           </div>
         )}
         {chat.session.messages.map((msg, idx) => (
@@ -846,12 +992,20 @@ function CompareChatBody({
             <span className="role">agent</span>
             <span className="chat-working-spinner" aria-hidden="true" />
             <span className="chat-working-text">
-              Thinking...
+              {lastToolNames
+                ? `Running tool${lastToolNames.includes(",") ? "s" : ""}: ${lastToolNames}`
+                : "Thinking..."}
               <span className="chat-working-elapsed"> · {formatElapsed(elapsedMs)}</span>
             </span>
           </div>
         )}
       </div>
+      <ApprovalPanel
+        pendingApprovals={pendingApprovals}
+        busy={chat.busy}
+        onApprove={chat.onApproveTools}
+        onDeny={chat.onDenyTools}
+      />
       <form
         className="chat-form"
         onSubmit={(event) => {
@@ -863,15 +1017,45 @@ function CompareChatBody({
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Ask about the differences between these lanes..."
+          placeholder="Ask about these scoped workspaces..."
           disabled={chat.busy}
         />
         <div className="row">
           <button type="submit" disabled={chat.busy || !input.trim()}>
             {chat.busy ? "Sending..." : "Send"}
           </button>
+          <span className="chat-hint muted">Shift+Enter for new line</span>
         </div>
       </form>
+      {pendingAttachmentRoot && (
+        <InputDialog
+          title="Name comparison attachment"
+          message={pendingAttachmentRoot}
+          defaultValue={attachmentDraftName}
+          confirmLabel="Attach"
+          onSubmit={(value) => {
+            const name = value.trim();
+            const root = pendingAttachmentRoot;
+            setPendingAttachmentRoot(null);
+            setAttachmentDraftName("");
+            if (!name || !root || !chat.onUpdateAttachments) return;
+            void chat.onUpdateAttachments(chat.session.laneIds, [
+              ...(chat.session.attachments ?? [])
+                .filter((entry) => entry.name !== name)
+                .map((entry) => ({
+                  name: entry.name,
+                  root: entry.root,
+                  mode: entry.mode,
+                })),
+              { name, root, mode: "write" },
+            ]);
+          }}
+          onCancel={() => {
+            setPendingAttachmentRoot(null);
+            setAttachmentDraftName("");
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -923,6 +1107,11 @@ export function ChatTab({
             busy: compareChat.busy,
             lanes: activeCompareLanes,
             onSend: compareChat.onSend,
+            onApproveTools: compareChat.onApproveTools,
+            onDenyTools: compareChat.onDenyTools,
+            onSetLaneWritable: compareChat.onSetLaneWritable,
+            onSetAttachmentMode: compareChat.onSetAttachmentMode,
+            onUpdateAttachments: compareChat.onUpdateAttachments,
             onClose: () => onCloseCompareSession(activeCompareSession.id),
           }}
           onAfterSave={onAfterSaveOutput}

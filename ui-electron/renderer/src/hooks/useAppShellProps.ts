@@ -63,7 +63,6 @@ interface ShellViewModelActions {
   onTrashEntry?: (path: string) => Promise<void>;
   onCreateLaneFromPath?: (path: string, name: string) => Promise<void>;
   onAttachToLane?: (path: string, laneId: string, name: string) => Promise<void>;
-  onStartLaneComparison?: (selfLaneId: string, otherLaneId: string) => Promise<void>;
   onActiveRightTabChange: (tab: RightTabKey) => void;
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
@@ -76,6 +75,8 @@ interface ShellViewModelActions {
   onApproveTools: () => void;
   onDenyTools: () => void;
   onSendComparisonChat: (text: string) => void;
+  onApproveComparisonTools: () => void;
+  onDenyComparisonTools: () => void;
   onRegisterLane: (input: RegisterLaneInput) => Promise<void>;
   onChooseLaneRoot: () => Promise<string | null>;
   onCompareLanes: (leftLaneId: string, rightLaneId: string) => Promise<void>;
@@ -87,6 +88,10 @@ interface ShellViewModelActions {
   onSetLaneParent: (laneId: string, parentId: string | null) => Promise<void>;
   onUpdateLaneAttachments: (
     laneId: string,
+    attachments: LaneAttachmentInput[]
+  ) => Promise<void>;
+  onUpdateComparisonAttachments: (
+    laneIds: string[],
     attachments: LaneAttachmentInput[]
   ) => Promise<void>;
   onUpdateLane: (laneId: string, update: LaneUpdateInput) => Promise<UpdateLaneResult>;
@@ -210,9 +215,9 @@ export function useAppShellProps({
         onAttachToLane: state.casefile && (state.casefile.lanes.length > 0)
           ? actions.onAttachToLane
           : undefined,
-        onStartLaneComparison:
+        onOpenComparisonChat:
           state.casefile && state.casefile.lanes.length >= 2
-            ? actions.onStartLaneComparison
+            ? actions.onOpenComparisonChat
             : undefined,
         onSwitchLane: state.casefile ? actions.onSwitchLane : undefined,
         onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
@@ -277,6 +282,11 @@ export function useAppShellProps({
             session: state.focusedComparisonSession,
             busy: state.comparisonChatBusy,
             onSend: actions.onSendComparisonChat,
+            onApproveTools: actions.onApproveComparisonTools,
+            onDenyTools: actions.onDenyComparisonTools,
+            onSetLaneWritable: actions.onSetLaneWritable,
+            onSetAttachmentMode: actions.onSetAttachmentMode,
+            onUpdateAttachments: actions.onUpdateComparisonAttachments,
           },
           // SaveOutputPicker writes the chat message into a lane
           // attachment / arbitrary directory, but the bridge call

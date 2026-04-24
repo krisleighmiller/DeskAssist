@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Mapping
 import json
 
+from assistant_app.casefile.models import ScopedDirectory
 from assistant_app.models import ChatMessage, ChatRequest
 from assistant_app.providers import (
     AnthropicProvider,
@@ -30,6 +31,7 @@ class ChatService:
         model_defaults: dict[str, str] | None = None,
         casefile_root: Path | None = None,
         read_overlays: Mapping[str, Path] | None = None,
+        scoped_directories: tuple[ScopedDirectory, ...] | None = None,
         enable_writes: bool = True,
     ) -> None:
         provided = providers or [
@@ -57,6 +59,7 @@ class ChatService:
             resolved_workspace_root,
             casefile_root=resolved_casefile_root,
             read_overlays=read_overlays,
+            scoped_directories=scoped_directories,
             enable_writes=enable_writes,
         )
         self._default_models = {
