@@ -56,6 +56,33 @@ def test_load_snapshot_auto_initializes_when_missing(tmp_path: Path):
     assert snapshot.active_lane_id == "main"
 
 
+def test_malformed_writable_metadata_fails_closed(tmp_path: Path):
+    meta = tmp_path / ".casefile"
+    meta.mkdir()
+    (meta / "lanes.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "lanes": [
+                    {
+                        "id": "main",
+                        "name": "Main",
+                        "kind": "repo",
+                        "root": ".",
+                        "writable": "false",
+                    }
+                ],
+                "active_lane_id": "main",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = CasefileStore(tmp_path).load_snapshot()
+
+    assert snapshot.lanes[0].writable is False
+
+
 # ---------------------------------------------------------------------------
 # Lane registration
 # ---------------------------------------------------------------------------

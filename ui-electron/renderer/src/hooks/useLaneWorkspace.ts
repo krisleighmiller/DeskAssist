@@ -75,10 +75,19 @@ export function useLaneWorkspace({
       loadedChatKeysRef.current.add(key);
       try {
         const persisted = await api().listChat(laneId);
+        if (persisted.skippedCorruptLines > 0) {
+          setTreeError(
+            `Loaded chat history, but skipped ${persisted.skippedCorruptLines} corrupt line(s).`
+          );
+        }
         setLaneSessions((prev) => {
           if (prev.has(key)) return prev;
           const next = new Map(prev);
-          next.set(key, { ...EMPTY_LANE_SESSION, id: generateSessionId(), messages: persisted });
+          next.set(key, {
+            ...EMPTY_LANE_SESSION,
+            id: generateSessionId(),
+            messages: persisted.messages,
+          });
           return next;
         });
       } catch (error) {

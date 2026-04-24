@@ -307,6 +307,11 @@ export interface SaveChatOutputResult {
   path: string;
 }
 
+export interface ListChatResult {
+  messages: ChatMessage[];
+  skippedCorruptLines: number;
+}
+
 export interface AssistantApi {
   // Casefile + lanes
   chooseCasefile: () => Promise<CasefileSnapshot | null>;
@@ -315,7 +320,7 @@ export interface AssistantApi {
   chooseLaneRoot: () => Promise<string | null>;
   registerLane: (lane: RegisterLaneInput) => Promise<CasefileSnapshot>;
   switchLane: (laneId: string) => Promise<CasefileSnapshot>;
-  listChat: (laneId: string) => Promise<ChatMessage[]>;
+  listChat: (laneId: string) => Promise<ListChatResult>;
 
   // Lane-scoped filesystem (active lane).
   listWorkspace: (maxDepth?: number) => Promise<FileTreeNode>;

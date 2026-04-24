@@ -12,9 +12,9 @@ from assistant_app.casefile.models import (
     AttachmentMode,
     CasefileSnapshot,
     ComparisonSessionConfig,
-    DEFAULT_ATTACHMENT_MODE,
     Lane,
     LaneAttachment,
+    coerce_attachment_mode,
 )
 from assistant_app.casefile.scope import (
     ScopeContext,
@@ -276,11 +276,7 @@ def parse_attachments(raw: Any) -> list[LaneAttachment]:
             raise ValueError("attachment.name is required")
         if not isinstance(root, str) or not root.strip():
             raise ValueError("attachment.root is required")
-        mode_raw = item.get("mode")
-        if mode_raw == "read":
-            mode: AttachmentMode = "read"
-        else:
-            mode = DEFAULT_ATTACHMENT_MODE
+        mode: AttachmentMode = coerce_attachment_mode(item.get("mode"))
         out.append(LaneAttachment(name=name.strip(), root=Path(root), mode=mode))
     return out
 

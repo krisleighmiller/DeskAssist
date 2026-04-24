@@ -58,6 +58,19 @@ AttachmentMode = Literal["read", "write"]
 DEFAULT_ATTACHMENT_MODE: AttachmentMode = "write"
 
 
+def coerce_attachment_mode(value: object, *, default: AttachmentMode = DEFAULT_ATTACHMENT_MODE) -> AttachmentMode:
+    """Return a valid attachment access mode, rejecting malformed values.
+
+    Missing mode uses the caller's default for backward compatibility, but
+    unknown strings must not silently become writable.
+    """
+    if value is None:
+        return default
+    if value in {"read", "write"}:
+        return value  # type: ignore[return-value]
+    raise ValueError("Attachment mode must be 'read' or 'write'")
+
+
 @dataclass(slots=True, frozen=True)
 class LaneAttachment:
     """A sibling directory associated with a lane.

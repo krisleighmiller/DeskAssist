@@ -435,6 +435,21 @@ def test_save_and_get_context_manifest(tmp_path: Path):
     assert fetched["context"]["files"] == ["rubric.md"]
 
 
+def test_save_context_rejects_unbounded_auto_include(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+
+    with pytest.raises(ValueError, match="autoIncludeMaxBytes"):
+        bridge.dispatch(
+            {
+                "command": "casefile:saveContext",
+                "casefileRoot": str(casefile_root),
+                "context": {"files": [], "autoIncludeMaxBytes": 999_999_999},
+            }
+        )
+
+
 def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()

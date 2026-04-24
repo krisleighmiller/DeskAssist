@@ -19,6 +19,10 @@ from assistant_app.casefile import (
     ScopeContext,
     compare_lanes,
 )
+from assistant_app.casefile.context import (
+    MAX_AUTO_INCLUDE_MAX_BYTES,
+    MAX_AUTO_INCLUDE_TOTAL_BYTES,
+)
 from assistant_app.casefile.service import (
     parse_attachments,
     serialize_attachment,
@@ -62,6 +66,12 @@ def _parse_messages(raw_messages: list[dict[str, Any]]) -> list[ChatMessage]:
 
 _CONTEXT_MARKER = "You are operating inside a DeskAssist scoped session."
 _PROMPT_MARKER = "[DeskAssist prompt: "
+
+
+def _require_bool(value: object, field: str) -> bool:
+    if type(value) is bool:
+        return value
+    raise ValueError(f"{field} must be a boolean")
 
 
 def _history_has_prompt_marker(history: list[ChatMessage], prompt_id: str) -> bool:
@@ -284,11 +294,17 @@ def _build_context_system_prompt(scope: ScopeContext) -> str | None:
             "Casefile-wide context files (auto-included verbatim below; treat as "
             "authoritative shared instructions):"
         )
+        remaining_bytes = MAX_AUTO_INCLUDE_TOTAL_BYTES
         for entry in candidates:
+            if entry.size_bytes > MAX_AUTO_INCLUDE_MAX_BYTES:
+                continue
+            if entry.size_bytes > remaining_bytes:
+                break
             try:
                 content = entry.absolute_path.read_text(encoding="utf-8")
             except OSError:
                 continue
+            remaining_bytes -= len(content.encode("utf-8"))
             parts.append(f"\n--- BEGIN _context/{entry.relative_path} ---\n{content}\n--- END _context/{entry.relative_path} ---")
     return "\n".join(parts)
 
@@ -468,7 +484,7 @@ def handle_casefile_register_lane(request: dict[str, Any]) -> dict[str, Any]:
     )
     attachments = parse_attachments(lane_raw.get("attachments"))
     lane_writable_raw = lane_raw.get("writable")
-    lane_writable = True if lane_writable_raw is None else bool(lane_writable_raw)
+    lane_writable = True if lane_writable_raw is None else _require_bool(lane_writable_raw, "lane.writable")
     service = CasefileService(casefile_root_path)
     snapshot = service.register_lane(
         name=name,
@@ -543,7 +559,7 @@ def handle_casefile_update_lane(request: dict[str, Any]) -> dict[str, Any]:
     writable_raw = request.get("writable")
     new_writable: bool | None = None
     if writable_raw is not None:
-        new_writable = bool(writable_raw)
+        new_writable = _require_bool(writable_raw, "writable")
     service = CasefileService(casefile_root_path)
     snapshot = service.update_lane(
         lane_id.strip(), name=name, kind=kind, root=new_root, writable=new_writable,
@@ -653,6 +669,10 @@ def handle_casefile_save_context(request: dict[str, Any]) -> dict[str, Any]:
     raw_max = raw.get("autoIncludeMaxBytes") if "autoIncludeMaxBytes" in raw else raw.get("auto_include_max_bytes")
     manifest_kwargs: dict[str, Any] = {"files": tuple(files)}
     if isinstance(raw_max, int) and not isinstance(raw_max, bool) and raw_max >= 0:
+        if raw_max > MAX_AUTO_INCLUDE_MAX_BYTES:
+            raise ValueError(
+                f"autoIncludeMaxBytes must be <= {MAX_AUTO_INCLUDE_MAX_BYTES}"
+            )
         manifest_kwargs["auto_include_max_bytes"] = raw_max
     service = CasefileService(root)
     saved = service.save_context_manifest(ContextManifest(**manifest_kwargs))

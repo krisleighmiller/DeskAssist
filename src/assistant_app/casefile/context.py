@@ -21,6 +21,12 @@ CONTEXT_FILE_VERSION = 1
 # anything larger is usually source code that shouldn't be auto-included.
 DEFAULT_AUTO_INCLUDE_MAX_BYTES = 32 * 1024
 
+# Hard ceilings for user-configured auto-include budgets. The per-file cap
+# keeps one large file from being injected accidentally; the total cap prevents
+# many individually-small files from ballooning a provider request.
+MAX_AUTO_INCLUDE_MAX_BYTES = 256 * 1024
+MAX_AUTO_INCLUDE_TOTAL_BYTES = 512 * 1024
+
 
 class ContextManifestError(ValueError):
     """Raised when `.casefile/context.json` is malformed in a way the loader cannot recover."""
@@ -75,6 +81,7 @@ class ContextManifest:
         raw_max = raw.get("auto_include_max_bytes", DEFAULT_AUTO_INCLUDE_MAX_BYTES)
         if isinstance(raw_max, bool) or not isinstance(raw_max, int) or raw_max < 0:
             raw_max = DEFAULT_AUTO_INCLUDE_MAX_BYTES
+        raw_max = min(raw_max, MAX_AUTO_INCLUDE_MAX_BYTES)
         return cls(files=tuple(files), auto_include_max_bytes=raw_max)
 
 

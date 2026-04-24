@@ -448,6 +448,20 @@ function createWindow() {
     },
   });
 
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    console.warn("[main] blocked renderer window.open:", url);
+    return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const currentUrl = mainWindow && !mainWindow.isDestroyed()
+      ? mainWindow.webContents.getURL()
+      : "";
+    if (currentUrl && url !== currentUrl) {
+      event.preventDefault();
+      console.warn("[main] blocked renderer navigation:", url);
+    }
+  });
+
   const settingsSubmenu = [
     {
       label: "API Keys",
@@ -1089,7 +1103,12 @@ ipcMain.handle("casefile:listChat", async (_, args = {}) => {
     },
     { timeoutMs: BRIDGE_METADATA_TIMEOUT_MS }
   );
-  return Array.isArray(response.messages) ? response.messages : [];
+  return {
+    messages: Array.isArray(response.messages) ? response.messages : [],
+    skippedCorruptLines: Number.isInteger(response.skippedCorruptLines)
+      ? response.skippedCorruptLines
+      : 0,
+  };
 });
 
 // ----- M3: notes, compare, lane-scoped read, save chat output -----
@@ -1306,14 +1325,47 @@ ipcMain.handle("casefile:resolveScope", async (_, args = {}) => {
 // (uncommon but supported — e.g. an attachment pointing at a folder
 // elsewhere on disk). Roots inside the casefile are ignored because
 // the casefile-level recursive watch already covers them.
+function realpathIfDirectory(root) {
+  try {
+    const stat = fsSync.statSync(root);
+    if (!stat.isDirectory()) return null;
+    return fsSync.realpathSync.native(root);
+  } catch {
+    return null;
+  }
+}
+
+async function allowedWatchRootsForActiveScope() {
+  const allowed = new Set();
+  if (!activeCasefileRoot) return allowed;
+  const casefileReal = realpathIfDirectory(activeCasefileRoot);
+  if (casefileReal) allowed.add(casefileReal);
+  if (!activeLaneId) return allowed;
+  const response = await runPythonBridgeMeta({
+    command: "casefile:resolveScope",
+    casefileRoot: activeCasefileRoot,
+    laneId: activeLaneId,
+  });
+  const scope = response.scope || {};
+  const directories = Array.isArray(scope.directories) ? scope.directories : [];
+  for (const entry of directories) {
+    if (!entry || typeof entry.path !== "string") continue;
+    const real = realpathIfDirectory(entry.path);
+    if (real) allowed.add(real);
+  }
+  return allowed;
+}
+
 ipcMain.handle("workspace:registerWatchRoots", async (_, args = {}) => {
   const incoming = Array.isArray(args.roots) ? args.roots : [];
-  // Defensive: drop non-strings, normalise, dedupe.
+  const allowed = await allowedWatchRootsForActiveScope();
+  // Defensive: drop non-strings, non-directories, unscoped roots, and dedupe.
   const cleaned = Array.from(
     new Set(
       incoming
         .filter((r) => typeof r === "string" && r.length > 0)
-        .map((r) => path.resolve(r))
+        .map((r) => realpathIfDirectory(path.resolve(r)))
+        .filter((r) => r && allowed.has(r))
     )
   );
   extraWatchRoots = cleaned;

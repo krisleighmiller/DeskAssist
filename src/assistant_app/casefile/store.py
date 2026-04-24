@@ -16,6 +16,7 @@ from assistant_app.casefile.models import (
     DEFAULT_LANE_KIND,
     Lane,
     LaneAttachment,
+    coerce_attachment_mode,
     coerce_lane_kind,
 )
 
@@ -242,6 +243,8 @@ class CasefileStore:
         be unique within a single lane; the same directory may legitimately
         appear as an attachment on multiple lanes.
         """
+        if type(writable) is not bool:
+            raise TypeError("writable must be a boolean")
         snapshot = self.load_snapshot()
         existing_ids = {lane.id for lane in snapshot.lanes}
         candidate = normalize_lane_id(lane_id) if lane_id else slug_from_name(name)
@@ -381,7 +384,9 @@ class CasefileStore:
             new_root = resolved
         else:
             new_root = target.root
-        new_writable = target.writable if writable is None else bool(writable)
+        if writable is not None and type(writable) is not bool:
+            raise TypeError("writable must be a boolean")
+        new_writable = target.writable if writable is None else writable
         replaced = Lane(
             id=target.id,
             session_id=target.session_id,
@@ -754,13 +759,16 @@ class CasefileStore:
                     normalized_name = normalize_attachment_name(att_name)
                 except ValueError:
                     continue
+                try:
+                    mode = coerce_attachment_mode(raw_att.get("mode"))
+                except ValueError:
+                    # Malformed access metadata must not fail open to writable.
+                    continue
                 parsed_attachments.append(
                     LaneAttachment(
                         name=normalized_name,
                         root=self._resolve_lane_root(Path(att_root)),
-                        mode="read"
-                        if raw_att.get("mode") == "read"
-                        else DEFAULT_ATTACHMENT_MODE,
+                        mode=mode,
                     )
                 )
             out[comparison_id] = ComparisonSessionConfig(
@@ -902,15 +910,22 @@ class CasefileStore:
                     except ValueError:
                         # Skip the bad attachment rather than failing the whole load.
                         continue
+                    try:
+                        mode = coerce_attachment_mode(raw_att.get("mode"))
+                    except ValueError:
+                        # Skip malformed attachment metadata rather than
+                        # silently granting write access.
+                        continue
                     parsed.append(
                         LaneAttachment(
                             name=normalized_name,
                             root=self._resolve_lane_root(Path(att_root)),
-                            mode="read" if raw_att.get("mode") == "read" else DEFAULT_ATTACHMENT_MODE,
+                            mode=mode,
                         )
                     )
                 attachments = tuple(parsed)
-        writable = bool(entry.get("writable", True))
+        raw_writable = entry.get("writable", True)
+        writable = raw_writable if type(raw_writable) is bool else False
         return Lane(
             id=lane_id,
             session_id=session_id,
@@ -955,11 +970,12 @@ class CasefileStore:
                 raise FileNotFoundError(f"Attachment root does not exist: {resolved}")
             if not resolved.is_dir():
                 raise NotADirectoryError(f"Attachment root is not a directory: {resolved}")
+            mode = coerce_attachment_mode(attachment.mode)
             out.append(
                 LaneAttachment(
                     name=normalized_name,
                     root=resolved,
-                    mode=attachment.mode,
+                    mode=mode,
                 )
             )
         return tuple(out)
