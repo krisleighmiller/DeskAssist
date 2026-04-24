@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -236,6 +237,8 @@ def test_open_comparison_returns_canonical_session(tmp_path: Path) -> None:
         }
     )
     assert forward["comparison"]["id"] == "_compare__a__b"
+    UUID(forward["comparison"]["sessionId"])
+    assert forward["comparison"]["sessionId"] == reverse["comparison"]["sessionId"]
     assert forward["comparison"]["id"] == reverse["comparison"]["id"]
     assert forward["comparison"]["laneIds"] == ["a", "b"]
     assert [lane["id"] for lane in forward["comparison"]["lanes"]] == ["a", "b"]

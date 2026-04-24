@@ -93,6 +93,8 @@ class Lane:
     lane (see `LaneAttachment`).
     `writable` controls AI write access to the lane root; True by default.
     Setting it to False makes the lane a read-only reference context.
+    `session_id` is the stable UUID used for chat/session identity; lane ids
+    remain user-visible structural identifiers and filename stems.
     """
 
     id: str
@@ -102,6 +104,7 @@ class Lane:
     parent_id: str | None = None
     attachments: tuple[LaneAttachment, ...] = field(default_factory=tuple)
     writable: bool = True
+    session_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)
@@ -115,6 +118,7 @@ class ComparisonSessionConfig:
     id: str
     lane_ids: tuple[str, ...]
     attachments: tuple[LaneAttachment, ...] = field(default_factory=tuple)
+    session_id: str = ""
 
 
 @dataclass(slots=True, frozen=True)

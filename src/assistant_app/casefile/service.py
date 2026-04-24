@@ -170,7 +170,7 @@ class CasefileService:
 
     def resolve_comparison_scope(self, lane_ids: list[str]) -> ScopeContext:
         snapshot = self.store.load_snapshot()
-        session = self.store.get_comparison_session(lane_ids)
+        session = self.store.ensure_comparison_session(lane_ids)
         return resolve_comparison_scope(
             snapshot,
             lane_ids,
@@ -178,7 +178,7 @@ class CasefileService:
         )
 
     def get_comparison_session(self, lane_ids: list[str]) -> ComparisonSessionConfig:
-        return self.store.get_comparison_session(lane_ids)
+        return self.store.ensure_comparison_session(lane_ids)
 
     def update_comparison_attachments(
         self, lane_ids: list[str], attachments: list[LaneAttachment]
@@ -232,6 +232,7 @@ class CasefileService:
 def serialize_lane(lane: Lane) -> dict[str, Any]:
     result: dict[str, Any] = {
         "id": lane.id,
+        "sessionId": lane.session_id,
         "name": lane.name,
         "kind": lane.kind,
         "root": str(lane.root),

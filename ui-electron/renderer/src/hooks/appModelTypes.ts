@@ -164,10 +164,10 @@ const SESSION_KEY_SEP = "\u0000";
 
 export function sessionKeyFor(
   casefileRoot: string | null | undefined,
-  laneId: string | null | undefined
+  sessionId: string | null | undefined
 ): string | null {
-  if (!casefileRoot || !laneId) return null;
-  return `${casefileRoot}${SESSION_KEY_SEP}${laneId}`;
+  if (!casefileRoot || !sessionId) return null;
+  return `${casefileRoot}${SESSION_KEY_SEP}${sessionId}`;
 }
 
 /**

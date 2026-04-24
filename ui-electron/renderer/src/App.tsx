@@ -32,6 +32,11 @@ export function App(): JSX.Element {
   const activeLane = activeLaneId
     ? casefile?.lanes.find((lane) => lane.id === activeLaneId) ?? null
     : null;
+  const activeLaneHasWritableScope = Boolean(
+    activeLane &&
+      (activeLane.writable !== false ||
+        (activeLane.attachments ?? []).some((att) => att.mode === "write"))
+  );
 
   // ----- Global dialog (for menu-bar triggered prompts that need text input) -----
   const [globalDialog, setGlobalDialog] = useState<{
@@ -77,7 +82,7 @@ export function App(): JSX.Element {
     () => new Map()
   );
 
-  const sessionKey = sessionKeyFor(casefile?.root, activeLaneId);
+  const sessionKey = sessionKeyFor(casefile?.root, activeLane?.sessionId);
   const session: LaneSessionState =
     (sessionKey ? laneSessions.get(sessionKey) : null) ?? EMPTY_LANE_SESSION;
   // Per-lane busy flag, sourced directly from session state so that
@@ -639,7 +644,7 @@ export function App(): JSX.Element {
         model: providerModels[provider] || null,
         messages: historyBeforeTurn,
         userMessage: "",
-        allowWriteTools: activeLane?.writable !== false,
+        allowWriteTools: activeLaneHasWritableScope,
         resumePendingToolCalls: true,
         systemPromptId: selectedPromptId,
       });
@@ -676,6 +681,7 @@ export function App(): JSX.Element {
   }, [
     casefile,
     activeLaneId,
+    activeLaneHasWritableScope,
     provider,
     providerModels,
     selectedPromptId,

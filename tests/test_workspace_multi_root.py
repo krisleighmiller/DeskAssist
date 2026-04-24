@@ -154,3 +154,38 @@ def test_scoped_directories_block_bare_writes_when_primary_root_is_not_writable(
 
     with pytest.raises(PermissionError):
         fs.save_text("escape.md", "blocked", overwrite=False)
+
+
+def test_scoped_directories_block_bare_reads_when_no_mount_matches_root(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    ref_root = tmp_path / "reference"
+    casefile_root.mkdir()
+    ref_root.mkdir()
+    (casefile_root / "secret.md").write_text("not in scope", encoding="utf-8")
+    (ref_root / "public.md").write_text("in scope", encoding="utf-8")
+    fs = WorkspaceFilesystem(
+        casefile_root,
+        scoped_directories=(ScopedDirectory(path=ref_root, label="reference", writable=False),),
+    )
+
+    with pytest.raises(PermissionError):
+        fs.read_text_bounded("secret.md", 100)
+    content, _, target = fs.read_text_bounded("_scope/reference/public.md", 100)
+    assert content == "in scope"
+    assert target == (ref_root / "public.md").resolve()
+
+
+def test_read_only_scoped_root_lists_only_virtual_mounts(tmp_path: Path):
+    casefile_root = tmp_path / "case"
+    ref_root = tmp_path / "reference"
+    casefile_root.mkdir()
+    ref_root.mkdir()
+    (casefile_root / "secret.md").write_text("not in scope", encoding="utf-8")
+    fs = WorkspaceFilesystem(
+        casefile_root,
+        scoped_directories=(ScopedDirectory(path=ref_root, label="reference", writable=False),),
+    )
+
+    target, entries = fs.list_dir(".")
+    assert target == casefile_root.resolve()
+    assert entries == [{"name": "_scope", "type": "overlay"}]

@@ -41,6 +41,7 @@ class WorkspaceFilesystem:
     ) -> None:
         self.workspace_root = workspace_root.resolve()
         scoped = tuple(scoped_directories or ())
+        self._scoped_mode = bool(scoped)
         self._workspace_writable = (
             True
             if not scoped
@@ -48,6 +49,9 @@ class WorkspaceFilesystem:
                 entry.writable and entry.path.resolve() == self.workspace_root
                 for entry in scoped
             )
+        )
+        self._bare_read_allowed = (not scoped) or any(
+            entry.path.resolve() == self.workspace_root for entry in scoped
         )
         mounts: list[tuple[str, Path, bool]] = []
         seen_prefixes: set[str] = set()
@@ -112,6 +116,11 @@ class WorkspaceFilesystem:
         if match is not None:
             prefix, mount_root, remaining, _writable = match
             return self._resolve_mount(mount_root, remaining), prefix
+        if self._scoped_mode and not self._bare_read_allowed:
+            raise PermissionError(
+                "Bare relative reads are not allowed in this scope; use a "
+                "`_scope/<label>/...` path instead."
+            )
         return self.resolve_relative(candidate), None
 
     def _resolve_for_write(self, candidate: str) -> Path:
@@ -186,6 +195,15 @@ class WorkspaceFilesystem:
         return "".join(parts), False, target
 
     def list_dir(self, candidate: str) -> tuple[Path, list[dict[str, str]]]:
+        normalized_input = candidate.strip()
+        if (
+            self._scoped_mode
+            and not self._bare_read_allowed
+            and normalized_input in {"", ".", "./"}
+        ):
+            # A fully read-only scoped session still needs a discoverable root.
+            # Return only virtual mount names, never the casefile-root contents.
+            return self.workspace_root, self._top_level_overlay_entries()
         target, prefix = self._resolve_for_read(candidate)
         # Special case: listing the write root with overlays present should
         # surface the available virtual prefixes too, so the model can
@@ -217,6 +235,17 @@ class WorkspaceFilesystem:
                     seen_top.add(top)
                     entries.append({"name": top, "type": "overlay"})
         return target, entries
+
+    def _top_level_overlay_entries(self) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        seen_top: set[str] = set()
+        for mount_prefix, _root, _writable in self._mounts:
+            top = mount_prefix.split("/", 1)[0]
+            if top in seen_top:
+                continue
+            seen_top.add(top)
+            entries.append({"name": top, "type": "overlay"})
+        return entries
 
     # ----- write operations -----
 

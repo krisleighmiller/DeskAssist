@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -37,6 +38,24 @@ class LanesFileError(ValueError):
 
 
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _new_session_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _stable_migrated_session_id(kind: str, root: Path, identifier: str) -> str:
+    """Stable UUID fallback for metadata written before session ids existed."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"deskassist:{kind}:{root}:{identifier}"))
+
+
+def _coerce_session_id(value: object, *, kind: str, root: Path, identifier: str) -> str:
+    if isinstance(value, str):
+        try:
+            return str(uuid.UUID(value))
+        except ValueError:
+            pass
+    return _stable_migrated_session_id(kind, root, identifier)
 
 
 def normalize_lane_id(raw: str) -> str:
@@ -116,6 +135,7 @@ class CasefileStore:
         if not self.casefile.lanes_file.exists():
             default_lane = Lane(
                 id="main",
+                session_id=_new_session_id(),
                 name="Main",
                 kind=DEFAULT_LANE_KIND,
                 root=self.casefile.root,
@@ -161,11 +181,13 @@ class CasefileStore:
                 cleaned.append(
                     Lane(
                         id=lane.id,
+                        session_id=lane.session_id,
                         name=lane.name,
                         kind=lane.kind,
                         root=lane.root,
                         parent_id=None,
                         attachments=lane.attachments,
+                        writable=lane.writable,
                     )
                 )
             else:
@@ -233,6 +255,7 @@ class CasefileStore:
         resolved_attachments = self._normalize_attachments(attachments)
         lane = Lane(
             id=final_id,
+            session_id=_new_session_id(),
             name=name.strip() or final_id,
             kind=coerce_lane_kind(kind),
             root=resolved_root,
@@ -256,6 +279,7 @@ class CasefileStore:
         normalized = self._normalize_attachments(attachments)
         replaced = Lane(
             id=target.id,
+            session_id=target.session_id,
             name=target.name,
             kind=target.kind,
             root=target.root,
@@ -292,6 +316,7 @@ class CasefileStore:
                     raise KeyError(f"Unknown parent_id: {parent_id!r}") from None
         replaced = Lane(
             id=target.id,
+            session_id=target.session_id,
             name=target.name,
             kind=target.kind,
             root=target.root,
@@ -355,6 +380,7 @@ class CasefileStore:
         new_writable = target.writable if writable is None else bool(writable)
         replaced = Lane(
             id=target.id,
+            session_id=target.session_id,
             name=new_name,
             kind=new_kind,
             root=new_root,
@@ -382,6 +408,7 @@ class CasefileStore:
                 re_parented.append(
                     Lane(
                         id=lane.id,
+                        session_id=lane.session_id,
                         name=lane.name,
                         kind=lane.kind,
                         root=lane.root,
@@ -471,7 +498,21 @@ class CasefileStore:
         if existing is not None:
             return existing
         ids = tuple(sorted({normalize_lane_id(raw) for raw in lane_ids}))
-        return ComparisonSessionConfig(id=comparison_id, lane_ids=ids)
+        return ComparisonSessionConfig(
+            id=comparison_id,
+            session_id=_new_session_id(),
+            lane_ids=ids,
+        )
+
+    def ensure_comparison_session(
+        self, lane_ids: Iterable[str]
+    ) -> ComparisonSessionConfig:
+        session = self.get_comparison_session(lane_ids)
+        sessions = self._read_comparisons_file()
+        if session.id not in sessions:
+            sessions[session.id] = session
+            self._write_comparisons_file(sessions)
+        return session
 
     def update_comparison_attachments(
         self, lane_ids: Iterable[str], attachments: Iterable[LaneAttachment]
@@ -480,6 +521,7 @@ class CasefileStore:
         normalized = self._normalize_attachments(attachments)
         updated = ComparisonSessionConfig(
             id=session.id,
+            session_id=session.session_id,
             lane_ids=session.lane_ids,
             attachments=normalized,
         )
@@ -704,6 +746,12 @@ class CasefileStore:
                 )
             out[comparison_id] = ComparisonSessionConfig(
                 id=comparison_id,
+                session_id=_coerce_session_id(
+                    item.get("session_id"),
+                    kind="comparison",
+                    root=self.casefile.root,
+                    identifier=comparison_id,
+                ),
                 lane_ids=lane_ids,
                 attachments=tuple(parsed_attachments),
             )
@@ -717,6 +765,7 @@ class CasefileStore:
             "sessions": [
                 {
                     "id": session.id,
+                    "session_id": session.session_id,
                     "lane_ids": list(session.lane_ids),
                     "attachments": [
                         self._serialize_attachment(attachment)
@@ -760,6 +809,7 @@ class CasefileStore:
                 root_repr = str(lane.root)
             entry: dict[str, Any] = {
                 "id": lane.id,
+                "session_id": lane.session_id,
                 "name": lane.name,
                 "kind": lane.kind,
                 "root": root_repr,
@@ -793,6 +843,12 @@ class CasefileStore:
             lane_id = normalize_lane_id(raw_id)
         except ValueError as exc:
             raise LanesFileError(str(exc)) from exc
+        session_id = _coerce_session_id(
+            entry.get("session_id"),
+            kind="lane",
+            root=self.casefile.root,
+            identifier=lane_id,
+        )
         raw_name = entry.get("name")
         name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else lane_id
         kind = coerce_lane_kind(entry.get("kind"))
@@ -838,6 +894,7 @@ class CasefileStore:
         writable = bool(entry.get("writable", True))
         return Lane(
             id=lane_id,
+            session_id=session_id,
             name=name,
             kind=kind,
             root=resolved_root,

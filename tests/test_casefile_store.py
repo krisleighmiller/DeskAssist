@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from uuid import UUID
 
 from assistant_app.casefile import CasefileService, LANE_KINDS, Lane
 from assistant_app.casefile.store import CasefileStore, LanesFileError, normalize_lane_id
@@ -285,8 +286,19 @@ def test_service_serialize_returns_ipc_friendly_payload(tmp_path: Path):
     assert payload["activeLaneId"] == "main"
     assert isinstance(payload["lanes"], list)
     assert payload["lanes"][0]["id"] == "main"
+    UUID(payload["lanes"][0]["sessionId"])
     # Lane root in IPC is always absolute string.
     assert Path(payload["lanes"][0]["root"]).is_absolute()
+
+
+def test_lane_session_id_persists_across_reloads(tmp_path: Path):
+    service = CasefileService(tmp_path)
+    first = service.open()
+    lane_id = first.lanes[0].session_id
+    UUID(lane_id)
+
+    second = CasefileService(tmp_path).open()
+    assert second.lanes[0].session_id == lane_id
 
 
 def test_lane_dataclass_is_frozen(tmp_path: Path):

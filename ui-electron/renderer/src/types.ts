@@ -98,6 +98,8 @@ export interface LaneAttachmentDto {
 
 export interface Lane {
   id: string;
+  /** Stable UUID for session identity; unlike `id`, this is not a structural path key. */
+  sessionId: string;
   name: string;
   kind: LaneKind;
   root: string;
@@ -210,6 +212,8 @@ export interface ComparisonLaneSummary {
 
 export interface ComparisonSession {
   id: string;
+  /** Stable UUID for this canonical comparison chat session. */
+  sessionId: string;
   laneIds: string[];
   lanes: ComparisonLaneSummary[];
   attachments: LaneAttachmentDto[];

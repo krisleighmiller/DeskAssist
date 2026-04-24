@@ -1168,6 +1168,7 @@ def _serialize_comparison_summary(
     session = service.get_comparison_session(sorted_ids)
     return {
         "id": service.comparison_id(sorted_ids),
+        "sessionId": session.session_id,
         "laneIds": sorted_ids,
         "lanes": [
             {"id": lane.id, "name": lane.name, "root": str(lane.root)}

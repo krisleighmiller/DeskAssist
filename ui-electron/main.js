@@ -626,10 +626,49 @@ function createWindow() {
   // works. In normal `npm start` the renderer is built first and served from
   // the static dist/ directory via file://.
   const devUrl = process.env.DESKASSIST_RENDERER_URL;
-  if (devUrl) {
+  if (devUrl && isAllowedDevRendererUrl(devUrl)) {
     mainWindow.loadURL(devUrl);
   } else {
+    if (devUrl) {
+      console.warn(
+        "[main] ignoring DESKASSIST_RENDERER_URL; only localhost http(s) URLs are allowed"
+      );
+    }
     mainWindow.loadFile(path.join(__dirname, "renderer", "dist", "index.html"));
+  }
+}
+
+function isAllowedDevRendererUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function realpathForContainment(targetPath) {
+  const resolvedTarget = path.resolve(targetPath);
+  const parts = [];
+  let cursor = resolvedTarget;
+  while (true) {
+    try {
+      const realCursor = fsSync.realpathSync.native(cursor);
+      return parts.length > 0
+        ? path.join(realCursor, ...parts.reverse())
+        : realCursor;
+    } catch (err) {
+      if (!err || err.code !== "ENOENT") {
+        throw err;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) {
+        throw err;
+      }
+      parts.push(path.basename(cursor));
+      cursor = parent;
+    }
   }
 }
 
@@ -644,8 +683,8 @@ function ensureInWorkspace(targetPath) {
   if (!activeCasefileRoot) {
     throw new Error("No casefile open");
   }
-  const resolvedWorkspace = path.resolve(activeCasefileRoot);
-  const resolvedTarget = path.resolve(targetPath);
+  const resolvedWorkspace = fsSync.realpathSync.native(activeCasefileRoot);
+  const resolvedTarget = realpathForContainment(targetPath);
   if (
     resolvedTarget !== resolvedWorkspace &&
     !resolvedTarget.startsWith(`${resolvedWorkspace}${path.sep}`)
