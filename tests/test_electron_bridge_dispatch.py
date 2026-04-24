@@ -410,7 +410,7 @@ def test_register_lane_with_parent_and_attachment(tmp_path: Path):
     child = next(lane for lane in response["casefile"]["lanes"] if lane["id"] == "child")
     assert child["parentId"] == "parent"
     assert child["attachments"] == [
-        {"name": "notes", "root": str(notes_dir.resolve()), "mode": "read"}
+        {"name": "notes", "root": str(notes_dir.resolve()), "mode": "write"}
     ]
 
 
@@ -488,8 +488,7 @@ def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
     labels = [d["label"] for d in directories]
     write_labels = [d["label"] for d in directories if d["writable"]]
     read_labels = [d["label"] for d in directories if not d["writable"]]
-    assert write_labels == ["child"]
-    assert "notes" in read_labels
+    assert write_labels == ["child", "notes"]
     assert any(lbl.startswith("parent") for lbl in read_labels), read_labels
     assert [entry["path"] for entry in scope["contextFiles"]] == ["rubric.md"]
 

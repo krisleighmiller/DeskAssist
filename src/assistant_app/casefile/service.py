@@ -8,7 +8,13 @@ from assistant_app.casefile.context import (
     ContextManifestStore,
     ResolvedContextFile,
 )
-from assistant_app.casefile.models import AttachmentMode, CasefileSnapshot, Lane, LaneAttachment
+from assistant_app.casefile.models import (
+    AttachmentMode,
+    CasefileSnapshot,
+    DEFAULT_ATTACHMENT_MODE,
+    Lane,
+    LaneAttachment,
+)
 from assistant_app.casefile.scope import (
     ScopeContext,
     comparison_id_for_lanes,
@@ -250,7 +256,11 @@ def parse_attachments(raw: Any) -> list[LaneAttachment]:
             raise ValueError("attachment.name is required")
         if not isinstance(root, str) or not root.strip():
             raise ValueError("attachment.root is required")
-        mode: AttachmentMode = "write" if item.get("mode") == "write" else "read"
+        mode_raw = item.get("mode")
+        if mode_raw == "read":
+            mode: AttachmentMode = "read"
+        else:
+            mode = DEFAULT_ATTACHMENT_MODE
         out.append(LaneAttachment(name=name.strip(), root=Path(root), mode=mode))
     return out
 

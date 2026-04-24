@@ -1166,6 +1166,7 @@ ipcMain.handle("casefile:updateLane", async (_, args = {}) => {
   if (Object.prototype.hasOwnProperty.call(args, "name")) payload.name = args.name;
   if (Object.prototype.hasOwnProperty.call(args, "kind")) payload.kind = args.kind;
   if (Object.prototype.hasOwnProperty.call(args, "root")) payload.root = args.root;
+  if (Object.prototype.hasOwnProperty.call(args, "writable")) payload.writable = args.writable;
   const response = await runPythonBridgeMeta(payload);
   // Adopt the snapshot for state-tracking, but return the *full* response so
   // the renderer can surface `rootConflict` alongside the new snapshot.
