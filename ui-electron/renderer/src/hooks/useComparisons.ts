@@ -1,19 +1,15 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { api } from "../lib/api";
-import { languageFromPath } from "../lib/language";
 import {
   chatTurnDelta,
-  diffTabKey,
   errorMessage,
   normalizeChatTurn,
-  type LaneSessionState,
 } from "./appModelTypes";
 import type {
   CasefileSnapshot,
   ComparisonSession,
   LaneAttachmentInput,
-  LaneComparisonDto,
   Provider,
   ProviderModels,
 } from "../types";
@@ -32,8 +28,6 @@ interface UseComparisonsArgs {
   casefile: CasefileSnapshot | null;
   provider: Provider;
   providerModels: ProviderModels;
-  session: LaneSessionState;
-  updateSession: (updater: (prev: LaneSessionState) => LaneSessionState) => void;
   onError: (message: string) => void;
 }
 
@@ -41,22 +35,13 @@ export function useComparisons({
   casefile,
   provider,
   providerModels,
-  session,
-  updateSession,
   onError,
 }: UseComparisonsArgs) {
-  const [comparison, setComparison] = useState<LaneComparisonDto | null>(null);
-  const [comparisonBusy, setComparisonBusy] = useState(false);
   const [comparisonSessions, setComparisonSessions] = useState<ComparisonSession[]>([]);
   const [activeComparisonId, setActiveComparisonId] = useState<string | null>(null);
   // Per-comparison busy flags. Replaces the previous single boolean
   // which conflated all in-flight comparison chats. (Review item #4.)
   const [busyComparisonIds, setBusyComparisonIds] = useState<Set<string>>(() => new Set());
-
-  // Cancellation token for `compareLanes`: a slow result for an
-  // earlier (left, right) pair must not overwrite a fresher one
-  // triggered by a rapid second click. (Review item #5.)
-  const compareRequestRef = useRef(0);
 
   const focusedComparisonSession = useMemo<ComparisonSession | null>(
     () =>
@@ -97,29 +82,6 @@ export function useComparisons({
     },
     []
   );
-
-  const handleCompareLanes = useCallback(
-    async (leftLaneId: string, rightLaneId: string) => {
-      if (!casefile) return;
-      const token = ++compareRequestRef.current;
-      setComparisonBusy(true);
-      try {
-        const result = await api().compareLanes(leftLaneId, rightLaneId);
-        if (token !== compareRequestRef.current) return;
-        setComparison(result);
-      } catch (error) {
-        if (token !== compareRequestRef.current) return;
-        onError(errorMessage(error));
-      } finally {
-        if (token === compareRequestRef.current) {
-          setComparisonBusy(false);
-        }
-      }
-    },
-    [casefile, onError]
-  );
-
-  const handleClearComparison = useCallback(() => setComparison(null), []);
 
   const handleOpenComparisonChat = useCallback(
     async (laneIds: string[]) => {
@@ -312,60 +274,7 @@ export function useComparisons({
     }));
   }, [focusedComparisonSession, replaceComparisonSession]);
 
-  const handleOpenDiff = useCallback(
-    async (path: string) => {
-      if (!comparison || !casefile) return;
-      const left = casefile.lanes.find((lane) => lane.id === comparison.leftLaneId);
-      const right = casefile.lanes.find((lane) => lane.id === comparison.rightLaneId);
-      if (!left || !right) return;
-      const key = diffTabKey(comparison.leftLaneId, comparison.rightLaneId, path);
-      if (session.tabs.some((tab) => tab.key === key)) {
-        updateSession((prev) => ({ ...prev, activeTabKey: key }));
-        return;
-      }
-      try {
-        // Diff tabs are read-only snapshots of both sides at "open"
-        // time. We deliberately do NOT subscribe them to workspace-
-        // change refreshes (see refreshOpenTabsFromDisk in
-        // useLaneWorkspace). If the user wants a fresh diff, they
-        // can re-open it.
-        const [leftRead, rightRead] = await Promise.all([
-          api().readLaneFile(comparison.leftLaneId, path),
-          api().readLaneFile(comparison.rightLaneId, path),
-        ]);
-        updateSession((prev) => {
-          if (prev.tabs.some((tab) => tab.key === key)) {
-            return { ...prev, activeTabKey: key };
-          }
-          return {
-            ...prev,
-            tabs: [
-              ...prev.tabs,
-              {
-                kind: "diff",
-                key,
-                path,
-                leftLaneId: comparison.leftLaneId,
-                rightLaneId: comparison.rightLaneId,
-                leftLaneName: left.name,
-                rightLaneName: right.name,
-                leftContent: leftRead.content,
-                rightContent: rightRead.content,
-                language: languageFromPath(path),
-              },
-            ],
-            activeTabKey: key,
-          };
-        });
-      } catch (error) {
-        onError(errorMessage(error));
-      }
-    },
-    [casefile, comparison, onError, session.tabs, updateSession]
-  );
-
   const resetComparisonsForCasefile = useCallback(() => {
-    setComparison(null);
     setComparisonSessions([]);
     setActiveComparisonId(null);
     setBusyComparisonIds(new Set());
@@ -376,22 +285,16 @@ export function useComparisons({
   }, []);
 
   return {
-    comparison,
-    comparisonBusy,
     comparisonSessions,
-    activeComparisonId,
     setActiveComparisonId,
     comparisonChatBusy,
     focusedComparisonSession,
-    handleCompareLanes,
-    handleClearComparison,
     handleOpenComparisonChat,
     handleUpdateComparisonAttachments,
     handleCloseComparisonChat,
     sendComparisonChat,
     approveComparisonTools,
     denyComparisonTools,
-    handleOpenDiff,
     resetComparisonsForCasefile,
     clearActiveComparisonForLaneChat,
   };

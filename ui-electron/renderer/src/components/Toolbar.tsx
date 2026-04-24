@@ -6,6 +6,7 @@ import {
   type Lane,
   type Provider,
   type ProviderModels,
+  type RecentContext,
 } from "../types";
 import { ContextMenu } from "./ContextMenu";
 
@@ -21,6 +22,8 @@ interface ToolbarProps {
   providerModels: ProviderModels;
   onChooseCasefile: () => void;
   onCloseCasefile?: () => void;
+  recentContexts: RecentContext[];
+  onOpenRecentContext: (root: string, activeLaneId: string | null) => void | Promise<void>;
   onOpenKeys: () => void;
   onSwitchLane?: (laneId: string) => void;
   /** Show/hide the integrated-terminal pane. Mirrors the View →
@@ -66,6 +69,10 @@ function ancestorChain(casefile: CasefileSnapshot, laneId: string | null): Lane[
   return chain;
 }
 
+function basenameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 export function Toolbar(props: ToolbarProps): JSX.Element {
   const {
     casefile,
@@ -75,6 +82,8 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     providerModels,
     onChooseCasefile,
     onCloseCasefile,
+    recentContexts,
+    onOpenRecentContext,
     onOpenKeys,
     onSwitchLane,
     onToggleTerminal,
@@ -96,7 +105,9 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
   const modelIsDefault = !providerModels[provider]?.trim();
 
   const [laneMenuOpen, setLaneMenuOpen] = useState(false);
+  const [recentMenuOpen, setRecentMenuOpen] = useState(false);
   const laneButtonRef = useRef<HTMLButtonElement>(null);
+  const recentButtonRef = useRef<HTMLButtonElement>(null);
 
   const activeLane = casefile
     ? casefile.lanes.find((l) => l.id === casefile.activeLaneId) ?? null
@@ -104,6 +115,10 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
 
   const openLaneMenu = () => {
     setLaneMenuOpen(true);
+  };
+
+  const openRecentMenu = () => {
+    setRecentMenuOpen(true);
   };
 
   /** Build the items list for the Lane ▾ dropdown. */
@@ -129,9 +144,9 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     if (activeLane) {
       if (onUpdateLaneName) {
         items.push({
-          label: "Rename lane…",
+          label: "Rename context…",
           onSelect: () => {
-            const newName = window.prompt("New name for this lane:", activeLane.name);
+            const newName = window.prompt("New name for this context:", activeLane.name);
             if (!newName?.trim() || newName.trim() === activeLane.name) return;
             void onUpdateLaneName(activeLane.id, newName.trim());
           },
@@ -150,10 +165,10 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
       }
       if (onRemoveLane) {
         items.push({
-          label: "Remove lane",
+          label: "Remove context",
           onSelect: () => {
             const ok = window.confirm(
-              `Remove lane "${activeLane.name}"?\n\nThis removes it from the casefile but does not delete any files.`
+              `Remove context "${activeLane.name}"?\n\nThis removes it from the workspace but does not delete any files.`
             );
             if (!ok) return;
             void onRemoveLane(activeLane.id);
@@ -166,10 +181,10 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     // Casefile-level reset actions.
     if (onSoftResetCasefile) {
       items.push({
-        label: "Reset casefile (soft)…",
+        label: "Reset workspace (soft)…",
         onSelect: () => {
           const ok = window.confirm(
-            "Soft reset clears lane registrations and chat history metadata. Files on disk are preserved."
+            "Soft reset clears context registrations and chat history metadata. Files on disk are preserved."
           );
           if (!ok) return;
           void onSoftResetCasefile();
@@ -178,10 +193,10 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     }
     if (onHardResetCasefile) {
       items.push({
-        label: "Hard reset casefile…",
+        label: "Hard reset workspace…",
         onSelect: () => {
           const ok = window.confirm(
-            "Hard reset deletes the entire .casefile metadata folder.\n\nConversation history, lane registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
+            "Hard reset deletes the workspace metadata folder (.casefile).\n\nConversation history, context registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
           );
           if (!ok) return;
           void onHardResetCasefile();
@@ -199,21 +214,61 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     return { x: rect.left, y: rect.bottom + 2 };
   })();
 
+  const recentMenuPos = (() => {
+    if (!recentButtonRef.current) return { x: 0, y: 32 };
+    const rect = recentButtonRef.current.getBoundingClientRect();
+    return { x: rect.left, y: rect.bottom + 2 };
+  })();
+
+  const recentItems: ContextMenuItem[] = recentContexts.map((context) => {
+    const rootName = basenameFromPath(context.root);
+    const laneSuffix = context.activeLaneName ? ` / ${context.activeLaneName}` : "";
+    return {
+      label: `${rootName}${laneSuffix}`,
+      onSelect: () => {
+        void Promise.resolve(onOpenRecentContext(context.root, context.activeLaneId));
+      },
+    };
+  });
+
   return (
     <div className="toolbar">
       <button type="button" onClick={onChooseCasefile}>
-        Open Casefile
+        Open Workspace
       </button>
       {casefile && onCloseCasefile && (
         <button type="button" onClick={onCloseCasefile}>
-          Close Casefile
+          Close Workspace
         </button>
+      )}
+      {recentContexts.length > 0 && (
+        <div className="toolbar-lane-menu-wrapper">
+          <button
+            ref={recentButtonRef}
+            type="button"
+            className="toolbar-lane-btn"
+            aria-haspopup="menu"
+            aria-expanded={recentMenuOpen}
+            onClick={openRecentMenu}
+            title="Recent work"
+          >
+            Recent ▾
+          </button>
+          {recentMenuOpen && (
+            <ContextMenu
+              x={recentMenuPos.x}
+              y={recentMenuPos.y}
+              items={recentItems}
+              onClose={() => setRecentMenuOpen(false)}
+            />
+          )}
+        </div>
       )}
       {casefile ? (
         <span className="breadcrumb" title={casefile.root}>
           <span className="breadcrumb-root">{casefile.root}</span>
           {chain.length === 0 ? (
-            <span className="breadcrumb-empty"> — no active lane</span>
+            <span className="breadcrumb-empty"> — no active context</span>
           ) : (
             chain.map((lane, idx) => {
               const isLast = idx === chain.length - 1;
@@ -244,7 +299,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
           )}
         </span>
       ) : (
-        <span className="breadcrumb breadcrumb-empty">No casefile open</span>
+        <span className="breadcrumb breadcrumb-empty">No workspace open</span>
       )}
       {casefile && (
         <div className="toolbar-lane-menu-wrapper">
@@ -255,9 +310,9 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
             aria-haspopup="menu"
             aria-expanded={laneMenuOpen}
             onClick={openLaneMenu}
-            title="Lane management actions"
+            title="Context management actions"
           >
-            Lane ▾
+            Context ▾
           </button>
           {laneMenuOpen && (
             <ContextMenu

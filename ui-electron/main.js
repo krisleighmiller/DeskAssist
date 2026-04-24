@@ -156,7 +156,7 @@ function attachDirWatcher(dir) {
       console.warn(
         `[main] watcher cap reached (${MAX_WATCHED_DIRS} dirs); ` +
           "additional subdirectories will not auto-refresh. " +
-          "Consider opening a smaller casefile root."
+          "Consider opening a smaller workspace root."
       );
     }
     return;
@@ -481,18 +481,18 @@ function createWindow() {
 
   const laneSubmenu = [
     {
-      label: "Create Lane…",
+      label: "Create Context…",
       accelerator: "CmdOrCtrl+Shift+L",
       click: () => sendToRenderer("app:lane:create"),
     },
     {
-      label: "Attach to Lane…",
+      label: "Attach to Context…",
       accelerator: "CmdOrCtrl+Shift+A",
       click: () => sendToRenderer("app:lane:attach"),
     },
     { type: "separator" },
     {
-      label: "Rename Active Lane…",
+      label: "Rename Active Context…",
       accelerator: "CmdOrCtrl+Shift+N",
       click: () => sendToRenderer("app:lane:rename"),
     },
@@ -502,16 +502,16 @@ function createWindow() {
       click: () => sendToRenderer("app:lane:toggle-access"),
     },
     {
-      label: "Remove Active Lane",
+      label: "Remove Active Context",
       click: () => sendToRenderer("app:lane:remove"),
     },
     { type: "separator" },
     {
-      label: "Reset Casefile (soft)…",
+      label: "Reset Workspace (soft)…",
       click: () => sendToRenderer("app:casefile:soft-reset"),
     },
     {
-      label: "Hard Reset Casefile…",
+      label: "Hard Reset Workspace…",
       click: () => sendToRenderer("app:casefile:hard-reset"),
     },
   ];
@@ -540,12 +540,12 @@ function createWindow() {
       label: "File",
       submenu: [
         {
-          label: "Open Casefile…",
+          label: "Open Workspace…",
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => sendToRenderer("app:open-casefile"),
         },
         {
-          label: "Close Casefile",
+          label: "Close Workspace",
           accelerator: "CmdOrCtrl+Shift+K",
           click: () => sendToRenderer("app:close-casefile"),
         },
@@ -576,7 +576,7 @@ function createWindow() {
       ],
     },
     {
-      label: "Lane",
+      label: "Context",
       submenu: laneSubmenu,
     },
     {
@@ -695,7 +695,7 @@ function ensureInWorkspace(targetPath) {
   // separately by the Python backend's `WorkspaceFilesystem` (lane-
   // bound), which is what actually limits what tools can touch.
   if (!activeCasefileRoot) {
-    throw new Error("No casefile open");
+    throw new Error("No workspace open");
   }
   const resolvedWorkspace = fsSync.realpathSync.native(activeCasefileRoot);
   const resolvedTarget = realpathForContainment(targetPath);
@@ -708,7 +708,7 @@ function ensureInWorkspace(targetPath) {
     // diagnose what went wrong, instead of seeing the bare "Path
     // escapes casefile root" with no clue which path or which root.
     throw new Error(
-      `Path escapes casefile root: ${resolvedTarget} is not inside ${resolvedWorkspace}`
+      `Path escapes workspace root: ${resolvedTarget} is not inside ${resolvedWorkspace}`
     );
   }
   return resolvedTarget;
@@ -963,7 +963,7 @@ function adoptCasefileSnapshot(snapshot) {
   // Apply a snapshot returned by the Python bridge to the main-process state
   // so the next file-tree IPC call is rooted at the active lane.
   if (!snapshot || typeof snapshot.root !== "string") {
-    throw new Error("Bridge returned an invalid casefile snapshot");
+    throw new Error("Bridge returned an invalid workspace snapshot");
   }
   // Drop any pending trash-undo entries when the casefile changes — the
   // backups are tied to the previous casefile root and would either fail
@@ -1010,7 +1010,7 @@ ipcMain.handle("casefile:choose", async () => {
   // (matches the user's intuition for a modal "open" dialog).
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory", "createDirectory"],
-    title: "Open Casefile",
+    title: "Open Workspace",
     defaultPath,
   });
   if (result.canceled || result.filePaths.length === 0) {
@@ -1057,7 +1057,7 @@ ipcMain.handle("casefile:chooseLaneRoot", async () => {
 
 ipcMain.handle("casefile:registerLane", async (_, args = {}) => {
   if (!activeCasefileRoot) {
-    throw new Error("No casefile is open");
+    throw new Error("No workspace is open");
   }
   const lane = args.lane && typeof args.lane === "object" ? args.lane : null;
   if (!lane) {
@@ -1073,7 +1073,7 @@ ipcMain.handle("casefile:registerLane", async (_, args = {}) => {
 
 ipcMain.handle("casefile:switchLane", async (_, args = {}) => {
   if (!activeCasefileRoot) {
-    throw new Error("No casefile is open");
+    throw new Error("No workspace is open");
   }
   const laneId = typeof args.laneId === "string" ? args.laneId : "";
   if (!laneId) {
@@ -1089,7 +1089,7 @@ ipcMain.handle("casefile:switchLane", async (_, args = {}) => {
 
 ipcMain.handle("casefile:listChat", async (_, args = {}) => {
   if (!activeCasefileRoot) {
-    throw new Error("No casefile is open");
+    throw new Error("No workspace is open");
   }
   const laneId = typeof args.laneId === "string" ? args.laneId : activeLaneId;
   if (!laneId) {
@@ -1111,51 +1111,14 @@ ipcMain.handle("casefile:listChat", async (_, args = {}) => {
   };
 });
 
-// ----- M3: notes, compare, lane-scoped read, save chat output -----
+// ----- Chat output save -----
 
 function requireCasefile() {
   if (!activeCasefileRoot) {
-    throw new Error("No casefile is open");
+    throw new Error("No workspace is open");
   }
   return activeCasefileRoot;
 }
-
-ipcMain.handle("casefile:getNote", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  if (!laneId) throw new Error("laneId is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:getNote",
-    casefileRoot,
-    laneId,
-  });
-  return typeof response.content === "string" ? response.content : "";
-});
-
-ipcMain.handle("casefile:saveNote", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  const content = typeof args.content === "string" ? args.content : "";
-  if (!laneId) throw new Error("laneId is required");
-  await runPythonBridgeMeta({ command: "casefile:saveNote", casefileRoot, laneId, content });
-  return true;
-});
-
-ipcMain.handle("casefile:compareLanes", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const leftLaneId = typeof args.leftLaneId === "string" ? args.leftLaneId : "";
-  const rightLaneId = typeof args.rightLaneId === "string" ? args.rightLaneId : "";
-  if (!leftLaneId || !rightLaneId) {
-    throw new Error("leftLaneId and rightLaneId are required");
-  }
-  const response = await runPythonBridge({
-    command: "casefile:compareLanes",
-    casefileRoot,
-    leftLaneId,
-    rightLaneId,
-  });
-  return response.comparison;
-});
 
 ipcMain.handle("chat:saveOutput", async (_, args = {}) => {
   // The destination directory is an *absolute* path picked by the user
@@ -1176,40 +1139,7 @@ ipcMain.handle("chat:saveOutput", async (_, args = {}) => {
   return { path: response.path };
 });
 
-ipcMain.handle("lane:readFile", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  const filePath = typeof args.path === "string" ? args.path : "";
-  if (!laneId) throw new Error("laneId is required");
-  if (!filePath) throw new Error("path is required");
-  const payload = { command: "lane:readFile", casefileRoot, laneId, path: filePath };
-  if (Number.isInteger(args.maxChars)) payload.maxChars = args.maxChars;
-  const response = await runPythonBridgeMeta(payload);
-  return {
-    path: response.path,
-    content: response.content,
-    truncated: Boolean(response.truncated),
-  };
-});
-
-// ----- M3.5: hierarchical scope, attachments, context, overlays -----
-
-ipcMain.handle("casefile:setLaneParent", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  if (!laneId) throw new Error("laneId is required");
-  const parentId =
-    args.parentId === null || args.parentId === undefined
-      ? null
-      : String(args.parentId);
-  const response = await runPythonBridgeMeta({
-    command: "casefile:setLaneParent",
-    casefileRoot,
-    laneId,
-    parentId,
-  });
-  return adoptCasefileSnapshot(response.casefile);
-});
+// ----- Context attachments -----
 
 ipcMain.handle("casefile:updateLaneAttachments", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
@@ -1286,45 +1216,8 @@ ipcMain.handle("casefile:softReset", async (_, args = {}) => {
   return adoptCasefileSnapshot(response.casefile);
 });
 
-ipcMain.handle("casefile:getContext", async () => {
-  const casefileRoot = requireCasefile();
-  const response = await runPythonBridgeMeta({
-    command: "casefile:getContext",
-    casefileRoot,
-  });
-  return response.context;
-});
-
-ipcMain.handle("casefile:saveContext", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const manifest = args.manifest && typeof args.manifest === "object" ? args.manifest : null;
-  if (!manifest) throw new Error("manifest is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:saveContext",
-    casefileRoot,
-    context: manifest,
-  });
-  return response.context;
-});
-
-ipcMain.handle("casefile:resolveScope", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  if (!laneId) throw new Error("laneId is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:resolveScope",
-    casefileRoot,
-    laneId,
-  });
-  return response.scope;
-});
-
-// Renderer-side hint: after `listOverlayTrees` resolves, the renderer
-// pushes the set of overlay roots back to main so we can extend the
-// filesystem watch to any directory that lives *outside* the casefile
-// (uncommon but supported — e.g. an attachment pointing at a folder
-// elsewhere on disk). Roots inside the casefile are ignored because
-// the casefile-level recursive watch already covers them.
+// The renderer registers extra filesystem roots opportunistically; main
+// validates them against the active chat scope before watching.
 function realpathIfDirectory(root) {
   try {
     const stat = fsSync.statSync(root);
@@ -1373,87 +1266,6 @@ ipcMain.handle("workspace:registerWatchRoots", async (_, args = {}) => {
   return { watching: Array.from(activeWatchers.keys()) };
 });
 
-ipcMain.handle("casefile:listOverlayTrees", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  if (!laneId) throw new Error("laneId is required");
-  const maxDepthRaw = Number.isInteger(args.maxDepth) ? args.maxDepth : 3;
-  const maxDepth = Math.max(1, Math.min(maxDepthRaw, 8));
-  const response = await runPythonBridgeMeta({
-    command: "casefile:resolveScope",
-    casefileRoot,
-    laneId,
-  });
-  const scope = response.scope || {};
-  const overlays = Array.isArray(scope.readOverlays) ? scope.readOverlays : [];
-  const out = [];
-  for (const overlay of overlays) {
-    if (!overlay || typeof overlay.root !== "string") continue;
-    try {
-      const tree = await buildTreeAt(overlay.root, 0, maxDepth, overlay.prefix);
-      out.push({
-        prefix: overlay.prefix,
-        label: overlay.label,
-        root: overlay.root,
-        tree,
-      });
-    } catch (error) {
-      out.push({
-        prefix: overlay.prefix,
-        label: overlay.label,
-        root: overlay.root,
-        tree: null,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-  // Casefile-wide context bucket is also surfaced as an overlay (if any
-  // resolved files exist) so the renderer can show "_context/...".
-  const ctxFiles = Array.isArray(scope.contextFiles) ? scope.contextFiles : [];
-  if (ctxFiles.length > 0) {
-    const children = ctxFiles
-      .filter((f) => f && typeof f.path === "string")
-      .map((f) => ({
-        name: f.path.split("/").pop() || f.path,
-        path: `_context/${f.path}`,
-        type: "file",
-      }));
-    out.push({
-      prefix: "_context",
-      label: "casefile context",
-      root: scope.casefileRoot || "",
-      tree: {
-        name: "_context",
-        path: "_context",
-        type: "dir",
-        children,
-      },
-    });
-  }
-  return out;
-});
-
-ipcMain.handle("casefile:readOverlayFile", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  const filePath = typeof args.path === "string" ? args.path : "";
-  if (!laneId) throw new Error("laneId is required");
-  if (!filePath) throw new Error("path is required");
-  const payload = {
-    command: "casefile:readOverlayFile",
-    casefileRoot,
-    laneId,
-    path: filePath,
-  };
-  if (Number.isInteger(args.maxChars)) payload.maxChars = args.maxChars;
-  const response = await runPythonBridgeMeta(payload);
-  return {
-    path: response.path,
-    content: response.content,
-    truncated: Boolean(response.truncated),
-  };
-});
-
 ipcMain.handle("workspace:list", async (_, args = {}) => {
   const maxDepth = Number.isInteger(args.maxDepth) ? args.maxDepth : 6;
   // M2.1: list from the casefile root so the user always sees the full
@@ -1462,7 +1274,7 @@ ipcMain.handle("workspace:list", async (_, args = {}) => {
   // `buildTreeAt` (no containment check) is fine here: we're explicitly
   // rooting at the casefile, not honouring a caller-supplied path.
   if (!activeCasefileRoot) {
-    throw new Error("No casefile open");
+    throw new Error("No workspace open");
   }
   return buildTreeAt(activeCasefileRoot, 0, Math.max(1, Math.min(maxDepth, 8)));
 });
@@ -1779,7 +1591,7 @@ ipcMain.handle("file:trash", async (_, args = {}) => {
   // active lane pointing at a hole. Lane removal is a separate flow
   // (`casefile:removeLane`) which preserves on-disk content.
   if (activeLaneRoot && path.resolve(targetPath) === path.resolve(activeLaneRoot)) {
-    throw new Error("Cannot trash the active lane's root directory");
+    throw new Error("Cannot trash the active context's root directory");
   }
   let stat;
   try {
@@ -1904,7 +1716,7 @@ ipcMain.handle("file:undoStatus", async () => {
 
 ipcMain.handle("chat:send", async (_, payload = {}) => {
   if (!activeCasefileRoot || !activeLaneId) {
-    throw new Error("Open a casefile before sending a chat");
+    throw new Error("Open a workspace before sending a chat");
   }
   const provider = payload.provider || "openai";
   // Fall back to the user's saved per-provider model if the renderer
@@ -1923,194 +1735,23 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
     allowWriteTools: Boolean(payload.allowWriteTools),
     resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
   };
-  // M4.1: only forward systemPromptId when set; the bridge treats absence
-  // as "no system prompt", whereas a literal empty string would be a
-  // validation error.
-  if (typeof payload.systemPromptId === "string" && payload.systemPromptId) {
-    bridgePayload.systemPromptId = payload.systemPromptId;
-  }
   return runPythonBridge(bridgePayload, {
     attachApiKeys: true,
     timeoutMs: BRIDGE_CHAT_TIMEOUT_MS,
   });
 });
 
-// ----- M4.1: prompt drafts -----
-
-ipcMain.handle("casefile:listPrompts", async () => {
-  const casefileRoot = requireCasefile();
-  const response = await runPythonBridgeMeta({
-    command: "casefile:listPrompts",
-    casefileRoot,
-  });
-  return Array.isArray(response.prompts) ? response.prompts : [];
-});
-
-ipcMain.handle("casefile:getPrompt", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const promptId = typeof args.promptId === "string" ? args.promptId : "";
-  if (!promptId) throw new Error("promptId is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:getPrompt",
-    casefileRoot,
-    promptId,
-  });
-  return response.prompt;
-});
-
-ipcMain.handle("casefile:createPrompt", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const prompt = args.prompt && typeof args.prompt === "object" ? args.prompt : null;
-  if (!prompt) throw new Error("prompt is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:createPrompt",
-    casefileRoot,
-    prompt,
-  });
-  return response.prompt;
-});
-
-ipcMain.handle("casefile:savePrompt", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const promptId = typeof args.promptId === "string" ? args.promptId : "";
-  const prompt = args.prompt && typeof args.prompt === "object" ? args.prompt : null;
-  if (!promptId) throw new Error("promptId is required");
-  if (!prompt) throw new Error("prompt is required");
-  const response = await runPythonBridgeMeta({
-    command: "casefile:savePrompt",
-    casefileRoot,
-    promptId,
-    prompt,
-  });
-  return response.prompt;
-});
-
-ipcMain.handle("casefile:deletePrompt", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const promptId = typeof args.promptId === "string" ? args.promptId : "";
-  if (!promptId) throw new Error("promptId is required");
-  await runPythonBridgeMeta({
-    command: "casefile:deletePrompt",
-    casefileRoot,
-    promptId,
-  });
-  return true;
-});
-
-// ----- M4.3: external local-directory inboxes -----
-
-ipcMain.handle("casefile:listInboxSources", async () => {
-  const casefileRoot = requireCasefile();
-  const response = await runPythonBridgeMeta({
-    command: "casefile:listInboxSources",
-    casefileRoot,
-  });
-  return Array.isArray(response.sources) ? response.sources : [];
-});
-
-ipcMain.handle("casefile:addInboxSource", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const name = typeof args.name === "string" ? args.name : "";
-  const root = typeof args.root === "string" ? args.root : "";
-  if (!name.trim()) throw new Error("name is required");
-  if (!root.trim()) throw new Error("root is required");
-  const payload = {
-    command: "casefile:addInboxSource",
-    casefileRoot,
-    name,
-    root,
-  };
-  if (typeof args.sourceId === "string" && args.sourceId.trim()) {
-    payload.sourceId = args.sourceId;
-  }
-  const response = await runPythonBridgeMeta(payload);
-  return response.source;
-});
-
-ipcMain.handle("casefile:updateInboxSource", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
-  if (!sourceId.trim()) throw new Error("sourceId is required");
-  const payload = {
-    command: "casefile:updateInboxSource",
-    casefileRoot,
-    sourceId,
-  };
-  if (typeof args.name === "string") payload.name = args.name;
-  if (typeof args.root === "string") payload.root = args.root;
-  const response = await runPythonBridgeMeta(payload);
-  return response.source;
-});
-
-ipcMain.handle("casefile:removeInboxSource", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
-  if (!sourceId.trim()) throw new Error("sourceId is required");
-  await runPythonBridgeMeta({
-    command: "casefile:removeInboxSource",
-    casefileRoot,
-    sourceId,
-  });
-  return true;
-});
-
-ipcMain.handle("casefile:listInboxItems", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
-  if (!sourceId.trim()) throw new Error("sourceId is required");
-  const payload = { command: "casefile:listInboxItems", casefileRoot, sourceId };
-  if (Number.isInteger(args.maxDepth) && args.maxDepth > 0) {
-    payload.maxDepth = args.maxDepth;
-  }
-  const response = await runPythonBridgeMeta(payload);
-  return Array.isArray(response.items) ? response.items : [];
-});
-
-ipcMain.handle("casefile:readInboxItem", async (_, args = {}) => {
-  const casefileRoot = requireCasefile();
-  const sourceId = typeof args.sourceId === "string" ? args.sourceId : "";
-  const itemPath = typeof args.path === "string" ? args.path : "";
-  if (!sourceId.trim()) throw new Error("sourceId is required");
-  if (!itemPath.trim()) throw new Error("path is required");
-  const payload = {
-    command: "casefile:readInboxItem",
-    casefileRoot,
-    sourceId,
-    path: itemPath,
-  };
-  if (Number.isInteger(args.maxChars) && args.maxChars > 0) {
-    payload.maxChars = args.maxChars;
-  }
-  const response = await runPythonBridgeMeta(payload);
-  return {
-    content: response.content || "",
-    truncated: Boolean(response.truncated),
-    absolutePath: response.absolutePath || "",
-  };
-});
-
-ipcMain.handle("casefile:chooseInboxRoot", async () => {
-  // Reuse the same dialog as the lane-root picker so users get a
-  // consistent "pick a directory" experience for any external mount.
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ["openDirectory"],
-    title: "Choose inbox folder",
-  });
-  if (result.canceled || !result.filePaths[0]) return null;
-  return result.filePaths[0];
-});
-
 // ----- M3.5c: comparison-chat sessions -----
 
 function normalizeLaneIds(raw) {
   if (!Array.isArray(raw)) {
-    throw new Error("laneIds must be an array of at least two lane ids");
+    throw new Error("At least two context ids are required");
   }
   const ids = raw
     .filter((x) => typeof x === "string" && x.trim().length > 0)
     .map((x) => x.trim());
   if (ids.length < 2 || new Set(ids).size < 2) {
-    throw new Error("laneIds must contain at least two distinct ids");
+    throw new Error("At least two distinct contexts are required");
   }
   return ids;
 }

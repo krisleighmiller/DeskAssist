@@ -6,7 +6,6 @@ import {
 } from "../components/ChatTab";
 import type { AppShellProps } from "../components/AppShell";
 import type { OpenTab } from "../components/EditorPane";
-import type { RightTabKey } from "../components/RightPanel";
 import type { TerminalLaneContext } from "./useTerminalManager";
 import type {
   ApiKeyStatus,
@@ -19,7 +18,7 @@ import type {
   LaneUpdateInput,
   Provider,
   ProviderModels,
-  RegisterLaneInput,
+  RecentContext,
   ToolCall,
   UpdateLaneResult,
 } from "../types";
@@ -32,6 +31,7 @@ interface ShellViewModelState {
   provider: Provider;
   keyStatus: ApiKeyStatus;
   providerModels: ProviderModels;
+  recentContexts: RecentContext[];
   tree: FileTreeNode | null;
   treeError: string | null;
   comparisonSessions: ComparisonSession[];
@@ -41,15 +41,14 @@ interface ShellViewModelState {
   sessionMessages: ChatMessage[];
   sessionPendingApprovals: ToolCall[];
   chatBusy: boolean;
-  activePromptName: string | null;
   comparisonChatBusy: boolean;
-  activeRightTab: RightTabKey;
 }
 
 interface ShellViewModelActions {
   onProviderChange: (provider: Provider) => void;
   onChooseCasefile: () => void;
   onCloseCasefile: () => void;
+  onOpenRecentContext: (root: string, activeLaneId: string | null) => void | Promise<void>;
   onSwitchLane: (laneId: string) => void | Promise<void>;
   onStatusChange: (status: ApiKeyStatus) => void;
   onModelsChange: (models: ProviderModels) => void;
@@ -63,32 +62,19 @@ interface ShellViewModelActions {
   onTrashEntry?: (path: string) => Promise<void>;
   onCreateLaneFromPath?: (path: string, name: string) => Promise<void>;
   onAttachToLane?: (path: string, laneId: string, name: string) => Promise<void>;
-  onActiveRightTabChange: (tab: RightTabKey) => void;
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
   onEditTab: (key: string, content: string) => void;
   onSaveTab: (key: string) => void;
   onSelectComparisonSession: (comparisonId: string) => void;
   onCloseComparisonChat: (comparisonId: string) => void;
-  onClearActivePrompt: () => void;
   onSendMessage: (text: string) => void;
   onApproveTools: () => void;
   onDenyTools: () => void;
   onSendComparisonChat: (text: string) => void;
   onApproveComparisonTools: () => void;
   onDenyComparisonTools: () => void;
-  onRegisterLane: (input: RegisterLaneInput) => Promise<void>;
-  onChooseLaneRoot: () => Promise<string | null>;
-  onCompareLanes: (leftLaneId: string, rightLaneId: string) => Promise<void>;
-  onClearComparison: () => void;
-  onOpenDiff: (path: string) => void;
-  onOpenLaneFile: (laneId: string, path: string) => void;
   onOpenComparisonChat: (laneIds: string[]) => Promise<void>;
-  onSetLaneParent: (laneId: string, parentId: string | null) => Promise<void>;
-  onUpdateLaneAttachments: (
-    laneId: string,
-    attachments: LaneAttachmentInput[]
-  ) => Promise<void>;
   onUpdateComparisonAttachments: (
     laneIds: string[],
     attachments: LaneAttachmentInput[]
@@ -97,7 +83,6 @@ interface ShellViewModelActions {
   onRemoveLane: (laneId: string) => Promise<void>;
   onHardResetCasefile: () => Promise<void>;
   onSoftResetCasefile: (keepPrompts: boolean) => Promise<void>;
-  onSelectPromptForChat: (promptId: string | null) => void;
   /** Called when the user renames a lane via the file tree context menu. */
   onUpdateLaneName?: (laneId: string, newName: string) => Promise<void>;
   /** M3: add another directory to the active lane's AI scope. */
@@ -155,6 +140,8 @@ export function useAppShellProps({
       providerModels: state.providerModels,
       onChooseCasefile: actions.onChooseCasefile,
       onCloseCasefile: state.casefile ? actions.onCloseCasefile : undefined,
+      recentContexts: state.recentContexts,
+      onOpenRecentContext: actions.onOpenRecentContext,
       onSwitchLane: actions.onSwitchLane,
       onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
       onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,
@@ -256,8 +243,6 @@ export function useAppShellProps({
             busy: state.chatBusy,
             hasActiveLane: Boolean(state.activeLane),
             activeLane: state.activeLane,
-            activePromptName: state.activePromptName,
-            onClearActivePrompt: actions.onClearActivePrompt,
             onSend: actions.onSendMessage,
             onApproveTools: actions.onApproveTools,
             onDenyTools: actions.onDenyTools,
@@ -311,7 +296,5 @@ export function useAppShellProps({
     },
     activeLane: terminalLane,
     casefileRoot: state.casefile?.root ?? null,
-    activeRightTab: state.activeRightTab,
-    onActiveRightTabChange: actions.onActiveRightTabChange,
   };
 }

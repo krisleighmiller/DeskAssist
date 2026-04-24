@@ -4,12 +4,11 @@ import type {
   CasefileSnapshot,
   ChatMessage,
   LaneAttachmentInput,
-  RegisterLaneInput,
+  RecentContext,
 } from "./types";
 import { api } from "./lib/api";
 import { AppShell } from "./components/AppShell";
 import { InputDialog } from "./components/InputDialog";
-import type { RightTabKey } from "./components/RightPanel";
 import {
   EMPTY_LANE_SESSION,
   chatTurnDelta,
@@ -22,12 +21,66 @@ import { useAppShellProps } from "./hooks/useAppShellProps";
 import { useComparisons } from "./hooks/useComparisons";
 import { useContextAndOverlays } from "./hooks/useContextAndOverlays";
 import { useLaneWorkspace } from "./hooks/useLaneWorkspace";
-import { usePromptDrafts } from "./hooks/usePromptDrafts";
 import { useProviderSettings } from "./hooks/useProviderSettings";
+
+const RECENT_CONTEXTS_STORAGE_KEY = "deskassist:recentContexts";
+const MAX_RECENT_CONTEXTS = 8;
+
+function loadRecentContexts(): RecentContext[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RECENT_CONTEXTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is RecentContext => (
+        item &&
+        typeof item === "object" &&
+        typeof item.root === "string" &&
+        (typeof item.activeLaneId === "string" || item.activeLaneId === null) &&
+        (typeof item.activeLaneName === "string" || item.activeLaneName === null) &&
+        typeof item.updatedAt === "string"
+      ))
+      .slice(0, MAX_RECENT_CONTEXTS);
+  } catch {
+    return [];
+  }
+}
+
+function persistRecentContexts(contexts: RecentContext[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RECENT_CONTEXTS_STORAGE_KEY, JSON.stringify(contexts));
+  } catch {
+    // localStorage may be unavailable in restricted renderer contexts.
+  }
+}
+
+function upsertRecentContext(prev: RecentContext[], snapshot: CasefileSnapshot): RecentContext[] {
+  const activeLane = snapshot.activeLaneId
+    ? snapshot.lanes.find((lane) => lane.id === snapshot.activeLaneId) ?? null
+    : null;
+  const nextEntry: RecentContext = {
+    root: snapshot.root,
+    activeLaneId: activeLane?.id ?? snapshot.activeLaneId ?? null,
+    activeLaneName: activeLane?.name ?? null,
+    updatedAt: new Date().toISOString(),
+  };
+  const next = [
+    nextEntry,
+    ...prev.filter((entry) => entry.root !== snapshot.root),
+  ].slice(0, MAX_RECENT_CONTEXTS);
+  persistRecentContexts(next);
+  return next;
+}
 
 export function App(): JSX.Element {
   // ----- Casefile + active lane -----
   const [casefile, setCasefile] = useState<CasefileSnapshot | null>(null);
+  const [recentContexts, setRecentContexts] = useState<RecentContext[]>(
+    () => loadRecentContexts()
+  );
   const activeLaneId = casefile?.activeLaneId ?? null;
   const activeLane = activeLaneId
     ? casefile?.lanes.find((lane) => lane.id === activeLaneId) ?? null
@@ -114,40 +167,28 @@ export function App(): JSX.Element {
     providerModels,
     setProviderModels,
   } = useProviderSettings();
-  const {
-    selectedPromptId,
-    activePromptName,
-    handleSelectPromptForChat,
-  } = usePromptDrafts(casefile, sessionKey);
-
   // ----- Lane comparison -----
   const {
     comparisonSessions,
     setActiveComparisonId,
     comparisonChatBusy,
     focusedComparisonSession,
-    handleCompareLanes,
-    handleClearComparison,
     handleOpenComparisonChat,
     handleUpdateComparisonAttachments,
     handleCloseComparisonChat,
     sendComparisonChat,
     approveComparisonTools,
     denyComparisonTools,
-    handleOpenDiff,
     resetComparisonsForCasefile,
     clearActiveComparisonForLaneChat,
   } = useComparisons({
     casefile,
     provider,
     providerModels,
-    session,
-    updateSession,
     onError: (message) => setTreeError(message),
   });
 
   const {
-    handleSetLaneParent,
     handleUpdateLaneAttachments,
     handleUpdateLane,
     handleRemoveLane,
@@ -176,7 +217,6 @@ export function App(): JSX.Element {
     handleTrashEntry,
     handleCreateFile,
     handleCreateFolder,
-    handleOpenLaneFile,
   } = useLaneWorkspace({
     casefile,
     activeLane,
@@ -266,6 +306,27 @@ export function App(): JSX.Element {
     }
   }, [resetComparisonsForCasefile]);
 
+  const handleOpenRecentContext = useCallback(
+    async (root: string, preferredLaneId: string | null) => {
+      try {
+        const opened = await api().openCasefile(root);
+        let nextSnapshot = opened;
+        if (
+          preferredLaneId &&
+          opened.activeLaneId !== preferredLaneId &&
+          opened.lanes.some((lane) => lane.id === preferredLaneId)
+        ) {
+          nextSnapshot = await api().switchLane(preferredLaneId);
+        }
+        setCasefile(nextSnapshot);
+        resetComparisonsForCasefile();
+      } catch (error) {
+        setTreeError(errorMessage(error));
+      }
+    },
+    [resetComparisonsForCasefile]
+  );
+
   const handleSwitchLane = useCallback(
     async (laneId: string) => {
       if (!casefile || laneId === casefile.activeLaneId) return;
@@ -280,23 +341,16 @@ export function App(): JSX.Element {
     [casefile, clearActiveComparisonForLaneChat]
   );
 
-  const handleRegisterLane = useCallback(async (input: RegisterLaneInput) => {
-    try {
-      const snapshot = await api().registerLane(input);
-      setCasefile(snapshot);
-    } catch (error) {
-      setTreeError(errorMessage(error));
-      throw error;
-    }
-  }, []);
+  useEffect(() => {
+    if (!casefile) return;
+    setRecentContexts((prev) => upsertRecentContext(prev, casefile));
+  }, [casefile]);
 
   const handleChooseLaneRoot = useCallback(async () => {
     return api().chooseLaneRoot();
   }, []);
 
-  // ----- M2: right-panel tab + browser-driven lane actions -----
-
-  const [activeRightTab, setActiveRightTab] = useState<RightTabKey>("chat");
+  // ----- Browser-driven context actions -----
 
   const resetCasefileState = useCallback(() => {
     setCasefile(null);
@@ -304,9 +358,7 @@ export function App(): JSX.Element {
     setTreeError(null);
     setLaneSessions(new Map());
     resetComparisonsForCasefile();
-    handleSelectPromptForChat(null);
-    setActiveRightTab("chat");
-  }, [handleSelectPromptForChat, resetComparisonsForCasefile, setTree]);
+  }, [resetComparisonsForCasefile, setTree]);
 
   const handleCloseCasefile = useCallback(async () => {
     if (!casefile) return;
@@ -348,7 +400,7 @@ export function App(): JSX.Element {
       );
       if (existing.some((a) => a.name === name)) {
         setTreeError(
-          `Lane "${lane.name}" already has an attachment named "${name}".`
+          `Context "${lane.name}" already has an attachment named "${name}".`
         );
         return;
       }
@@ -420,12 +472,12 @@ export function App(): JSX.Element {
       if (!casefile) return;
       const root = await handleChooseLaneRoot();
       if (!root) return;
-      const defaultName = root.split(/[\\/]/).pop() ?? "lane";
+      const defaultName = root.split(/[\\/]/).pop() ?? "context";
       const name = await promptGlobal({
-        title: "Create lane",
-        message: "Name for the new lane.",
+        title: "Create context",
+        message: "Name for the new context.",
         defaultValue: defaultName,
-        confirmLabel: "Create lane",
+        confirmLabel: "Create context",
       });
       if (!name?.trim()) return;
       try {
@@ -447,8 +499,8 @@ export function App(): JSX.Element {
       // Ask which lane to attach to.
       const laneNames = casefile.lanes.map((l) => l.name).join(" / ");
       const laneName = await promptGlobal({
-        title: "Attach to lane",
-        message: `Enter the lane name to attach to (${laneNames}):`,
+        title: "Attach to context",
+        message: `Enter the context name to attach to (${laneNames}):`,
         defaultValue: casefile.lanes[0]?.name ?? "",
         confirmLabel: "Next",
       });
@@ -457,7 +509,7 @@ export function App(): JSX.Element {
         (l) => l.name.toLowerCase() === laneName.trim().toLowerCase()
       );
       if (!targetLane) {
-        setTreeError(`No lane named "${laneName.trim()}".`);
+        setTreeError(`No context named "${laneName.trim()}".`);
         return;
       }
       const defaultLabel = root.split(/[\\/]/).pop() ?? "attachment";
@@ -482,8 +534,8 @@ export function App(): JSX.Element {
     const unsub = api().onLaneRename(async () => {
       if (!activeLane) return;
       const name = await promptGlobal({
-        title: "Rename lane",
-        message: "Enter the new lane name.",
+        title: "Rename context",
+        message: "Enter the new context name.",
         defaultValue: activeLane.name,
         confirmLabel: "Rename",
       });
@@ -512,7 +564,7 @@ export function App(): JSX.Element {
     const unsub = api().onLaneRemove(() => {
       if (!activeLane) return;
       const ok = window.confirm(
-        `Remove lane "${activeLane.name}"?\n\nThis removes it from the casefile but does not delete any files.`
+        `Remove context "${activeLane.name}"?\n\nThis removes it from the workspace but does not delete any files.`
       );
       if (!ok) return;
       void handleRemoveLane(activeLane.id);
@@ -525,7 +577,7 @@ export function App(): JSX.Element {
     const unsub = api().onCasefileSoftReset(() => {
       if (!casefile) return;
       const ok = window.confirm(
-        "Soft reset clears lane registrations and chat history metadata. Files on disk are preserved."
+        "Soft reset clears context registrations and chat history metadata. Files on disk are preserved."
       );
       if (!ok) return;
       void handleSoftResetCasefile(false);
@@ -538,7 +590,7 @@ export function App(): JSX.Element {
     const unsub = api().onCasefileHardReset(() => {
       if (!casefile) return;
       const ok = window.confirm(
-        "Hard reset deletes the entire .casefile metadata folder.\n\nConversation history, lane registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
+        "Hard reset deletes the workspace metadata folder (.casefile).\n\nConversation history, context registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
       );
       if (!ok) return;
       void handleHardResetCasefile();
@@ -580,7 +632,6 @@ export function App(): JSX.Element {
           userMessage: value,
           allowWriteTools: false,
           resumePendingToolCalls: false,
-          systemPromptId: selectedPromptId,
         });
         const nextMessages = normalizeChatTurn(historyBeforeTurn, value, response);
         const nextPending = Array.isArray(response.pendingApprovals)
@@ -619,7 +670,6 @@ export function App(): JSX.Element {
       updateSession,
       provider,
       providerModels,
-      selectedPromptId,
       refreshTree,
       refreshOpenTabsFromDisk,
     ]
@@ -644,7 +694,6 @@ export function App(): JSX.Element {
         userMessage: "",
         allowWriteTools: activeLaneHasWritableScope,
         resumePendingToolCalls: true,
-        systemPromptId: selectedPromptId,
       });
       // Accept both the preferred `messages` array and the legacy
       // single `message` form. Without this fallback, a bridge that
@@ -682,7 +731,6 @@ export function App(): JSX.Element {
     activeLaneHasWritableScope,
     provider,
     providerModels,
-    selectedPromptId,
     updateSession,
     refreshTree,
     refreshOpenTabsFromDisk,
@@ -718,6 +766,7 @@ export function App(): JSX.Element {
       provider,
       keyStatus,
       providerModels,
+      recentContexts,
       tree,
       treeError,
       comparisonSessions,
@@ -727,14 +776,13 @@ export function App(): JSX.Element {
       sessionMessages: session.messages,
       sessionPendingApprovals: session.pendingApprovals,
       chatBusy,
-      activePromptName,
       comparisonChatBusy,
-      activeRightTab,
     },
     actions: {
       onProviderChange: setProvider,
       onChooseCasefile: handleChooseCasefile,
       onCloseCasefile: handleCloseCasefile,
+      onOpenRecentContext: handleOpenRecentContext,
       onSwitchLane: handleSwitchLane,
       onStatusChange: setKeyStatus,
       onModelsChange: setProviderModels,
@@ -749,35 +797,24 @@ export function App(): JSX.Element {
       onCreateLaneFromPath: handleCreateLaneFromPath,
       onAttachToLane: handleAttachToLane,
       onAddAttachment: handleAttachToLane,
-      onActiveRightTabChange: setActiveRightTab,
       onSelectTab: handleSelectTab,
       onCloseTab: handleCloseTab,
       onEditTab: handleEditTab,
       onSaveTab: handleSaveTab,
       onSelectComparisonSession: setActiveComparisonId,
       onCloseComparisonChat: handleCloseComparisonChat,
-      onClearActivePrompt: () => handleSelectPromptForChat(null),
       onSendMessage: sendMessage,
       onApproveTools: approveTools,
       onDenyTools: denyTools,
       onSendComparisonChat: sendComparisonChat,
       onApproveComparisonTools: approveComparisonTools,
       onDenyComparisonTools: denyComparisonTools,
-      onRegisterLane: handleRegisterLane,
-      onChooseLaneRoot: handleChooseLaneRoot,
-      onCompareLanes: handleCompareLanes,
-      onClearComparison: handleClearComparison,
-      onOpenDiff: handleOpenDiff,
-      onOpenLaneFile: handleOpenLaneFile,
       onOpenComparisonChat: handleOpenComparisonChat,
-      onSetLaneParent: handleSetLaneParent,
-      onUpdateLaneAttachments: handleUpdateLaneAttachments,
       onUpdateComparisonAttachments: handleUpdateComparisonAttachments,
       onUpdateLane: handleUpdateLane,
       onRemoveLane: handleRemoveLane,
       onHardResetCasefile: handleHardResetCasefile,
       onSoftResetCasefile: handleSoftResetCasefile,
-      onSelectPromptForChat: handleSelectPromptForChat,
       onUpdateLaneName: async (laneId: string, newName: string) => {
         await handleUpdateLane(laneId, { name: newName });
       },

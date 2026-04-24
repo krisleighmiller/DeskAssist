@@ -142,7 +142,7 @@ export function SaveOutputPicker({
                   onClick={() => choose(lane.root, `${lane.name} · root`)}
                   title={lane.root}
                 >
-                  <span className="chat-save-output-row-name">lane root</span>
+                  <span className="chat-save-output-row-name">context root</span>
                   <span className="chat-save-output-row-path">{lane.root}</span>
                 </button>
                 {attachments.map((att) => (
@@ -159,7 +159,7 @@ export function SaveOutputPicker({
                 ))}
                 {attachments.length === 0 && (
                   <span className="chat-save-output-empty">
-                    No attachments configured for this lane.
+                    No attachments configured for this context.
                   </span>
                 )}
               </div>

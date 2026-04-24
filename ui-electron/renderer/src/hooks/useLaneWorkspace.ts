@@ -298,18 +298,6 @@ export function useLaneWorkspace({
               key: rewriteTabKeyForRename(tab.key, tab.path, rewrittenPath),
             };
           }
-          if (tab.kind === "diff" && isPathOrDescendant(tab.path, oldPath)) {
-            // Diff tabs are read-only snapshots, but the displayed
-            // path label and the tab key both encode the old name
-            // and would be misleading after the move.
-            touched = true;
-            const rewrittenPath = rewriteDescendantPath(tab.path, oldPath, newPath);
-            return {
-              ...tab,
-              path: rewrittenPath,
-              key: rewriteTabKeyForRename(tab.key, tab.path, rewrittenPath),
-            };
-          }
           return tab;
         });
         if (touched) {
@@ -452,46 +440,6 @@ export function useLaneWorkspace({
     [refreshTree, setTreeError]
   );
 
-  const handleOpenLaneFile = useCallback(
-    async (laneId: string, path: string) => {
-      if (!casefile) return;
-      const lane = casefile.lanes.find((entry) => entry.id === laneId);
-      if (!lane) return;
-      const key = fileTabKey(laneId, path);
-      if (session.tabs.some((tab) => tab.key === key)) {
-        updateSession((prev) => ({ ...prev, activeTabKey: key }));
-        return;
-      }
-      try {
-        const result = await api().readLaneFile(laneId, path);
-        const finalKey = fileTabKey(laneId, result.path);
-        updateSession((prev) => {
-          if (prev.tabs.some((tab) => tab.key === finalKey)) {
-            return { ...prev, activeTabKey: finalKey };
-          }
-          return {
-            ...prev,
-            tabs: [
-              ...prev.tabs,
-              {
-                kind: "file",
-                key: finalKey,
-                path: result.path,
-                content: result.content,
-                savedContent: result.content,
-                truncated: result.truncated,
-              },
-            ],
-            activeTabKey: finalKey,
-          };
-        });
-      } catch (error) {
-        setTreeError(errorMessage(error));
-      }
-    },
-    [casefile, session.tabs, setTreeError, updateSession]
-  );
-
   return {
     tree,
     setTree,
@@ -508,6 +456,5 @@ export function useLaneWorkspace({
     handleTrashEntry,
     handleCreateFile,
     handleCreateFolder,
-    handleOpenLaneFile,
   };
 }

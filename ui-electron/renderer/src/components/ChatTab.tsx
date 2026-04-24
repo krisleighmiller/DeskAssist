@@ -92,10 +92,6 @@ interface LaneChatProps {
   /** Lane currently driving this chat (used for the Save... picker
    * destinations and as the Send target). */
   activeLane: Lane | null;
-  /** M4.1: name of the system prompt currently injected into this lane's
-   * chat (or null if none). Shown as a small badge in the controls strip. */
-  activePromptName: string | null;
-  onClearActivePrompt: () => void;
   onSend: (text: string) => void;
   onApproveTools: () => void;
   onDenyTools: () => void;
@@ -677,7 +673,7 @@ function LaneChatBody({
       <div className="chat-controls">
         {!chat.hasActiveLane ? (
           <span style={{ color: "#fbbf24" }}>
-            Open a casefile and select a lane to start a chat.
+            Open a workspace and select a context to start a chat.
           </span>
         ) : keyMissing ? (
           <span style={{ color: "#fbbf24" }}>
@@ -685,20 +681,6 @@ function LaneChatBody({
           </span>
         ) : (
           <span style={{ color: "#9ca3af" }}>Provider: {chat.provider}</span>
-        )}
-        {chat.activePromptName && (
-          <span className="chat-prompt-badge" title="System prompt injected this turn">
-            Prompt: {chat.activePromptName}
-            <button
-              type="button"
-              className="chat-prompt-clear"
-              onClick={chat.onClearActivePrompt}
-              disabled={chat.busy}
-              title="Clear system prompt"
-            >
-              ×
-            </button>
-          </span>
         )}
         {chat.busy && (
           <span
@@ -732,7 +714,7 @@ function LaneChatBody({
           <div style={{ color: "#6b7280", fontStyle: "italic" }}>
             {chat.hasActiveLane
               ? "No messages yet. This single-context chat can only use the AI scope listed above; add a related directory if the model needs more context."
-              : "No active lane."}
+              : "No active context."}
           </div>
         )}
         {chat.messages.map((msg, idx) => (
@@ -833,7 +815,7 @@ function LaneChatBody({
           placeholder={
             chat.hasActiveLane
               ? "Ask about your workspace… type @ to include a file"
-              : "Open a casefile to enable chat..."
+              : "Open a workspace to enable chat..."
           }
           disabled={inputDisabled}
         />
@@ -1008,7 +990,7 @@ function CompareChatBody({
         <span style={{ color: "#9ca3af", fontSize: 12 }}>
           {writableEntryCount > 0
             ? `${writableEntryCount} scoped director${writableEntryCount === 1 ? "y is" : "ies are"} writable; write tools still require approval.`
-            : `No writable scoped directories across ${chat.session.laneIds.length} lanes and comparison attachments.`}
+            : `No writable scoped directories across ${chat.session.laneIds.length} contexts and comparison attachments.`}
         </span>
         {keyMissing && (
           <span style={{ color: "#fbbf24" }}>

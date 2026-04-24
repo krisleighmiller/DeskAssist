@@ -38,51 +38,14 @@ contextBridge.exposeInMainWorld("assistantApi", {
   undoLastTrash: () => ipcRenderer.invoke("file:undoLastTrash"),
   trashUndoStatus: () => ipcRenderer.invoke("file:undoStatus"),
 
-  // Notes, comparison (M3).
-  getNote: (laneId) => ipcRenderer.invoke("casefile:getNote", { laneId }),
-  saveNote: (laneId, content) => ipcRenderer.invoke("casefile:saveNote", { laneId, content }),
-  compareLanes: (leftLaneId, rightLaneId) =>
-    ipcRenderer.invoke("casefile:compareLanes", { leftLaneId, rightLaneId }),
   // Persist a chat message body to a user-chosen directory (lane attachment
   // or anywhere else). The directory must already exist; the bridge refuses
   // to overwrite an existing file.
   saveChatOutput: (payload) => ipcRenderer.invoke("chat:saveOutput", payload),
-  readLaneFile: (laneId, path, maxChars) =>
-    ipcRenderer.invoke("lane:readFile", { laneId, path, maxChars }),
 
-  // M3.5: hierarchical scope, attachments, context manifest, overlay reads.
-  setLaneParent: (laneId, parentId) =>
-    ipcRenderer.invoke("casefile:setLaneParent", { laneId, parentId }),
+  // M3.5: context attachments.
   updateLaneAttachments: (laneId, attachments) =>
     ipcRenderer.invoke("casefile:updateLaneAttachments", { laneId, attachments }),
-  getContext: () => ipcRenderer.invoke("casefile:getContext"),
-  saveContext: (manifest) => ipcRenderer.invoke("casefile:saveContext", { manifest }),
-  resolveScope: (laneId) => ipcRenderer.invoke("casefile:resolveScope", { laneId }),
-  listOverlayTrees: (laneId, maxDepth) =>
-    ipcRenderer.invoke("casefile:listOverlayTrees", { laneId, maxDepth }),
-  readOverlayFile: (laneId, path, maxChars) =>
-    ipcRenderer.invoke("casefile:readOverlayFile", { laneId, path, maxChars }),
-
-  // M4.1: prompt drafts (casefile-scoped).
-  listPrompts: () => ipcRenderer.invoke("casefile:listPrompts"),
-  getPrompt: (promptId) => ipcRenderer.invoke("casefile:getPrompt", { promptId }),
-  createPrompt: (prompt) => ipcRenderer.invoke("casefile:createPrompt", { prompt }),
-  savePrompt: (promptId, prompt) =>
-    ipcRenderer.invoke("casefile:savePrompt", { promptId, prompt }),
-  deletePrompt: (promptId) => ipcRenderer.invoke("casefile:deletePrompt", { promptId }),
-
-  // M4.3: external local-directory inboxes.
-  listInboxSources: () => ipcRenderer.invoke("casefile:listInboxSources"),
-  addInboxSource: (input) => ipcRenderer.invoke("casefile:addInboxSource", input),
-  updateInboxSource: (sourceId, update) =>
-    ipcRenderer.invoke("casefile:updateInboxSource", { sourceId, ...update }),
-  removeInboxSource: (sourceId) =>
-    ipcRenderer.invoke("casefile:removeInboxSource", { sourceId }),
-  listInboxItems: (sourceId, maxDepth) =>
-    ipcRenderer.invoke("casefile:listInboxItems", { sourceId, maxDepth }),
-  readInboxItem: (sourceId, path, maxChars) =>
-    ipcRenderer.invoke("casefile:readInboxItem", { sourceId, path, maxChars }),
-  chooseInboxRoot: () => ipcRenderer.invoke("casefile:chooseInboxRoot"),
 
   // Chat (against the currently active casefile + lane).
   sendChat: (payload) => ipcRenderer.invoke("chat:send", payload),

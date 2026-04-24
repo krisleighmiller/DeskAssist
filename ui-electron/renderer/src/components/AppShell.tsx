@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import { useTerminalManager, type TerminalLaneContext } from "../hooks/useTerminalManager";
 import { useWorkbenchLayout } from "../hooks/useWorkbenchLayout";
 import { ApiKeysDialog } from "./ApiKeysDialog";
-import { RightPanel, type RightTabKey } from "./RightPanel";
+import { RightPanel } from "./RightPanel";
 import { Toolbar } from "./Toolbar";
 import { WorkbenchShell } from "./WorkbenchShell";
 
@@ -16,7 +16,7 @@ type ToolbarBaseProps = Omit<
 
 type RightPanelBaseProps = Omit<
   ComponentProps<typeof RightPanel>,
-  "activeTab" | "onTabChange" | "onCollapse"
+  "onCollapse"
 >;
 
 export interface AppShellProps {
@@ -30,13 +30,6 @@ export interface AppShellProps {
   apiKeysDialog: Omit<ComponentProps<typeof ApiKeysDialog>, "onClose">;
   activeLane: TerminalLaneContext | null;
   casefileRoot: string | null;
-  /** M2: right-panel tab state is owned by `App` so non-RightPanel
-   * surfaces (the FileTree's "Compare with…" action) can switch tabs
-   * after triggering an action. The auto-switch effect below still
-   * lives here because it reacts to comparison session changes that
-   * AppShell already routes through. */
-  activeRightTab: RightTabKey;
-  onActiveRightTabChange: (tab: RightTabKey) => void;
 }
 
 export function AppShell({
@@ -45,8 +38,6 @@ export function AppShell({
   apiKeysDialog,
   activeLane,
   casefileRoot,
-  activeRightTab,
-  onActiveRightTabChange,
 }: AppShellProps): JSX.Element {
   const {
     leftPaneWidth,
@@ -85,17 +76,6 @@ export function AppShell({
     };
   }, []);
 
-  // Auto-switch to the chat tab when the focused session becomes a
-  // comparison session — comparison chats are only visible inside the
-  // chat tab, and a freshly-opened compare-chat would otherwise stay
-  // hidden behind whichever tab the user was previously on.
-  useEffect(() => {
-    const activeSessionId = workbench.rightPanel.chat.activeSessionId;
-    if (activeSessionId?.startsWith("compare:")) {
-      onActiveRightTabChange("chat");
-    }
-  }, [workbench.rightPanel.chat.activeSessionId, onActiveRightTabChange]);
-
   return (
     <div className="app">
       <Toolbar
@@ -118,11 +98,7 @@ export function AppShell({
         onShowRightPane={() => setRightPaneCollapsed(false)}
         onToggleRightPane={toggleRightPane}
         onResizeRightPane={setRightPaneWidth}
-        rightPanel={{
-          ...workbench.rightPanel,
-          activeTab: activeRightTab,
-          onTabChange: onActiveRightTabChange,
-        }}
+        rightPanel={workbench.rightPanel}
         terminalOpen={terminalOpen}
         terminalHeight={terminalHeight}
         onResizeTerminal={setTerminalHeight}

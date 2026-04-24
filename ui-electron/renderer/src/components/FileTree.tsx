@@ -290,7 +290,7 @@ function TreeNode({
             share the same single-glyph leading column. */}
         <span className="twisty">{isOpen ? "▾" : "▸"}</span>
         <span>{node.name}</span>
-        {laneBadge && <span className="lane-badge" title={`Lane: ${laneBadge}`}>lane</span>}
+        {laneBadge && <span className="lane-badge" title={`Context: ${laneBadge}`}>context</span>}
       </div>
       {isOpen && sorted.length > 0 && (
         <div>
@@ -493,12 +493,12 @@ function CompareLaneDialog({
       >
         <h3>Open compare chat</h3>
         <p className="muted">
-          <span className="compare-lanes-source">Source lane: {sourceLaneName}</span>
+          <span className="compare-lanes-source">Source context: {sourceLaneName}</span>
           <br />
-          Choose one or more additional lanes to include in this scoped comparison chat.
+          Choose one or more additional contexts to include in this scoped comparison chat.
         </p>
         <form onSubmit={submit}>
-          <div className="compare-lanes-list" role="group" aria-label="Lanes to compare">
+          <div className="compare-lanes-list" role="group" aria-label="Contexts to compare">
             {candidates.map((lane) => (
               <label key={lane.id} className="compare-lanes-option">
                 <input
@@ -1135,14 +1135,14 @@ export function FileTree({
                 const current = relativeFromBase(target.path, casefileRoot);
                 if (current == null || current === ".") {
                   window.alert(
-                    "This entry isn't inside the current casefile."
+                    "This entry isn't inside the current workspace."
                   );
                   return;
                 }
                 void (async () => {
                   const proposed = await promptForInput({
                     title: `Move "${target.name}"`,
-                    message: "Type the new casefile-relative path.",
+                    message: "Type the new workspace-relative path.",
                     defaultValue: current,
                     confirmLabel: "Move",
                   });
@@ -1221,16 +1221,16 @@ export function FileTree({
       !laneRootByPath.has(menu.node.path)
         ? [
             {
-              label: "Create lane here…",
+              label: "Create context here…",
               onSelect: () => {
                 const target = menu.node;
                 const defaultName = target.name;
                 void (async () => {
                   const name = await promptForInput({
-                    title: "Create lane",
-                    message: "Name for the new lane.",
+                    title: "Create context",
+                    message: "Name for the new context.",
                     defaultValue: defaultName,
-                    confirmLabel: "Create lane",
+                    confirmLabel: "Create context",
                   });
                   if (name == null) return;
                   const trimmed = name.trim();
@@ -1259,7 +1259,7 @@ export function FileTree({
             if (!laneId || alreadyActive) return [];
             return [
               {
-                label: "Set as active lane",
+                label: "Set as active context",
                 onSelect: () => {
                   void Promise.resolve(onSwitchLane(laneId)).catch((err) => {
                     console.error("FileTree switch lane failed:", err);
@@ -1280,12 +1280,12 @@ export function FileTree({
             if (!laneId) return [];
             return [
               {
-                label: "Rename lane…",
+                label: "Rename context…",
                 onSelect: () => {
                   void (async () => {
                     const name = await promptForInput({
-                      title: "Rename lane",
-                      message: "Enter the new lane name.",
+                      title: "Rename context",
+                      message: "Enter the new context name.",
                       defaultValue: currentLaneName,
                       confirmLabel: "Rename",
                     });
@@ -1314,10 +1314,10 @@ export function FileTree({
             if (!laneId) return [];
             return [
               {
-                label: "Remove lane",
+                label: "Remove context",
                 onSelect: () => {
                   const ok = window.confirm(
-                    `Remove lane "${laneName}"?\n\nThis removes it from the casefile but does not delete any files.`
+                    `Remove context "${laneName}"?\n\nThis removes it from the workspace but does not delete any files.`
                   );
                   if (!ok) return;
                   void Promise.resolve(onRemoveLane(laneId)).catch((err) => {
@@ -1360,10 +1360,10 @@ export function FileTree({
             ...(onSoftResetCasefile
               ? [
                   {
-                    label: "Reset casefile (soft)…",
+                    label: "Reset workspace (soft)…",
                     onSelect: () => {
                       const ok = window.confirm(
-                        "Soft reset clears lane registrations and chat history metadata. Files on disk are preserved."
+                        "Soft reset clears context registrations and chat history metadata. Files on disk are preserved."
                       );
                       if (!ok) return;
                       void Promise.resolve(onSoftResetCasefile()).catch((err) => {
@@ -1376,10 +1376,10 @@ export function FileTree({
             ...(onHardResetCasefile
               ? [
                   {
-                    label: "Hard reset casefile…",
+                    label: "Hard reset workspace…",
                     onSelect: () => {
                       const ok = window.confirm(
-                        "Hard reset deletes the entire .casefile metadata folder.\n\nConversation history, lane registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
+                        "Hard reset deletes the workspace metadata folder (.casefile).\n\nConversation history, context registrations, and settings will be permanently removed. Files on disk are preserved.\n\nThis cannot be undone. Continue?"
                       );
                       if (!ok) return;
                       void Promise.resolve(onHardResetCasefile()).catch((err) => {
@@ -1399,7 +1399,7 @@ export function FileTree({
       !menu.node.path.startsWith("_")
         ? [
             {
-              label: "Attach to lane…",
+              label: "Attach to context…",
               onSelect: () => {
                 const target = menu.node;
                 const attachableLanes = lanes.filter(
@@ -1415,7 +1415,7 @@ export function FileTree({
                         const label = await promptForInput({
                           title: `Attach "${target.name}" to "${lane.name}"`,
                           message:
-                            "Attachment label — how this directory will be referenced in the lane's scope.",
+                            "Attachment label — how this directory will be referenced in the context's scope.",
                           defaultValue: target.name,
                           confirmLabel: "Attach",
                         });
@@ -1507,7 +1507,7 @@ export function FileTree({
             {(() => {
               const defaultTarget = activeLaneRoot ?? casefileRoot ?? null;
               if (!defaultTarget) return null;
-              const targetLabel = activeLaneRoot ? "lane root" : "casefile root";
+              const targetLabel = activeLaneRoot ? "context root" : "workspace root";
               return (
                 <>
                   {onCreateFile && (

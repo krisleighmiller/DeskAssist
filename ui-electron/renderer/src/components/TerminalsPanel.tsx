@@ -311,7 +311,7 @@ export function TerminalsPanel({
           className="terminal-tab-new"
           onClick={onNew}
           aria-label="New terminal"
-          title="New terminal in active lane"
+          title="New terminal in active context"
         >
           +
         </button>

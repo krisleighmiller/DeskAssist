@@ -29,20 +29,6 @@ export function useContextAndOverlays({
 }: UseContextAndOverlaysArgs) {
   const casefileRoot = casefile?.root ?? null;
 
-  const handleSetLaneParent = useCallback(
-    async (laneId: string, parentId: string | null) => {
-      try {
-        const snapshot = await api().setLaneParent(laneId, parentId);
-        onCasefileChange(snapshot);
-      } catch (error) {
-        const message = errorMessage(error);
-        onError(message);
-        throw error;
-      }
-    },
-    [onCasefileChange, onError]
-  );
-
   const handleUpdateLaneAttachments = useCallback(
     async (laneId: string, attachments: LaneAttachmentInput[]) => {
       try {
@@ -126,7 +112,6 @@ export function useContextAndOverlays({
   }, [casefileRoot]);
 
   return {
-    handleSetLaneParent,
     handleUpdateLaneAttachments,
     handleUpdateLane,
     handleRemoveLane,

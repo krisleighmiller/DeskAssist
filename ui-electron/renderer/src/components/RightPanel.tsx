@@ -10,17 +10,7 @@ import type {
 } from "../types";
 import { ChatTab, type ChatSessionId } from "./ChatTab";
 
-/** M2.5: the right panel now has only one surface — the chat view.
- * `RightTabKey` is kept as a single-value union so existing call sites
- * that pass `activeTab`/`onTabChange` still type-check without requiring
- * a cascade of refactors.  The tab bar itself is gone; the collapse button
- * is the only control that remains in the panel header. */
-export type RightTabKey = "chat";
-
 interface RightPanelProps {
-  /** Always "chat"; kept for backward-compat with AppShell/WorkbenchShell. */
-  activeTab: RightTabKey;
-  onTabChange: (tab: RightTabKey) => void;
   onCollapse?: () => void;
   chat: {
     casefile: CasefileSnapshot | null;
@@ -36,8 +26,6 @@ interface RightPanelProps {
       busy: boolean;
       hasActiveLane: boolean;
       activeLane: Lane | null;
-      activePromptName: string | null;
-      onClearActivePrompt: () => void;
       onSend: (text: string) => void;
       onApproveTools: () => void;
       onDenyTools: () => void;

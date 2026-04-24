@@ -1,25 +1,12 @@
 import { useEffect } from "react";
-import Editor, { DiffEditor } from "@monaco-editor/react";
+import Editor from "@monaco-editor/react";
 import { languageFromPath } from "../lib/language";
 
 /**
- * The editor pane supports two kinds of tabs:
- *
- *   - `file`: a regular Monaco editor tied to a file inside a lane.
- *     `path` is the absolute on-disk path; `content` is the in-memory
- *     buffer and `savedContent` is what was last persisted, so dirty
- *     state is `content !== savedContent`.
- *
- *   - `diff`: a Monaco DiffEditor showing the same relative path across
- *     two lanes (M3 lane comparison). Diff tabs are read-only snapshots
- *     and have no dirty state. They are intentionally NOT refreshed by
- *     the workspace-changed feed; re-open the diff to see fresh content.
- *
- * Each tab also carries an opaque `key` produced by the helpers in
- * `hooks/appModelTypes.ts` (`fileTabKey`, `overlayTabKey`,
- * `diffTabKey`). All three encode the lane id so opening the same
- * file from two UI surfaces reuses one buffer instead of producing
- * two disconnected ones.
+ * Regular Monaco editor tab tied to a file inside a context.
+ * `path` is the absolute on-disk path; `content` is the in-memory
+ * buffer and `savedContent` is what was last persisted, so dirty
+ * state is `content !== savedContent`.
  */
 export interface FileTab {
   kind: "file";
@@ -31,20 +18,7 @@ export interface FileTab {
   truncated: boolean;
 }
 
-export interface DiffTab {
-  kind: "diff";
-  key: string; // synthetic: diff:leftId:rightId:path
-  path: string; // relative path inside both lanes
-  leftLaneId: string;
-  rightLaneId: string;
-  leftLaneName: string;
-  rightLaneName: string;
-  leftContent: string;
-  rightContent: string;
-  language: string;
-}
-
-export type OpenTab = FileTab | DiffTab;
+export type OpenTab = FileTab;
 
 interface EditorPaneProps {
   tabs: OpenTab[];
@@ -60,12 +34,11 @@ function basename(p: string): string {
 }
 
 function tabLabel(tab: OpenTab): string {
-  if (tab.kind === "file") return basename(tab.path);
-  return `${basename(tab.path)} · diff(${tab.leftLaneId}↔${tab.rightLaneId})`;
+  return basename(tab.path);
 }
 
 function isDirty(tab: OpenTab): boolean {
-  return tab.kind === "file" && tab.content !== tab.savedContent;
+  return tab.content !== tab.savedContent;
 }
 
 export function EditorPane({
@@ -79,12 +52,11 @@ export function EditorPane({
   const active = tabs.find((t) => t.key === activeKey) ?? null;
   const dirty = active ? isDirty(active) : false;
 
-  // Keyboard shortcut: Ctrl/Cmd+S saves the active file tab. Diff tabs are
-  // read-only so the shortcut is intentionally a no-op for them.
+  // Keyboard shortcut: Ctrl/Cmd+S saves the active file tab.
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
-        if (active && active.kind === "file" && dirty) {
+        if (active && dirty) {
           event.preventDefault();
           onSave(active.key);
         }
@@ -107,9 +79,9 @@ export function EditorPane({
             return (
               <div
                 key={tab.key}
-                className={`tab${isActive ? " active" : ""}${tab.kind === "diff" ? " diff" : ""}`}
+                className={`tab${isActive ? " active" : ""}`}
                 onClick={() => onSelectTab(tab.key)}
-                title={tab.kind === "file" ? tab.path : `${tab.leftLaneId} ↔ ${tab.rightLaneId} : ${tab.path}`}
+                title={tab.path}
               >
                 <span>{tabLabel(tab)}</span>
                 {isDirty(tab) && <span className="dirty-dot">●</span>}
@@ -129,65 +101,37 @@ export function EditorPane({
       </div>
       <div className="editor-host">
         {active ? (
-          active.kind === "file" ? (
-            <Editor
-              theme="vs-dark"
-              path={active.path}
-              language={languageFromPath(active.path)}
-              value={active.content}
-              onChange={(value) => onEdit(active.key, value ?? "")}
-              options={{
-                automaticLayout: true,
-                minimap: { enabled: false },
-                fontSize: 13,
-                tabSize: 2,
-                scrollBeyondLastLine: false,
-                wordWrap: "off",
-              }}
-            />
-          ) : (
-            <DiffEditor
-              theme="vs-dark"
-              language={active.language}
-              original={active.leftContent}
-              modified={active.rightContent}
-              options={{
-                automaticLayout: true,
-                readOnly: true,
-                renderSideBySide: true,
-                minimap: { enabled: false },
-                fontSize: 13,
-                originalEditable: false,
-              }}
-            />
-          )
+          <Editor
+            theme="vs-dark"
+            path={active.path}
+            language={languageFromPath(active.path)}
+            value={active.content}
+            onChange={(value) => onEdit(active.key, value ?? "")}
+            options={{
+              automaticLayout: true,
+              minimap: { enabled: false },
+              fontSize: 13,
+              tabSize: 2,
+              scrollBeyondLastLine: false,
+              wordWrap: "off",
+            }}
+          />
         ) : (
           <div className="editor-empty">Open a file from the workspace tree.</div>
         )}
       </div>
       <div className="editor-status">
         {active ? (
-          active.kind === "file" ? (
-            <>
-              <span title={active.path}>{basename(active.path)}</span>
-              <span>{languageFromPath(active.path)}</span>
-              {active.truncated && <span className="truncated">truncated</span>}
-              <span style={{ marginLeft: "auto" }}>
-                <button type="button" disabled={!dirty} onClick={() => onSave(active.key)}>
-                  {dirty ? "Save (Ctrl+S)" : "Saved"}
-                </button>
-              </span>
-            </>
-          ) : (
-            <>
-              <span title={active.path}>{basename(active.path)}</span>
-              <span>{active.language}</span>
-              <span className="diff-meta">
-                {active.leftLaneName} ↔ {active.rightLaneName}
-              </span>
-              <span style={{ marginLeft: "auto", color: "#6b7280" }}>read-only diff</span>
-            </>
-          )
+          <>
+            <span title={active.path}>{basename(active.path)}</span>
+            <span>{languageFromPath(active.path)}</span>
+            {active.truncated && <span className="truncated">truncated</span>}
+            <span style={{ marginLeft: "auto" }}>
+              <button type="button" disabled={!dirty} onClick={() => onSave(active.key)}>
+                {dirty ? "Save (Ctrl+S)" : "Saved"}
+              </button>
+            </span>
+          </>
         ) : (
           <span>No file selected</span>
         )}

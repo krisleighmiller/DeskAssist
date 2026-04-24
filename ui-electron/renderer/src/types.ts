@@ -23,12 +23,6 @@ export interface ChatSendPayload {
   userMessage: string;
   allowWriteTools: boolean;
   resumePendingToolCalls: boolean;
-  /**
-   * M4.1: id of a casefile-level prompt draft to inject as a system message
-   * before the user turn. Idempotent across resumed turns (the bridge
-   * skips re-injection when the marker is already in `messages`).
-   */
-  systemPromptId?: string | null;
 }
 
 export interface ChatSendResponse {
@@ -118,6 +112,13 @@ export interface CasefileSnapshot {
   activeLaneId: string | null;
 }
 
+export interface RecentContext {
+  root: string;
+  activeLaneId: string | null;
+  activeLaneName: string | null;
+  updatedAt: string;
+}
+
 export interface LaneAttachmentInput {
   name: string;
   root: string;
@@ -151,57 +152,6 @@ export interface LaneUpdateInput {
 export interface UpdateLaneResult {
   casefile: CasefileSnapshot;
   rootConflict: { conflictingLaneId: string } | null;
-}
-
-export interface ContextResolvedFileDto {
-  path: string;
-  absolutePath: string;
-  sizeBytes: number;
-}
-
-export interface ContextManifestDto {
-  files: string[];
-  autoIncludeMaxBytes: number;
-  resolved: ContextResolvedFileDto[];
-}
-
-export interface ScopedDirectoryDto {
-  path: string;
-  label: string;
-  writable: boolean;
-}
-
-export interface ScopeDto {
-  laneId: string;
-  writeRoot: string;
-  casefileRoot: string;
-  directories: ScopedDirectoryDto[];
-  contextFiles: ContextResolvedFileDto[];
-  autoIncludeMaxBytes: number;
-}
-
-export interface OverlayTreeDto {
-  prefix: string;
-  label: string;
-  root: string;
-  tree: FileTreeNode | null;
-  error?: string;
-}
-
-export interface ChangedFileDto {
-  path: string;
-  leftSha256: string;
-  rightSha256: string;
-  leftSize: number;
-  rightSize: number;
-}
-
-export interface LaneComparisonDto {
-  leftLaneId: string;
-  rightLaneId: string;
-  added: string[];
-  removed: string[];
-  changed: ChangedFileDto[];
 }
 
 export interface ComparisonLaneSummary {
@@ -240,57 +190,6 @@ export interface ComparisonChatSendResponse {
   comparison?: Omit<ComparisonSession, "messages">;
   persistenceError?: string;
   error?: string;
-}
-
-// M4.3: external local-directory inboxes (read-only, casefile-scoped).
-
-export interface InboxSourceDto {
-  id: string;
-  name: string;
-  root: string;
-}
-
-export interface InboxItemDto {
-  sourceId: string;
-  path: string;
-  sizeBytes: number;
-}
-
-export interface InboxItemContent {
-  content: string;
-  truncated: boolean;
-  absolutePath: string;
-}
-
-export interface InboxSourceInput {
-  name: string;
-  root: string;
-  sourceId?: string;
-}
-
-export interface InboxSourceUpdate {
-  name?: string;
-  root?: string;
-}
-
-// M4.1: prompt drafts (casefile-scoped, lightweight markdown bodies).
-
-export interface PromptSummaryDto {
-  id: string;
-  name: string;
-  sizeBytes: number;
-  updatedAt: string;
-}
-
-export interface PromptDraftDto extends PromptSummaryDto {
-  body: string;
-  createdAt: string;
-}
-
-export interface PromptInputDto {
-  name?: string;
-  body?: string;
-  id?: string;
 }
 
 /** Payload for `chat:saveOutput`. The destination is an *absolute* directory
@@ -375,22 +274,10 @@ export interface AssistantApi {
    * in the file-tree toolbar. */
   trashUndoStatus: () => Promise<{ restorable: number }>;
 
-  // Notes (M3).
-  getNote: (laneId: string) => Promise<string>;
-  saveNote: (laneId: string, content: string) => Promise<true>;
-
-  // Compare + lane-scoped read (M3).
-  compareLanes: (leftLaneId: string, rightLaneId: string) => Promise<LaneComparisonDto>;
   // Save a chat message body to a user-chosen directory.
   saveChatOutput: (payload: SaveChatOutputPayload) => Promise<SaveChatOutputResult>;
-  readLaneFile: (
-    laneId: string,
-    path: string,
-    maxChars?: number
-  ) => Promise<FileReadResult>;
 
-  // M3.5: hierarchical scope, attachments, context manifest, overlay reads.
-  setLaneParent: (laneId: string, parentId: string | null) => Promise<CasefileSnapshot>;
+  // M3.5: context attachments.
   updateLaneAttachments: (
     laneId: string,
     attachments: LaneAttachmentInput[]
@@ -404,39 +291,6 @@ export interface AssistantApi {
   removeLane: (laneId: string) => Promise<CasefileSnapshot>;
   hardResetCasefile: () => Promise<CasefileSnapshot>;
   softResetCasefile: (keepPrompts: boolean) => Promise<CasefileSnapshot>;
-  getContext: () => Promise<ContextManifestDto>;
-  saveContext: (manifest: { files: string[]; autoIncludeMaxBytes: number }) =>
-    Promise<ContextManifestDto>;
-  resolveScope: (laneId: string) => Promise<ScopeDto>;
-  listOverlayTrees: (laneId: string, maxDepth?: number) => Promise<OverlayTreeDto[]>;
-  readOverlayFile: (
-    laneId: string,
-    path: string,
-    maxChars?: number
-  ) => Promise<FileReadResult>;
-
-  // M4.1: prompt drafts (casefile-scoped).
-  listPrompts: () => Promise<PromptSummaryDto[]>;
-  getPrompt: (promptId: string) => Promise<PromptDraftDto>;
-  createPrompt: (prompt: PromptInputDto) => Promise<PromptDraftDto>;
-  savePrompt: (promptId: string, prompt: PromptInputDto) => Promise<PromptDraftDto>;
-  deletePrompt: (promptId: string) => Promise<true>;
-
-  // M4.3: inbox sources + item access (read-only).
-  listInboxSources: () => Promise<InboxSourceDto[]>;
-  addInboxSource: (input: InboxSourceInput) => Promise<InboxSourceDto>;
-  updateInboxSource: (
-    sourceId: string,
-    update: InboxSourceUpdate
-  ) => Promise<InboxSourceDto>;
-  removeInboxSource: (sourceId: string) => Promise<true>;
-  listInboxItems: (sourceId: string, maxDepth?: number) => Promise<InboxItemDto[]>;
-  readInboxItem: (
-    sourceId: string,
-    path: string,
-    maxChars?: number
-  ) => Promise<InboxItemContent>;
-  chooseInboxRoot: () => Promise<string | null>;
 
   // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;

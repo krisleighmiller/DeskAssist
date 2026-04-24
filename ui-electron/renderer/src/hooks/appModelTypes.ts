@@ -184,10 +184,6 @@ export function overlayTabKey(laneId: string, virtualPath: string): string {
   return `overlay:${laneId}:${virtualPath}`;
 }
 
-export function diffTabKey(leftId: string, rightId: string, path: string): string {
-  return `diff:${leftId}\u21D4${rightId}:${path}`;
-}
-
 /**
  * If a renamed file is open in any tab whose key encodes its path,
  * we need to rebuild the key. All of our tab keys end with `:<path>`,
