@@ -489,7 +489,8 @@ def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
     write_labels = [d["label"] for d in directories if d["writable"]]
     read_labels = [d["label"] for d in directories if not d["writable"]]
     assert write_labels == ["child", "notes"]
-    assert any(lbl.startswith("parent") for lbl in read_labels), read_labels
+    assert "parent" not in labels
+    assert read_labels == []
     assert [entry["path"] for entry in scope["contextFiles"]] == ["rubric.md"]
 
 
@@ -547,6 +548,7 @@ def test_chat_send_layers_overlays_into_chat_service(
             workspace_root: Path,
             casefile_root: Path | None = None,
             read_overlays: dict[str, Path] | None = None,
+            scoped_directories: tuple[Any, ...] | None = None,
             **_kw: Any,
         ) -> None:
             captured["workspace_root"] = workspace_root
@@ -556,6 +558,9 @@ def test_chat_send_layers_overlays_into_chat_service(
                 if read_overlays
                 else None
             )
+            captured["scoped_labels"] = [
+                getattr(entry, "label", None) for entry in (scoped_directories or ())
+            ]
             self._history: list[Any] = []
             self._injected: list[Any] = []
 
@@ -595,8 +600,9 @@ def test_chat_send_layers_overlays_into_chat_service(
     assert captured["casefile_root"] == casefile_root
     overlays = captured["read_overlays"]
     assert overlays is not None
-    # New flat model: overlays are `_scope/<label>/` keys.
-    assert any(k.startswith("_scope/") for k in overlays), overlays
+    # New flat model: active scope directories are passed separately and all
+    # writable entries remain addressable through `_scope/<label>/`.
+    assert captured["scoped_labels"] == ["child", "notes"]
     assert "_context" in overlays
     # Auto-include: the rubric should appear in a system prompt.
     system_prompts = captured.get("system_prompts", [])

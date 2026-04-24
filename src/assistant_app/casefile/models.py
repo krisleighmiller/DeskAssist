@@ -87,8 +87,8 @@ class Lane:
     A lane root may be inside or outside the casefile root; lanes are
     deliberately allowed to be sibling directories (see ARCHITECTURE.md).
     `parent_id` is None for top-level lanes; otherwise the id of the
-    enclosing scope. Children inherit read-only access to ancestor roots
-    and ancestor attachments. Cycles are forbidden by the store.
+    enclosing lane for UI organization. It does not imply AI access to the
+    parent directory. Cycles are forbidden by the store.
     `attachments` is the list of sibling directories that travel with this
     lane (see `LaneAttachment`).
     `writable` controls AI write access to the lane root; True by default.

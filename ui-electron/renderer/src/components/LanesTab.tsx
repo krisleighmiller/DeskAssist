@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 import type {
   CasefileSnapshot,
   ChangedFileDto,
-  ContextManifestDto,
   Lane,
   LaneAttachmentInput,
   LaneComparisonDto,
@@ -13,7 +12,6 @@ import type {
   UpdateLaneResult,
 } from "../types";
 import { LANE_KINDS } from "../types";
-import { ContextEditor } from "./ContextEditor";
 import { FILETREE_DRAG_MIME, parseDragPayload } from "./FileTree";
 
 /** Drop handler for the lane-root and attachment-root inputs. Both stores
@@ -62,11 +60,6 @@ interface LanesTabProps {
   onOpenLaneFile: (laneId: string, path: string) => void;
   /** M3.5c: open a multi-lane comparison chat session. */
   onOpenComparisonChat: (laneIds: string[]) => Promise<void>;
-  // M3.5
-  context: ContextManifestDto | null;
-  contextBusy: boolean;
-  contextError: string | null;
-  onSaveContext: (manifest: { files: string[]; autoIncludeMaxBytes: number }) => Promise<void>;
   onSetLaneParent: (laneId: string, parentId: string | null) => Promise<void>;
   onUpdateLaneAttachments: (
     laneId: string,
@@ -119,10 +112,6 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
     onOpenDiff,
     onOpenLaneFile,
     onOpenComparisonChat,
-    context,
-    contextBusy,
-    contextError,
-    onSaveContext,
     onSetLaneParent,
     onUpdateLaneAttachments,
     onUpdateLane,
@@ -132,7 +121,6 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
   } = props;
 
   const [showForm, setShowForm] = useState(false);
-  const [showContext, setShowContext] = useState(false);
   const [editLaneId, setEditLaneId] = useState<string | null>(null);
   const [compareLeft, setCompareLeft] = useState<string>("");
   const [compareRight, setCompareRight] = useState<string>("");
@@ -183,9 +171,6 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
         <button type="button" onClick={() => setShowForm((v) => !v)}>
           {showForm ? "Cancel" : "Register lane"}
         </button>
-        <button type="button" onClick={() => setShowContext((v) => !v)}>
-          {showContext ? "Hide context" : "Edit casefile context"}
-        </button>
         {/* M4.6: destructive operations live in an overflow menu so a stray
             click cannot wipe a casefile. */}
         <div className="casefile-menu">
@@ -231,15 +216,6 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
           )}
         </div>
       </div>
-
-      {showContext && (
-        <ContextEditor
-          context={context}
-          busy={contextBusy}
-          error={contextError}
-          onSave={onSaveContext}
-        />
-      )}
 
       <ul className="lane-tree">
         {forest.map((node) => (
@@ -924,8 +900,8 @@ function ResetCasefileDialog({
           <>
             <p>
               This clears chat history and notes, and restores a fresh
-              default <code>main</code> lane. Your casefile context
-              manifest and inbox sources are preserved.
+              default <code>main</code> lane. Files on disk and inbox
+              sources are preserved.
             </p>
             <label className="lane-form-row">
               <input

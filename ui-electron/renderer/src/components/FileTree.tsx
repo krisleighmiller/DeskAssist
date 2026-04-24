@@ -32,9 +32,8 @@ interface FileTreeProps {
   // visualises it. The associated props (`overlays`, `showOverlays`,
   // `onToggleOverlays`, `onOpenOverlayFile`, …) were dropped.
   /** M3.5c+: casefile root, used to compute relative paths for the
-   * right-click "Copy relative path" / "Add to casefile context" actions
-   * and to populate drag payloads. When null, only absolute-path actions
-   * are offered. */
+   * right-click "Copy relative path" action and to populate drag payloads.
+   * When null, only absolute-path actions are offered. */
   casefileRoot?: string | null;
   /** Invoked when the user dismisses the error banner that surfaces above
    * the tree. The parent owns the error state and is responsible for
@@ -42,11 +41,6 @@ interface FileTreeProps {
    * is fine for fatal load failures but a bad UX for transient operation
    * errors, so callers should generally provide it). */
   onDismissError?: () => void;
-  /** M3.5c+: invoked when the user picks "Add to casefile context" from
-   * the right-click menu (or drops a tree node onto the context editor's
-   * drop target — the FileTree just sets up the dataTransfer payload).
-   * The path passed is the casefile-relative POSIX path. */
-  onAddToContext?: (relativePath: string) => void;
   /** Invoked when the user picks "Rename..." from the context menu.
    * The parent is responsible for performing the rename via the bridge
    * (which validates and may reject) and refreshing the tree. The
@@ -538,7 +532,6 @@ export function FileTree({
   onOpenFile,
   casefileRoot,
   onDismissError,
-  onAddToContext,
   onRename,
   onRefresh,
   activeLaneRoot,
@@ -986,46 +979,13 @@ export function FileTree({
           if (usable.length > 0) void copyToClipboard(usable.join("\n"));
         },
         disabled: !rels.some((r) => r !== null),
-        separator: !onAddToContext,
       },
       {
         label: multi ? `Copy ${count} full paths` : "Copy full path",
         onSelect: () => {
           void copyToClipboard(multi ? paths.join("\n") : paths[0]);
         },
-        separator: Boolean(onAddToContext),
       },
-      ...(onAddToContext
-        ? [
-            {
-              label: multi
-                ? allRel
-                  ? `Add ${count} items to casefile context`
-                  : `Add to casefile context (${rels.filter((r) => r !== null).length}/${count})`
-                : rels[0]
-                  ? `Add to casefile context (${menu.node.type})`
-                  : "Add to casefile context (n/a)",
-              onSelect: () => {
-                if (!onAddToContext) return;
-                // Map each path to a pattern: directories get a recursive
-                // glob, files keep their literal relative path. Skip any
-                // entries we couldn't make relative (overlay / outside).
-                for (let i = 0; i < paths.length; i++) {
-                  const rel = rels[i];
-                  if (!rel) continue;
-                  // Without per-path type info we treat the right-clicked
-                  // node's type as authoritative for itself, and any
-                  // other selected paths as files (the safe default —
-                  // users can refine with an explicit dir glob).
-                  const isDir = paths[i] === menu.node.path && menu.node.type === "dir";
-                  const pattern = isDir ? `${rel.replace(/\/$/, "")}/**/*` : rel;
-                  onAddToContext(pattern);
-                }
-              },
-              disabled: !rels.some((r) => r !== null),
-            },
-          ]
-        : []),
       // Rename is intentionally single-target only: bulk rename is a
       // distinct UX (templates, find/replace, ...) and would be more
       // confusing than useful as a menu entry. The underscore-prefix

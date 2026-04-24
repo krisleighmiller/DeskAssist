@@ -93,7 +93,7 @@ def test_resolve_comparison_scope_unions_overlays(tmp_path: Path) -> None:
     assert not (casefile_root / ".casefile" / "comparisons.json").exists()
 
 
-def test_resolve_comparison_scope_includes_ancestors_and_attachments(
+def test_resolve_comparison_scope_includes_declared_lanes_and_attachments(
     tmp_path: Path,
 ) -> None:
     casefile_root = tmp_path / "case"
@@ -150,8 +150,9 @@ def test_resolve_comparison_scope_includes_ancestors_and_attachments(
     assert "a" in labels
     assert "b" in labels
     assert {"a", "b", "notes"} <= write_labels
-    # Shared parent is inherited context only, so it stays read-only.
-    assert "p" in read_labels
+    # Shared parent is UI structure only; it is not inherited into AI scope.
+    assert "p" not in labels
+    assert "p" not in read_labels
     # All paths are unique (no directory appears twice).
     paths = [d.path for d in scope.directories]
     assert len(paths) == len(set(paths))

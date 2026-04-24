@@ -54,7 +54,6 @@ interface ShellViewModelActions {
   onStatusChange: (status: ApiKeyStatus) => void;
   onModelsChange: (models: ProviderModels) => void;
   onOpenFile: (path: string) => void | Promise<void>;
-  onAddToContext?: (path: string) => void;
   onRename?: (sourcePath: string, nextPath: string) => Promise<void>;
   onRefreshTree?: () => void;
   onDismissTreeError: () => void;
@@ -85,7 +84,6 @@ interface ShellViewModelActions {
   onOpenDiff: (path: string) => void;
   onOpenLaneFile: (laneId: string, path: string) => void;
   onOpenComparisonChat: (laneIds: string[]) => Promise<void>;
-  onSaveContext: (manifest: { files: string[]; autoIncludeMaxBytes: number }) => Promise<void>;
   onSetLaneParent: (laneId: string, parentId: string | null) => Promise<void>;
   onUpdateLaneAttachments: (
     laneId: string,
@@ -102,6 +100,8 @@ interface ShellViewModelActions {
   onSelectPromptForChat: (promptId: string | null) => void;
   /** Called when the user renames a lane via the file tree context menu. */
   onUpdateLaneName?: (laneId: string, newName: string) => Promise<void>;
+  /** M3: add another directory to the active lane's AI scope. */
+  onAddAttachment?: (path: string, laneId: string, name: string) => Promise<void>;
   /** M2.5: toggle AI write access for a lane. */
   onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void>;
   /** M2.5: remove an attachment from the active lane by its label name. */
@@ -182,7 +182,6 @@ export function useAppShellProps({
         // requires an active lane.
         hasWorkspace: Boolean(state.casefile),
         casefileRoot: state.casefile?.root ?? null,
-        onAddToContext: state.casefile ? actions.onAddToContext : undefined,
         onRename: state.casefile ? actions.onRename : undefined,
         onRefresh: state.casefile ? actions.onRefreshTree : undefined,
         // Active lane drives highlighting / lane-scoped menu items
@@ -265,6 +264,11 @@ export function useAppShellProps({
             onSetLaneWritable: state.activeLane && actions.onSetLaneWritable
               ? (writable: boolean) => {
                   void actions.onSetLaneWritable!(state.activeLane!.id, writable);
+                }
+              : undefined,
+            onAddAttachment: state.activeLane && actions.onAddAttachment
+              ? (root: string, name: string) => {
+                  return actions.onAddAttachment!(root, state.activeLane!.id, name);
                 }
               : undefined,
             onRemoveAttachment: state.activeLane && actions.onRemoveAttachment

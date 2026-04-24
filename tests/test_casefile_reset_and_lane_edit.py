@@ -136,13 +136,14 @@ def test_remove_lane_keeps_chat_log_on_disk(tmp_path: Path) -> None:
     store = CasefileStore(casefile_root)
     # Plant a chat log so removal has something to (not) delete.
     store.append_chat_messages("a", [{"role": "user", "content": "hi"}])
-    chat_path = store.chat_log_path("a")
+    session_id = store.load_snapshot().lane_by_id("a").session_id
+    chat_path = casefile_root / ".casefile" / "chats" / f"{session_id}.jsonl"
     assert chat_path.exists()
     service = CasefileService(casefile_root)
     snapshot = service.remove_lane("a")
     assert "a" not in {lane.id for lane in snapshot.lanes}
-    # The lane is gone from lanes.json but its chat log remains on disk
-    # so re-registering id=`a` later can resurrect it.
+    # The lane is gone from lanes.json, but its UUID-keyed chat log remains
+    # on disk for audit/recovery.
     assert chat_path.exists()
 
 

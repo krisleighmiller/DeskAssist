@@ -117,9 +117,9 @@ def resolve_scope(
 ) -> ScopeContext:
     """Compute the ``ScopeContext`` for the given lane.
 
-    The write root is the lane's own directory.  All other directories
-    (attachments and ancestor lanes, in priority order) are read-only and
-    surfaced under ``_scope/<label>/`` with human-readable slugified labels.
+    The session contains the lane root plus the directories explicitly
+    attached to that lane. Structural parents are UI organization only; they
+    are not added to AI scope implicitly.
 
     Labels are guaranteed unique within the session; a ``_2`` / ``_3``
     suffix is appended when two directories would otherwise share a label.
@@ -149,15 +149,6 @@ def resolve_scope(
     for attachment in lane.attachments:
         label = _unique_label(_slug(attachment.name), seen_labels)
         dirs.append(ScopedDirectory(path=attachment.root, label=label, writable=(attachment.mode == "write")))
-
-    # Ancestor lanes, nearest first.  Each ancestor contributes its own
-    # directory and any attachments it carries.
-    for ancestor in snapshot.ancestors_of(lane_id):
-        label = _unique_label(_slug(ancestor.name), seen_labels)
-        dirs.append(ScopedDirectory(path=ancestor.root, label=label, writable=False))
-        for att in ancestor.attachments:
-            att_label = _unique_label(_slug(att.name), seen_labels)
-            dirs.append(ScopedDirectory(path=att.root, label=att_label, writable=False))
 
     return ScopeContext(
         lane_id=lane.id,
@@ -194,10 +185,9 @@ def resolve_comparison_scope(
 
     Each selected lane contributes its own root and direct attachments with
     their current access mode. Comparison-session-specific attachments are
-    appended as first-class scope entries. Ancestor lanes and ancestor
-    attachments remain read-only inherited context. Labels are de-duplicated
-    so two directories that would otherwise share a label get ``name_2``,
-    ``name_3``, etc.
+    appended as first-class scope entries. Structural parents are not inherited
+    into AI scope. Labels are de-duplicated so two directories that would
+    otherwise share a label get ``name_2``, ``name_3``, etc.
     """
     from assistant_app.casefile.context import ContextManifestStore  # avoid cycle
 
@@ -235,12 +225,6 @@ def resolve_comparison_scope(
             _add(att.root, att.name, writable=(att.mode == "write"))
     for att in comparison_attachments or ():
         _add(att.root, att.name, writable=(att.mode == "write"))
-    for lane in lanes:
-        for ancestor in snapshot.ancestors_of(lane.id):
-            _add(ancestor.root, ancestor.name, writable=False)
-            for att in ancestor.attachments:
-                _add(att.root, att.name, writable=False)
-
     return ScopeContext(
         lane_id=comparison_id_for_lanes(ids),
         directories=tuple(dirs),

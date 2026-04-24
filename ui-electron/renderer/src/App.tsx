@@ -147,8 +147,6 @@ export function App(): JSX.Element {
   });
 
   const {
-    handleSaveContext,
-    handleAddToContext,
     handleSetLaneParent,
     handleUpdateLaneAttachments,
     handleUpdateLane,
@@ -741,7 +739,6 @@ export function App(): JSX.Element {
       onStatusChange: setKeyStatus,
       onModelsChange: setProviderModels,
       onOpenFile: handleOpenFile,
-      onAddToContext: handleAddToContext,
       onRename: handleRenameFile,
       onRefreshTree: refreshTreeAction,
       onDismissTreeError: () => setTreeError(null),
@@ -751,6 +748,7 @@ export function App(): JSX.Element {
       onTrashEntry: handleTrashEntry,
       onCreateLaneFromPath: handleCreateLaneFromPath,
       onAttachToLane: handleAttachToLane,
+      onAddAttachment: handleAttachToLane,
       onActiveRightTabChange: setActiveRightTab,
       onSelectTab: handleSelectTab,
       onCloseTab: handleCloseTab,
@@ -772,7 +770,6 @@ export function App(): JSX.Element {
       onOpenDiff: handleOpenDiff,
       onOpenLaneFile: handleOpenLaneFile,
       onOpenComparisonChat: handleOpenComparisonChat,
-      onSaveContext: handleSaveContext,
       onSetLaneParent: handleSetLaneParent,
       onUpdateLaneAttachments: handleUpdateLaneAttachments,
       onUpdateComparisonAttachments: handleUpdateComparisonAttachments,

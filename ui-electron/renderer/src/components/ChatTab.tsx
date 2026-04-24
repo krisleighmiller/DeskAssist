@@ -101,6 +101,8 @@ interface LaneChatProps {
   onDenyTools: () => void;
   /** M2.5: Toggle AI write access for the active lane (true = writable). */
   onSetLaneWritable?: (writable: boolean) => void;
+  /** M3: Widen the active single-context chat with another scoped directory. */
+  onAddAttachment?: (root: string, name: string) => Promise<void> | void;
   /** M2.5: Remove an attachment from the active lane by its label name. */
   onRemoveAttachment?: (attName: string) => void;
   /** M2.5: Change an attachment's AI access mode. */
@@ -233,9 +235,9 @@ function ChatSessionList({
             aria-selected={active}
             className={`chat-session${active ? " active" : ""}`}
             onClick={() => onSelectSession(id)}
-            title={`Lane chat for ${lane.name}`}
+            title={`Single-context chat for ${lane.name}`}
           >
-            <span className="chat-session-kind">lane</span>
+            <span className="chat-session-kind">single</span>
             <span className="chat-session-label">{lane.name}</span>
           </button>
         );
@@ -255,9 +257,9 @@ function ChatSessionList({
               aria-selected={active}
               className="chat-session-main"
               onClick={() => onSelectSession(id)}
-              title={`Scoped session: ${label}`}
+              title={`Multi-context scoped session: ${label}`}
             >
-              <span className="chat-session-kind">scoped</span>
+              <span className="chat-session-kind">multi</span>
               <span className="chat-session-label">{label}</span>
             </button>
             <button
@@ -357,6 +359,24 @@ interface ScopeHeaderEntry {
   removeLabel?: string;
 }
 
+function describeScopeSummary(entries: ScopeHeaderEntry[], mode: "single" | "multi"): string {
+  const count = entries.length;
+  const writable = entries.filter((entry) => entry.writable).length;
+  const directoryWord = count === 1 ? "directory" : "directories";
+  const writableText =
+    writable === 0
+      ? "none are writable"
+      : `${writable} ${writable === 1 ? "is" : "are"} writable`;
+  if (mode === "single") {
+    return `Single-context chat: AI can read ${count} scoped ${directoryWord}; ${writableText}. Switch contexts with the session list, widen with Add related directory, or right-click a pill to narrow/change access.`;
+  }
+  return `Multi-context chat: AI can read ${count} scoped ${directoryWord}; ${writableText}. Close this session to return to one context, or right-click a pill to narrow/change access.`;
+}
+
+function filenameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? "related";
+}
+
 function ApprovalPanel({
   pendingApprovals,
   busy,
@@ -399,9 +419,11 @@ function ApprovalPanel({
  * a pill reveals any management actions available for that directory. */
 function ScopeHeader({
   entries,
+  summary,
   extraAction,
 }: {
   entries: ScopeHeaderEntry[];
+  summary?: string;
   extraAction?: {
     label: string;
     onClick: () => void;
@@ -460,6 +482,7 @@ function ScopeHeader({
           </button>
         )}
       </div>
+      {summary && <div className="scope-header-summary muted">{summary}</div>}
       {open && (
         <div className="scope-header-pills" role="list" aria-label="Directories in AI scope">
           {entries.map((entry) => (
@@ -502,6 +525,8 @@ function LaneChatBody({
   const [mentionActive, setMentionActive] = useState(false);
   const [mentionPath, setMentionPath] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
+  const [pendingAttachmentRoot, setPendingAttachmentRoot] = useState<string | null>(null);
+  const [attachmentDraftName, setAttachmentDraftName] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -601,6 +626,18 @@ function LaneChatBody({
     }
   };
 
+  const handleAddRelatedDirectory = async () => {
+    if (!chat.onAddAttachment) return;
+    try {
+      const root = await api().chooseLaneRoot();
+      if (!root) return;
+      setAttachmentDraftName(filenameFromPath(root));
+      setPendingAttachmentRoot(root);
+    } catch (error) {
+      console.error("ChatTab: related directory chooser failed:", error);
+    }
+  };
+
   const keyMissing = !providerHasKey(chat.provider, chat.keyStatus);
   const inputDisabled = chat.busy || !chat.hasActiveLane;
   const elapsedMs = busyStart === null ? 0 : Math.max(0, now - busyStart);
@@ -677,12 +714,24 @@ function LaneChatBody({
           </span>
         )}
       </div>
-      <ScopeHeader entries={scopeEntries} />
+      <ScopeHeader
+        entries={scopeEntries}
+        summary={describeScopeSummary(scopeEntries, "single")}
+        extraAction={
+          chat.onAddAttachment
+            ? {
+                label: "Add related directory...",
+                onClick: () => void handleAddRelatedDirectory(),
+                disabled: chat.busy || !chat.hasActiveLane,
+              }
+            : undefined
+        }
+      />
       <div className="chat-messages" ref={messagesRef}>
         {chat.messages.length === 0 && (
           <div style={{ color: "#6b7280", fontStyle: "italic" }}>
             {chat.hasActiveLane
-              ? "No messages yet for this lane. Ask about your workspace."
+              ? "No messages yet. This single-context chat can only use the AI scope listed above; add a related directory if the model needs more context."
               : "No active lane."}
           </div>
         )}
@@ -742,6 +791,28 @@ function LaneChatBody({
             ×
           </button>
         </div>
+      )}
+      {pendingAttachmentRoot && (
+        <InputDialog
+          title="Name related directory"
+          message={pendingAttachmentRoot}
+          defaultValue={attachmentDraftName}
+          confirmLabel="Add to scope"
+          onSubmit={(value) => {
+            const name = value.trim();
+            const root = pendingAttachmentRoot;
+            setPendingAttachmentRoot(null);
+            setAttachmentDraftName("");
+            if (!name || !root || !chat.onAddAttachment) return;
+            void Promise.resolve(chat.onAddAttachment(root, name)).catch((error) => {
+              console.error("ChatTab: add related directory failed:", error);
+            });
+          }}
+          onCancel={() => {
+            setPendingAttachmentRoot(null);
+            setAttachmentDraftName("");
+          }}
+        />
       )}
       <form
         className="chat-form"
@@ -908,7 +979,7 @@ function CompareChatBody({
     try {
       const root = await api().chooseLaneRoot();
       if (!root) return;
-      const defaultName = root.split(/[\\/]/).pop() ?? "attachment";
+      const defaultName = filenameFromPath(root);
       setAttachmentDraftName(defaultName);
       setPendingAttachmentRoot(root);
     } catch (error) {
@@ -923,7 +994,7 @@ function CompareChatBody({
         style={{ flexDirection: "column", alignItems: "flex-start", gap: 4 }}
       >
         <div style={{ display: "flex", gap: 8, alignItems: "center", width: "100%" }}>
-          <strong style={{ color: "#a78bfa" }}>Compare:</strong>
+          <strong style={{ color: "#a78bfa" }}>Multi-context chat:</strong>
           <span>{laneNames}</span>
           <button
             type="button"
@@ -960,6 +1031,7 @@ function CompareChatBody({
       </div>
       <ScopeHeader
         entries={scopeEntries}
+        summary={describeScopeSummary(scopeEntries, "multi")}
         extraAction={
           chat.onUpdateAttachments
             ? {
@@ -973,9 +1045,9 @@ function CompareChatBody({
       <div className="chat-messages" ref={messagesRef}>
         {chat.session.messages.length === 0 && (
           <div style={{ color: "#6b7280", fontStyle: "italic" }}>
-            Ask the model to compare these lanes. Each scoped directory is
-            available through its scope label, and writable entries can be
-            modified after approval.
+            Ask across these contexts. The AI can only use the scoped
+            directories listed above; writable entries still require approval
+            before changes are made.
           </div>
         )}
         {chat.session.messages.map((msg, idx) => (

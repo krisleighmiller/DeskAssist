@@ -63,29 +63,21 @@ def test_root_lane_has_no_read_overlays(tmp_path: Path):
     assert not any(k.startswith(SCOPE_PREFIX) for k in overlay_map)
 
 
-def test_child_lane_has_flat_scope_labels(tmp_path: Path):
-    """Ash lane's scope is flat: own write root + attachment + ancestors under _scope/."""
+def test_child_lane_has_only_declared_scope_labels(tmp_path: Path):
+    """Ash lane's scope is flat: own root + directly attached directories only."""
     family_root, store = _setup(tmp_path)
     snapshot = store.load_snapshot()
     scope = resolve_scope(snapshot, "ash")
-    # Should have writable directory for ash, plus read-only for notes, task_9, main.
     labels = [d.label for d in scope.directories]
     assert scope.directories[0].writable, "first directory must be the write root"
     read_labels = [d.label for d in scope.directories if not d.writable]
     # All labels must be unique.
-    assert len(read_labels) == len(set(read_labels))
-    # Notes attachment must be present.
-    assert "notes" in read_labels
-    # Ancestor lanes (task_9, main) must be present in some form.
-    assert any(lbl.startswith("task") for lbl in read_labels), read_labels
-    assert any(lbl.startswith("main") for lbl in read_labels), read_labels
-    # Order: attachment first, then task-9, then main.
-    idx = {lbl: i for i, lbl in enumerate(labels)}
-    notes_i = idx.get("notes")
-    task_i = next(i for lbl, i in idx.items() if lbl.startswith("task"))
-    main_i = next(i for lbl, i in idx.items() if lbl.startswith("main"))
-    assert notes_i is not None
-    assert notes_i < task_i < main_i
+    assert len(labels) == len(set(labels))
+    # Notes attachment is explicitly declared, so it is present.
+    assert read_labels == ["notes"]
+    # Parent lanes are UI structure only; they are not implicitly scoped.
+    assert not any(lbl.startswith("task") for lbl in labels), labels
+    assert not any(lbl.startswith("main") for lbl in labels), labels
 
 
 def test_sibling_lanes_are_not_in_scope(tmp_path: Path):

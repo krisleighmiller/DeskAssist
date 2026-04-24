@@ -43,6 +43,8 @@ interface RightPanelProps {
       onDenyTools: () => void;
       /** M2.5: Toggle AI write access for the active lane. */
       onSetLaneWritable?: (writable: boolean) => void;
+      /** M3: Add another directory to the active lane's AI scope. */
+      onAddAttachment?: (root: string, name: string) => Promise<void> | void;
       /** M2.5: Remove an attachment from the active lane by its label. */
       onRemoveAttachment?: (attName: string) => void;
       /** M2.5: Change an attachment's AI access mode. */
