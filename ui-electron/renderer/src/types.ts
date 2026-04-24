@@ -307,6 +307,7 @@ export interface AssistantApi {
   // Casefile + lanes
   chooseCasefile: () => Promise<CasefileSnapshot | null>;
   openCasefile: (root: string) => Promise<CasefileSnapshot>;
+  closeCasefile: () => Promise<true>;
   chooseLaneRoot: () => Promise<string | null>;
   registerLane: (lane: RegisterLaneInput) => Promise<CasefileSnapshot>;
   switchLane: (laneId: string) => Promise<CasefileSnapshot>;
@@ -462,6 +463,7 @@ export interface AssistantApi {
   /** Menu-bar → renderer: Lane management triggers. Each returns an
    * unsubscribe function for use in useEffect teardowns. */
   onOpenCasefile: (handler: () => void) => () => void;
+  onCloseCasefile: (handler: () => void) => () => void;
   onLaneCreate: (handler: () => void) => () => void;
   onLaneAttach: (handler: () => void) => () => void;
   onLaneRename: (handler: () => void) => () => void;

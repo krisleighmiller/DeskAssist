@@ -295,6 +295,26 @@ export function App(): JSX.Element {
 
   const [activeRightTab, setActiveRightTab] = useState<RightTabKey>("chat");
 
+  const resetCasefileState = useCallback(() => {
+    setCasefile(null);
+    setTree(null);
+    setTreeError(null);
+    setLaneSessions(new Map());
+    resetComparisonsForCasefile();
+    handleSelectPromptForChat(null);
+    setActiveRightTab("chat");
+  }, [handleSelectPromptForChat, resetComparisonsForCasefile, setTree]);
+
+  const handleCloseCasefile = useCallback(async () => {
+    if (!casefile) return;
+    try {
+      await api().closeCasefile();
+      resetCasefileState();
+    } catch (error) {
+      setTreeError(errorMessage(error));
+    }
+  }, [casefile, resetCasefileState]);
+
   const handleCreateLaneFromPath = useCallback(
     async (path: string, name: string) => {
       try {
@@ -384,6 +404,13 @@ export function App(): JSX.Element {
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const unsub = api().onCloseCasefile(() => {
+      void handleCloseCasefile();
+    });
+    return unsub;
+  }, [handleCloseCasefile]);
 
   useEffect(() => {
     const unsub = api().onLaneCreate(async () => {
@@ -703,6 +730,7 @@ export function App(): JSX.Element {
     actions: {
       onProviderChange: setProvider,
       onChooseCasefile: handleChooseCasefile,
+      onCloseCasefile: handleCloseCasefile,
       onSwitchLane: handleSwitchLane,
       onStatusChange: setKeyStatus,
       onModelsChange: setProviderModels,

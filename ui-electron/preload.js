@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("assistantApi", {
   // Casefile + lane management
   chooseCasefile: () => ipcRenderer.invoke("casefile:choose"),
   openCasefile: (root) => ipcRenderer.invoke("casefile:open", { root }),
+  closeCasefile: () => ipcRenderer.invoke("casefile:close"),
   chooseLaneRoot: () => ipcRenderer.invoke("casefile:chooseLaneRoot"),
   registerLane: (lane) => ipcRenderer.invoke("casefile:registerLane", { lane }),
   switchLane: (laneId) => ipcRenderer.invoke("casefile:switchLane", { laneId }),
@@ -123,6 +124,11 @@ contextBridge.exposeInMainWorld("assistantApi", {
     const wrapped = () => handler();
     ipcRenderer.on("app:open-casefile", wrapped);
     return () => ipcRenderer.removeListener("app:open-casefile", wrapped);
+  },
+  onCloseCasefile: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:close-casefile", wrapped);
+    return () => ipcRenderer.removeListener("app:close-casefile", wrapped);
   },
   onLaneCreate: (handler) => {
     const wrapped = () => handler();

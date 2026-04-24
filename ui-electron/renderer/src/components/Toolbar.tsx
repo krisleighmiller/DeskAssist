@@ -20,6 +20,7 @@ interface ToolbarProps {
    * opening the API Keys & Models dialog. */
   providerModels: ProviderModels;
   onChooseCasefile: () => void;
+  onCloseCasefile?: () => void;
   onOpenKeys: () => void;
   onSwitchLane?: (laneId: string) => void;
   /** Show/hide the integrated-terminal pane. Mirrors the View →
@@ -73,6 +74,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     keyStatus,
     providerModels,
     onChooseCasefile,
+    onCloseCasefile,
     onOpenKeys,
     onSwitchLane,
     onToggleTerminal,
@@ -202,6 +204,11 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
       <button type="button" onClick={onChooseCasefile}>
         Open Casefile
       </button>
+      {casefile && onCloseCasefile && (
+        <button type="button" onClick={onCloseCasefile}>
+          Close Casefile
+        </button>
+      )}
       {casefile ? (
         <span className="breadcrumb" title={casefile.root}>
           <span className="breadcrumb-root">{casefile.root}</span>

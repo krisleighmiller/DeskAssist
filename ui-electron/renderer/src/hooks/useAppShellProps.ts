@@ -49,6 +49,7 @@ interface ShellViewModelState {
 interface ShellViewModelActions {
   onProviderChange: (provider: Provider) => void;
   onChooseCasefile: () => void;
+  onCloseCasefile: () => void;
   onSwitchLane: (laneId: string) => void | Promise<void>;
   onStatusChange: (status: ApiKeyStatus) => void;
   onModelsChange: (models: ProviderModels) => void;
@@ -153,6 +154,7 @@ export function useAppShellProps({
       keyStatus: state.keyStatus,
       providerModels: state.providerModels,
       onChooseCasefile: actions.onChooseCasefile,
+      onCloseCasefile: state.casefile ? actions.onCloseCasefile : undefined,
       onSwitchLane: actions.onSwitchLane,
       onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
       onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,

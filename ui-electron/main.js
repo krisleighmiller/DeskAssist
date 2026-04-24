@@ -530,6 +530,11 @@ function createWindow() {
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => sendToRenderer("app:open-casefile"),
         },
+        {
+          label: "Close Casefile",
+          accelerator: "CmdOrCtrl+Shift+K",
+          click: () => sendToRenderer("app:close-casefile"),
+        },
         ...(process.platform === "darwin" ? [{ role: "close" }] : [{ role: "quit" }]),
       ],
     },
@@ -927,6 +932,15 @@ function adoptCasefileSnapshot(snapshot) {
   return snapshot;
 }
 
+function closeActiveCasefile() {
+  activeCasefileRoot = null;
+  activeLaneId = null;
+  activeLaneRoot = null;
+  extraWatchRoots = [];
+  clearTrashUndoStack();
+  reconcileWatchers();
+}
+
 ipcMain.handle("casefile:choose", async () => {
   // Default to the parent of the currently-open casefile (so "open another
   // casefile" lands in the right neighbourhood) or to the user's documents
@@ -961,6 +975,11 @@ ipcMain.handle("casefile:open", async (_, args = {}) => {
   }
   const response = await runPythonBridgeMeta({ command: "casefile:open", root });
   return adoptCasefileSnapshot(response.casefile);
+});
+
+ipcMain.handle("casefile:close", async () => {
+  closeActiveCasefile();
+  return true;
 });
 
 ipcMain.handle("casefile:chooseLaneRoot", async () => {
