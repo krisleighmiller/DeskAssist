@@ -64,7 +64,7 @@ These are fixed unless explicitly changed:
 
 - Keep the Electron main / preload / renderer / Python bridge split.
 - Keep scope resolution in Python.
-- Keep comparison chat read-only by construction.
+- Keep comparison chat governed by the same per-directory read/write scope model as lane chat.
 - Keep active-lane containment enforcement in Electron main for file operations.
 - Treat `lane` as the current implementation of a scoped context, not the product identity.
 - Treat `context` as the product-facing work unit.

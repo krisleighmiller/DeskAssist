@@ -223,6 +223,7 @@ def test_default_lane_kind_is_a_known_kind():
 def test_chat_log_round_trip(tmp_path: Path):
     store = CasefileStore(tmp_path)
     store.ensure_initialized()
+    session_id = store.load_snapshot().lane_by_id("main").session_id
     messages = [
         {"role": "user", "content": "hi"},
         {"role": "assistant", "content": "hello"},
@@ -233,6 +234,24 @@ def test_chat_log_round_trip(tmp_path: Path):
     assert skipped == 0
     assert [m["role"] for m in read] == ["user", "assistant", "user"]
     assert read[-1]["content"] == "again"
+    assert (tmp_path / ".casefile" / "chats" / f"{session_id}.jsonl").is_file()
+    assert not store.chat_log_path("main").exists()
+
+
+def test_chat_log_uses_session_id_not_reused_lane_id(tmp_path: Path):
+    store = CasefileStore(tmp_path)
+    store.ensure_initialized()
+    first_session_id = store.load_snapshot().lane_by_id("main").session_id
+    store.append_chat_messages("main", [{"role": "user", "content": "old"}])
+
+    store.remove_lane("main")
+    store.register_lane(name="Main", kind="repo", root=tmp_path, lane_id="main")
+    second_session_id = store.load_snapshot().lane_by_id("main").session_id
+
+    assert second_session_id != first_session_id
+    messages, skipped = store.read_chat_messages("main")
+    assert skipped == 0
+    assert messages == []
 
 
 def test_chat_log_corruption_skips_bad_lines(tmp_path: Path):

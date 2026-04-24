@@ -164,7 +164,7 @@ Current model:
 - providers normalize API-specific chat responses into one internal shape
 - tools are exposed to models through a registry with per-command schemas and permissions
 - write tools require explicit approval from the renderer before execution
-- comparison chat disables write tools entirely
+- comparison chat uses the same per-directory read/write scope model as lane chat
 
 This is a solid safety model for the current scope of the app.
 
@@ -178,8 +178,7 @@ DeskAssist currently stores user-facing state in two broad places:
 The current `.casefile/` model includes:
 
 - `lanes.json` for lane definitions and the active lane
-- `chats/<lane_id>.jsonl` for lane chat history
-- `chats/_compare__...jsonl` for comparison chat history
+- `chats/<session_uuid>.jsonl` for lane and comparison chat history
 - `notes/<lane_id>.md` for per-lane notes
 - `prompts/<id>.md` and `prompts/<id>.json` for prompt drafts
 - `context.json` for casefile-wide auto-include patterns
@@ -212,12 +211,12 @@ For a lane chat, the resolved scope includes:
 For a comparison chat, the resolved scope includes:
 
 - a stable synthetic comparison id
-- read-only lane overlays for each participating lane
-- inherited ancestor and attachment overlays
+- scoped directory entries for each participating lane
+- inherited ancestor and attachment scope entries
 - casefile context files
-- no write tools
+- write tools when at least one scoped directory is writable
 
-That gives DeskAssist a controllable model of "what the AI can read" without giving up stable workspace organization.
+That gives DeskAssist a controllable model of what the AI can read or write without giving up stable workspace organization.
 
 ## Current Information Architecture
 
@@ -244,7 +243,7 @@ This matches the README's diagnosis that internal concepts are more visible than
 - The runtime split is clear and sensible for a desktop app.
 - Scope resolution is already a real differentiator, not a placeholder.
 - Storage is explicit and testable rather than hidden in renderer-only state.
-- Comparison chat is intentionally read-only and follows the same scope rules.
+- Comparison chat intentionally follows the same per-directory read/write scope rules as lane chat.
 - The file tree, editor, chat, and terminal already form a credible always-open workbench.
 
 ## Pressure Points

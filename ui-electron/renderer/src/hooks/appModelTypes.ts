@@ -111,8 +111,8 @@ export interface SessionDirectory {
  * Specification for a scoped session: a set of one or more directories,
  * each with declared read or read-write access.  A single-directory session
  * (one writable entry) is the common lane-chat case.  A multi-directory
- * session (all read-only) is the comparison case.  The unified model makes
- * these structurally identical.
+ * session is the comparison case.  The unified model makes these
+ * structurally identical.
  */
 export interface SessionSpec {
   id: string;

@@ -189,3 +189,7 @@ def test_read_only_scoped_root_lists_only_virtual_mounts(tmp_path: Path):
     target, entries = fs.list_dir(".")
     assert target == casefile_root.resolve()
     assert entries == [{"name": "_scope", "type": "overlay"}]
+
+    target, entries = fs.list_dir("_scope")
+    assert target == casefile_root.resolve()
+    assert entries == [{"name": "reference", "type": "overlay"}]

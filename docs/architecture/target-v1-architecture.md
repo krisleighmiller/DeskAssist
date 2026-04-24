@@ -99,7 +99,7 @@ Current implementation:
 What already aligns:
 
 - lanes are durable scoped work units
-- comparison sessions already behave like read-only multi-context sessions
+- comparison sessions already behave like multi-context scoped sessions
 - the active lane already rebinds the workspace tree, notes, and write scope
 
 Where the current system leaks:
@@ -310,7 +310,7 @@ The current code suggests several safe seams for incremental improvement:
 1. Extract renderer state from [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx) into smaller stores or hooks grouped by concern.
 2. Keep [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py) as the scope engine and avoid duplicating scope rules in the renderer.
 3. Treat [`ui-electron/preload.js`](../../ui-electron/preload.js) as the public app API surface and evolve it intentionally.
-4. Keep comparison chat read-only by construction.
+4. Keep comparison chat governed by the same per-directory read/write scope model as lane chat.
 5. Let new artifact-oriented surfaces call existing stores first before introducing a new persistence abstraction.
 
 ## Non-Goals For V1

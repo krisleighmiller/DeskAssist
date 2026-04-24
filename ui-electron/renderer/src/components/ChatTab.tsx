@@ -937,7 +937,7 @@ function CompareChatBody({
         <span style={{ color: "#9ca3af", fontSize: 12 }}>
           {writableEntryCount > 0
             ? `${writableEntryCount} scoped director${writableEntryCount === 1 ? "y is" : "ies are"} writable; write tools still require approval.`
-            : `Read-only across ${chat.session.laneIds.length} lanes and comparison attachments.`}
+            : `No writable scoped directories across ${chat.session.laneIds.length} lanes and comparison attachments.`}
         </span>
         {keyMissing && (
           <span style={{ color: "#fbbf24" }}>

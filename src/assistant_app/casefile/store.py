@@ -58,6 +58,10 @@ def _coerce_session_id(value: object, *, kind: str, root: Path, identifier: str)
     return _stable_migrated_session_id(kind, root, identifier)
 
 
+def _normalize_session_id(value: str) -> str:
+    return str(uuid.UUID(value))
+
+
 def normalize_lane_id(raw: str) -> str:
     """Normalize a free-form lane id to the on-disk shape.
 
@@ -541,19 +545,22 @@ class CasefileStore:
     def comparison_chat_log_path(self, lane_ids: Iterable[str]) -> Path:
         """Return the on-disk log path for a comparison chat over ``lane_ids``.
 
-        Filename is ``_compare__<sorted-ids>.jsonl`` so the same set of lanes
-        always reuses the same log regardless of selection order.  Each id is
-        re-validated through ``normalize_lane_id`` so a bad caller cannot
-        smuggle path separators into the filename.
+        Kept as the legacy structural path for migration fallback. New writes
+        use the comparison session UUID via `_session_chat_log_path`.
         """
         return self.casefile.chats_dir / f"{self.comparison_id(lane_ids)}.jsonl"
+
+    def _session_chat_log_path(self, session_id: str) -> Path:
+        safe = _normalize_session_id(session_id)
+        return self.casefile.chats_dir / f"{safe}.jsonl"
 
     def append_comparison_chat_messages(
         self, lane_ids: Iterable[str], messages: list[dict[str, Any]]
     ) -> Path:
         """Append messages to the comparison-session log; same caps as
         per-lane appends so a runaway response can't bloat the log."""
-        path = self.comparison_chat_log_path(lane_ids)
+        session = self.ensure_comparison_session(lane_ids)
+        path = self._session_chat_log_path(session.session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         serialized: list[str] = []
         for message in messages:
@@ -575,7 +582,12 @@ class CasefileStore:
         self, lane_ids: Iterable[str]
     ) -> tuple[list[dict[str, Any]], int]:
         """Read the comparison-session log; mirrors ``read_chat_messages``."""
-        path = self.comparison_chat_log_path(lane_ids)
+        session = self.get_comparison_session(lane_ids)
+        path = self._session_chat_log_path(session.session_id)
+        if not path.exists():
+            legacy_path = self.comparison_chat_log_path(lane_ids)
+            if legacy_path.exists():
+                path = legacy_path
         if not path.exists():
             return [], 0
         out: list[dict[str, Any]] = []
@@ -603,7 +615,8 @@ class CasefileStore:
     def append_chat_messages(
         self, lane_id: str, messages: list[dict[str, Any]]
     ) -> Path:
-        path = self.chat_log_path(lane_id)
+        lane = self.load_snapshot().lane_by_id(lane_id)
+        path = self._session_chat_log_path(lane.session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Validate every message before opening the file so that a size
         # violation on message N never leaves messages 0..N-1 partially
@@ -632,7 +645,12 @@ class CasefileStore:
         should surface a non-zero count to the user so that slow log rot is
         not invisible.
         """
-        path = self.chat_log_path(lane_id)
+        lane = self.load_snapshot().lane_by_id(lane_id)
+        path = self._session_chat_log_path(lane.session_id)
+        if not path.exists():
+            legacy_path = self.chat_log_path(lane_id)
+            if legacy_path.exists():
+                path = legacy_path
         if not path.exists():
             return [], 0
         out: list[dict[str, Any]] = []
@@ -661,9 +679,10 @@ class CasefileStore:
         return out, skipped
 
     def clear_chat_messages(self, lane_id: str) -> None:
-        path = self.chat_log_path(lane_id)
-        if path.exists():
-            path.unlink()
+        lane = self.load_snapshot().lane_by_id(lane_id)
+        for path in (self._session_chat_log_path(lane.session_id), self.chat_log_path(lane_id)):
+            if path.exists():
+                path.unlink()
 
     # ----- internals -----
 

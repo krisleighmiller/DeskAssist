@@ -1192,6 +1192,7 @@ def handle_casefile_open_comparison(request: dict[str, Any]) -> dict[str, Any]:
     # Validate the lanes exist and the cascade resolves cleanly.  If a lane
     # in the set was deleted out-of-band, this raises before we report a
     # "loaded" session that is already broken.
+    service.ensure_comparison_session(lane_ids)
     service.resolve_comparison_scope(lane_ids)
     summary = _serialize_comparison_summary(service, lane_ids)
     messages, skipped = service.read_comparison_chat(lane_ids)
@@ -1231,6 +1232,7 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
         raise ValueError("messages must be an array")
 
     service = CasefileService(root)
+    service.ensure_comparison_session(lane_ids)
     scope = service.resolve_comparison_scope(lane_ids)
 
     chat = ChatService(

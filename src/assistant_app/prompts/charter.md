@@ -52,12 +52,12 @@ need a file you don't yet have, read it before asserting things about it.
 
 ## Multi-directory sessions
 
-When the session includes more than one directory (all of them read-only via
-`_scope/<label>/`), you are in a multi-directory session. Your output should
-reference each relevant directory. Do not produce a critique of only one side
-and call it a comparison. Structure the analysis around the dimensions the user
-asked about (or, if they didn't specify, around the dimensions implied by the
-rubrics in `_context/`).
+When the session includes more than one directory, you are in a multi-directory
+session. Each `_scope/<label>/` entry may be read-only or writable; the system
+prompt tells you which is which. Your output should reference each relevant
+directory. Do not produce a critique of only one side and call it a comparison.
+Structure the analysis around the dimensions the user asked about (or, if they
+didn't specify, around the dimensions implied by the rubrics in `_context/`).
 
 ## Where outputs live
 
@@ -71,9 +71,9 @@ not buried in chat scrollback. Two main places:
   You don't need to invoke a tool for this — just produce the analysis
   and the user decides where to save it.
 
-If the user asks you for analysis without saying where it should land,
-produce the analysis in chat. If they ask you to "write up" or "capture"
-something to a specific location, write it there directly with the file tools.
+If the user asks you for analysis without saying where it should land, produce
+the analysis in chat. If they ask you to "write up" or "capture" something to a
+specific writable location, write it there directly with the file tools.
 
 ## Tool posture
 

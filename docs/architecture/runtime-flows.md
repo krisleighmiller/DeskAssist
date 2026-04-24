@@ -138,22 +138,22 @@ Sequence:
 1. The user picks two lanes and opens a comparison chat from the `Lanes` tab.
 2. The renderer calls `assistantApi.openComparison(laneIds)`.
 3. Electron main forwards `casefile:openComparison` to the Python bridge.
-4. The bridge validates the lane set, resolves a read-only comparison scope, and loads persisted comparison chat history from the synthetic comparison log.
+4. The bridge validates the lane set, ensures comparison session metadata exists, resolves the comparison scope with each directory's configured read/write access, and loads persisted comparison chat history from the session UUID log.
 5. The renderer registers the returned comparison session and focuses it in the `Chat` tab.
 6. When the user sends a comparison message, the renderer calls `assistantApi.sendComparisonChat(...)`.
 7. Electron main forwards the request to Python with the chosen lane ids and provider information.
 8. The bridge builds a `ChatService` with:
-   - comparison overlays for each lane
-   - ancestor and attachment overlays
-   - writes disabled
+   - scoped directories for each lane
+   - ancestor and attachment scope entries
+   - write tools enabled only when at least one scoped directory is writable
 9. The assistant charter and comparison context are injected.
-10. The provider runs against that read-only scope and the bridge persists the resulting delta to the comparison chat log.
+10. The provider runs against that scoped session and the bridge persists the resulting delta to the comparison chat log.
 
 What is different from lane chat:
 
-- there is no meaningful write root for user work
-- write tools are not merely unapproved; they are absent
-- the scope is the union of multiple lanes plus inherited overlays
+- the scope is the union of multiple lanes plus inherited scope entries
+- each directory keeps its configured read/write access
+- write tools still require explicit approval before execution
 - the session id is synthetic and order-independent
 
 This is an important early example of DeskAssist supporting multiple related contexts inside one workspace.

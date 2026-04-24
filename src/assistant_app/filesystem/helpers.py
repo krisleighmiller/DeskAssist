@@ -204,6 +204,9 @@ class WorkspaceFilesystem:
             # A fully read-only scoped session still needs a discoverable root.
             # Return only virtual mount names, never the casefile-root contents.
             return self.workspace_root, self._top_level_overlay_entries()
+        virtual_entries = self._virtual_overlay_entries(normalized_input)
+        if virtual_entries is not None:
+            return self.workspace_root, virtual_entries
         target, prefix = self._resolve_for_read(candidate)
         # Special case: listing the write root with overlays present should
         # surface the available virtual prefixes too, so the model can
@@ -246,6 +249,24 @@ class WorkspaceFilesystem:
             seen_top.add(top)
             entries.append({"name": top, "type": "overlay"})
         return entries
+
+    def _virtual_overlay_entries(self, candidate: str) -> list[dict[str, str]] | None:
+        normalized = candidate.strip().strip("/")
+        if not normalized:
+            return None
+        child_names: set[str] = set()
+        for mount_prefix, _root, _writable in self._mounts:
+            if mount_prefix == normalized:
+                return None
+            if not mount_prefix.startswith(normalized + "/"):
+                continue
+            remainder = mount_prefix[len(normalized) + 1 :]
+            child = remainder.split("/", 1)[0]
+            if child:
+                child_names.add(child)
+        if not child_names:
+            return None
+        return [{"name": name, "type": "overlay"} for name in sorted(child_names, key=str.lower)]
 
     # ----- write operations -----
 

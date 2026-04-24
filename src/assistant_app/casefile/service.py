@@ -170,7 +170,7 @@ class CasefileService:
 
     def resolve_comparison_scope(self, lane_ids: list[str]) -> ScopeContext:
         snapshot = self.store.load_snapshot()
-        session = self.store.ensure_comparison_session(lane_ids)
+        session = self.store.get_comparison_session(lane_ids)
         return resolve_comparison_scope(
             snapshot,
             lane_ids,
@@ -178,6 +178,11 @@ class CasefileService:
         )
 
     def get_comparison_session(self, lane_ids: list[str]) -> ComparisonSessionConfig:
+        return self.store.get_comparison_session(lane_ids)
+
+    def ensure_comparison_session(
+        self, lane_ids: list[str]
+    ) -> ComparisonSessionConfig:
         return self.store.ensure_comparison_session(lane_ids)
 
     def update_comparison_attachments(

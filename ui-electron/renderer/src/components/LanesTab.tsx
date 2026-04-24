@@ -358,7 +358,7 @@ export function LanesTab(props: LanesTabProps): JSX.Element {
                 void onOpenComparisonChat([effectiveLeft, effectiveRight]);
               }
             }}
-            title="Open a read-only chat that can read both lanes at once (appears in the Chat tab)"
+            title="Open a scoped chat across both lanes; each directory keeps its configured AI read/write access"
           >
             Open compare chat
           </button>

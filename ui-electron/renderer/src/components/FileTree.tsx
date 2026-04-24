@@ -501,7 +501,7 @@ function CompareLaneDialog({
         <p className="muted">
           <span className="compare-lanes-source">Source lane: {sourceLaneName}</span>
           <br />
-          Choose one or more additional lanes to include in this read-only comparison chat.
+          Choose one or more additional lanes to include in this scoped comparison chat.
         </p>
         <form onSubmit={submit}>
           <div className="compare-lanes-list" role="group" aria-label="Lanes to compare">

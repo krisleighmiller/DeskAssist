@@ -436,7 +436,7 @@ export interface AssistantApi {
   // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;
 
-  // M3.5c: comparison-chat sessions (multi-lane, read-only).
+  // M3.5c: comparison-chat sessions (multi-lane scoped chat).
   openComparison: (laneIds: string[]) => Promise<ComparisonSession>;
   updateComparisonAttachments: (
     laneIds: string[],

@@ -203,8 +203,8 @@ A comparison is a multi-directory session where related work can be inspected an
 Current implementation reality:
 
 - file-level lane comparison is initiated from the `Lanes` tab
-- comparison chat opens a synthetic read-only session over exactly two lanes
-- the session gets its own persistent log keyed by an order-independent synthetic id
+- comparison chat opens a synthetic session over two or more lanes
+- the session gets its own persistent log keyed by a stable session UUID
 
 Known problems with the current model:
 
@@ -292,7 +292,7 @@ Use this mental mapping when writing docs, UI copy, or code comments:
 - lane: the current implementation of a scoped context
 - scope: the AI-visible slice of material for a context or comparison
 - artifact: any durable thing inside or attached to a context
-- comparison: a read-only multi-context session
+- comparison: a multi-context session with per-directory AI read/write access
 
 ## Current Implementation Versus Target Framing
 

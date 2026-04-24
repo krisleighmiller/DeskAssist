@@ -90,6 +90,7 @@ def test_resolve_comparison_scope_unions_overlays(tmp_path: Path) -> None:
     assert overlay_map == {}
     assert scope.write_root == (tmp_path / "lane_a").resolve()
     assert scope.lane_id == "_compare__a__b"
+    assert not (casefile_root / ".casefile" / "comparisons.json").exists()
 
 
 def test_resolve_comparison_scope_includes_ancestors_and_attachments(
@@ -257,7 +258,7 @@ def test_open_comparison_rejects_single_lane(tmp_path: Path) -> None:
         )
 
 
-def test_send_comparison_chat_persists_to_synthetic_log(
+def test_send_comparison_chat_persists_to_session_uuid_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     casefile_root = _bootstrap(tmp_path)
@@ -334,9 +335,28 @@ def test_send_comparison_chat_persists_to_synthetic_log(
     persisted = reopen["comparison"]["messages"]
     assert [m["role"] for m in persisted] == ["user", "assistant"]
     assert persisted[0]["content"] == "compare them"
-    # Log lives at the synthetic comparison path, not under either lane id.
-    log_path = casefile_root / ".casefile" / "chats" / "_compare__a__b.jsonl"
+    # Log lives at the stable session UUID path, not the structural comparison id.
+    session_id = response["comparison"]["sessionId"]
+    UUID(session_id)
+    log_path = casefile_root / ".casefile" / "chats" / f"{session_id}.jsonl"
     assert log_path.is_file()
+    assert not (casefile_root / ".casefile" / "chats" / "_compare__a__b.jsonl").exists()
+
+
+def test_open_comparison_reads_legacy_synthetic_log(tmp_path: Path) -> None:
+    casefile_root = _bootstrap(tmp_path)
+    legacy = casefile_root / ".casefile" / "chats" / "_compare__a__b.jsonl"
+    legacy.write_text('{"role":"user","content":"old"}\n', encoding="utf-8")
+
+    opened = bridge.dispatch(
+        {
+            "command": "casefile:openComparison",
+            "casefileRoot": str(casefile_root),
+            "laneIds": ["a", "b"],
+        }
+    )
+
+    assert opened["comparison"]["messages"] == [{"role": "user", "content": "old"}]
 
 
 def test_send_comparison_chat_requires_user_message(

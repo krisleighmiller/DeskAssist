@@ -111,8 +111,8 @@ class Lane:
 class ComparisonSessionConfig:
     """Persistent casefile-local metadata for one canonical comparison session.
 
-    Comparison chat identity is still derived from the sorted lane-id set; this
-    record only carries session-local scope additions (currently attachments).
+    `id` remains the canonical structural key for a sorted lane-id set;
+    `session_id` is the durable chat/session identity.
     """
 
     id: str
