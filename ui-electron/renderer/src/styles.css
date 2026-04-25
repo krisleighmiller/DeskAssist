@@ -81,48 +81,6 @@ a {
   white-space: nowrap;
 }
 
-.toolbar .toolbar-model {
-  color: #cbd5e1;
-  font-size: 12px;
-}
-
-.toolbar .toolbar-model code {
-  background: #111827;
-  border: 1px solid #1f2937;
-  border-radius: 3px;
-  padding: 1px 5px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-}
-
-.toolbar .keys-status {
-  color: #9ca3af;
-  font-size: 12px;
-  margin-left: auto;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Pressed state for the Terminal toggle so the button visibly tracks
-   whether the integrated-terminal pane is currently open. */
-.toolbar .toolbar-terminal-toggle.active {
-  background: #1d4ed8;
-  border-color: #1d4ed8;
-  color: #f9fafb;
-}
-
-/* When the toolbar wraps, drop the auto-margin so the wrapped row hugs
-   the left edge instead of being pushed past the viewport. */
-@media (max-width: 1100px) {
-  .toolbar .keys-status {
-    margin-left: 0;
-    flex-basis: 100%;
-  }
-}
-
 /* Vertical container that stacks the side-by-side workbench above the
    integrated terminal pane (M4.8). Without this wrapper the terminal
    would be a sibling of the toolbar grid row and we'd lose the natural
@@ -827,6 +785,22 @@ a {
   font-size: 11px;
   color: #374151;
   margin-right: auto;
+}
+
+.chat-model-footer {
+  align-self: flex-end;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.chat-model-footer code {
+  background: #111827;
+  border: 1px solid #1f2937;
+  border-radius: 3px;
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  padding: 1px 5px;
 }
 
 /* Textarea drop-target highlight when a file is being dragged over. */

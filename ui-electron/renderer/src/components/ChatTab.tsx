@@ -85,6 +85,8 @@ function formatElapsed(ms: number): string {
 interface LaneChatProps {
   provider: Provider;
   keyStatus: ApiKeyStatus;
+  activeModel: string;
+  modelIsDefault: boolean;
   messages: ChatMessage[];
   pendingApprovals: ToolCall[];
   busy: boolean;
@@ -108,6 +110,8 @@ interface LaneChatProps {
 interface CompareChatProps {
   provider: Provider;
   keyStatus: ApiKeyStatus;
+  activeModel: string;
+  modelIsDefault: boolean;
   session: ComparisonSession;
   busy: boolean;
   /** Resolved lanes participating in this comparison (used by the Save...
@@ -198,6 +202,24 @@ function providerHasKey(provider: Provider, status: ApiKeyStatus): boolean {
   if (provider === "openai") return status.openaiConfigured;
   if (provider === "anthropic") return status.anthropicConfigured;
   return status.deepseekConfigured;
+}
+
+function ActiveModelFooter({
+  activeModel,
+  modelIsDefault,
+}: {
+  activeModel: string;
+  modelIsDefault: boolean;
+}): JSX.Element {
+  return (
+    <div
+      className="chat-model-footer"
+      title={modelIsDefault ? "Using the default configured model" : "Using a custom configured model"}
+    >
+      Model: <code>{activeModel}</code>
+      {modelIsDefault && <span className="muted"> (default)</span>}
+    </div>
+  );
 }
 
 /** Tab strip listing every chat session the user can switch between
@@ -827,6 +849,10 @@ function LaneChatBody({
             Shift+Enter for new line · @ to include a file · drag a file here
           </span>
         </div>
+        <ActiveModelFooter
+          activeModel={chat.activeModel}
+          modelIsDefault={chat.modelIsDefault}
+        />
       </form>
     </div>
   );
@@ -1080,6 +1106,10 @@ function CompareChatBody({
           </button>
           <span className="chat-hint muted">Shift+Enter for new line</span>
         </div>
+        <ActiveModelFooter
+          activeModel={chat.activeModel}
+          modelIsDefault={chat.modelIsDefault}
+        />
       </form>
       {pendingAttachmentRoot && (
         <InputDialog
@@ -1157,6 +1187,8 @@ export function ChatTab({
           chat={{
             provider: compareChat.provider,
             keyStatus: compareChat.keyStatus,
+            activeModel: compareChat.activeModel,
+            modelIsDefault: compareChat.modelIsDefault,
             session: activeCompareSession,
             busy: compareChat.busy,
             lanes: activeCompareLanes,

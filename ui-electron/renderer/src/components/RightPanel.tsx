@@ -21,6 +21,8 @@ interface RightPanelProps {
     laneChat: {
       provider: Provider;
       keyStatus: ApiKeyStatus;
+      activeModel: string;
+      modelIsDefault: boolean;
       messages: ChatMessage[];
       pendingApprovals: ToolCall[];
       busy: boolean;
@@ -41,6 +43,8 @@ interface RightPanelProps {
     compareChat: {
       provider: Provider;
       keyStatus: ApiKeyStatus;
+      activeModel: string;
+      modelIsDefault: boolean;
       session: ComparisonSession | null;
       busy: boolean;
       onSend: (text: string) => void;

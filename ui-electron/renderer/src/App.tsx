@@ -75,6 +75,10 @@ function upsertRecentContext(prev: RecentContext[], snapshot: CasefileSnapshot):
   return next;
 }
 
+function isPlainEntryName(name: string): boolean {
+  return !name.includes("/") && !name.includes("\\");
+}
+
 export function App(): JSX.Element {
   // ----- Casefile + active lane -----
   const [casefile, setCasefile] = useState<CasefileSnapshot | null>(null);
@@ -468,6 +472,61 @@ export function App(): JSX.Element {
   }, [handleCloseCasefile]);
 
   useEffect(() => {
+    const unsub = api().onOpenRecent(() => {
+      window.dispatchEvent(new Event("deskassist:open-recent-menu"));
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    const unsub = api().onNewFile(async () => {
+      if (!casefile) return;
+      const name = await promptGlobal({
+        title: "New file",
+        message: "Create a file at the casefile root.",
+        defaultValue: "untitled.txt",
+        confirmLabel: "Create",
+      });
+      if (!name?.trim()) return;
+      const trimmed = name.trim();
+      if (!isPlainEntryName(trimmed)) {
+        window.alert("Name must not contain path separators ('/' or '\\').");
+        return;
+      }
+      try {
+        await handleCreateFile(casefile.root, trimmed);
+      } catch {
+        // surfaced via setTreeError
+      }
+    });
+    return unsub;
+  }, [casefile, handleCreateFile, promptGlobal]);
+
+  useEffect(() => {
+    const unsub = api().onNewFolder(async () => {
+      if (!casefile) return;
+      const name = await promptGlobal({
+        title: "New folder",
+        message: "Create a folder at the casefile root.",
+        defaultValue: "new-folder",
+        confirmLabel: "Create",
+      });
+      if (!name?.trim()) return;
+      const trimmed = name.trim();
+      if (!isPlainEntryName(trimmed)) {
+        window.alert("Name must not contain path separators ('/' or '\\').");
+        return;
+      }
+      try {
+        await handleCreateFolder(casefile.root, trimmed);
+      } catch {
+        // surfaced via setTreeError
+      }
+    });
+    return unsub;
+  }, [casefile, handleCreateFolder, promptGlobal]);
+
+  useEffect(() => {
     const unsub = api().onLaneCreate(async () => {
       if (!casefile) return;
       const root = await handleChooseLaneRoot();
@@ -559,6 +618,39 @@ export function App(): JSX.Element {
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLane]);
+
+  useEffect(() => {
+    const unsub = api().onLaneCompare(async () => {
+      if (!casefile || !activeLane) return;
+      const others = casefile.lanes.filter((lane) => lane.id !== activeLane.id);
+      if (others.length === 0) return;
+      if (others.length === 1) {
+        await handleOpenComparisonChat([activeLane.id, others[0].id]);
+        return;
+      }
+      const laneNames = others.map((lane) => lane.name).join(" / ");
+      const selected = await promptGlobal({
+        title: "Compare contexts",
+        message: `Enter context names, separated by commas, to compare with "${activeLane.name}" (${laneNames}).`,
+        defaultValue: others[0]?.name ?? "",
+        confirmLabel: "Compare",
+      });
+      if (!selected?.trim()) return;
+      const selectedNames = selected
+        .split(",")
+        .map((name) => name.trim().toLowerCase())
+        .filter(Boolean);
+      const selectedIds = others
+        .filter((lane) => selectedNames.includes(lane.name.toLowerCase()))
+        .map((lane) => lane.id);
+      if (selectedIds.length === 0) {
+        setTreeError(`No matching context named "${selected.trim()}".`);
+        return;
+      }
+      await handleOpenComparisonChat([activeLane.id, ...selectedIds]);
+    });
+    return unsub;
+  }, [activeLane, casefile, handleOpenComparisonChat, promptGlobal]);
 
   useEffect(() => {
     const unsub = api().onLaneRemove(() => {

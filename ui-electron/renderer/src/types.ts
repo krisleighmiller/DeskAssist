@@ -318,20 +318,27 @@ export interface AssistantApi {
   getProviderModels: () => Promise<ProviderModels>;
   saveProviderModels: (payload: Partial<ProviderModels>) => Promise<ProviderModels>;
   onOpenApiKeys: (handler: () => void) => () => void;
+  onOpenPreferences: (handler: () => void) => () => void;
+  onOpenRecent: (handler: () => void) => () => void;
   /** Subscribe to "toggle integrated terminal" events from the main
    * process menu (View → Toggle Integrated Terminal, accelerator
    * `CmdOrCtrl+\``). Returns an unsubscribe function. */
   onToggleTerminal: (handler: () => void) => () => void;
+  onToggleLeftPanel: (handler: () => void) => () => void;
+  onToggleRightPanel: (handler: () => void) => () => void;
 
   /** Menu-bar → renderer: Lane management triggers. Each returns an
    * unsubscribe function for use in useEffect teardowns. */
   onOpenCasefile: (handler: () => void) => () => void;
   onCloseCasefile: (handler: () => void) => () => void;
+  onNewFile: (handler: () => void) => () => void;
+  onNewFolder: (handler: () => void) => () => void;
   onLaneCreate: (handler: () => void) => () => void;
   onLaneAttach: (handler: () => void) => () => void;
   onLaneRename: (handler: () => void) => () => void;
   onLaneToggleAccess: (handler: () => void) => () => void;
   onLaneRemove: (handler: () => void) => () => void;
+  onLaneCompare: (handler: () => void) => () => void;
   onCasefileSoftReset: (handler: () => void) => () => void;
   onCasefileHardReset: (handler: () => void) => () => void;
 

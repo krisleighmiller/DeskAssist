@@ -1,39 +1,16 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  DEFAULT_PROVIDER_MODELS,
-  type ApiKeyStatus,
   type CasefileSnapshot,
   type Lane,
-  type Provider,
-  type ProviderModels,
   type RecentContext,
 } from "../types";
 import { ContextMenu } from "./ContextMenu";
 
 interface ToolbarProps {
   casefile: CasefileSnapshot | null;
-  provider: Provider;
-  onProviderChange: (provider: Provider) => void;
-  keyStatus: ApiKeyStatus;
-  /** Per-provider model overrides. Empty string for a provider means
-   * "use the backend default" — the toolbar surfaces the resolved model
-   * (override OR default) so users can see what they'll get without
-   * opening the API Keys & Models dialog. */
-  providerModels: ProviderModels;
-  onChooseCasefile: () => void;
-  onCloseCasefile?: () => void;
   recentContexts: RecentContext[];
   onOpenRecentContext: (root: string, activeLaneId: string | null) => void | Promise<void>;
-  onOpenKeys: () => void;
   onSwitchLane?: (laneId: string) => void;
-  /** Show/hide the integrated-terminal pane. Mirrors the View →
-   * Toggle Integrated Terminal menu item and the CmdOrCtrl+`
-   * accelerator. */
-  onToggleTerminal: () => void;
-  /** Whether the integrated-terminal pane is currently visible.
-   * Drives the pressed/aria-pressed state on the toolbar button so
-   * the user can see at a glance whether the pane is open. */
-  terminalOpen: boolean;
   /** M2.5: Lane management actions surfaced in the toolbar dropdown so
    * they are reachable without right-clicking the file tree. */
   onUpdateLaneName?: (laneId: string, newName: string) => Promise<void>;
@@ -41,17 +18,6 @@ interface ToolbarProps {
   onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void>;
   onHardResetCasefile?: () => Promise<void>;
   onSoftResetCasefile?: () => Promise<void>;
-}
-
-function describeKeys(status: ApiKeyStatus): string {
-  const tags: string[] = [];
-  if (status.openaiConfigured) tags.push("OpenAI");
-  if (status.anthropicConfigured) tags.push("Anthropic");
-  if (status.deepseekConfigured) tags.push("DeepSeek");
-  const backend = status.storageBackend === "keychain" ? "Keychain" : "File";
-  return tags.length > 0
-    ? `Keys (${backend}): ${tags.join(", ")}`
-    : `No keys configured (${backend})`;
 }
 
 function ancestorChain(casefile: CasefileSnapshot, laneId: string | null): Lane[] {
@@ -76,18 +42,9 @@ function basenameFromPath(path: string): string {
 export function Toolbar(props: ToolbarProps): JSX.Element {
   const {
     casefile,
-    provider,
-    onProviderChange,
-    keyStatus,
-    providerModels,
-    onChooseCasefile,
-    onCloseCasefile,
     recentContexts,
     onOpenRecentContext,
-    onOpenKeys,
     onSwitchLane,
-    onToggleTerminal,
-    terminalOpen,
     onUpdateLaneName,
     onRemoveLane,
     onSetLaneWritable,
@@ -95,14 +52,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     onSoftResetCasefile,
   } = props;
 
-  const terminalShortcutHint =
-    typeof navigator !== "undefined" && /Mac/i.test(navigator.platform)
-      ? "⌘`"
-      : "Ctrl+`";
   const chain = casefile ? ancestorChain(casefile, casefile.activeLaneId) : [];
-  const activeModel =
-    providerModels[provider]?.trim() || DEFAULT_PROVIDER_MODELS[provider];
-  const modelIsDefault = !providerModels[provider]?.trim();
 
   const [laneMenuOpen, setLaneMenuOpen] = useState(false);
   const [recentMenuOpen, setRecentMenuOpen] = useState(false);
@@ -120,6 +70,14 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
   const openRecentMenu = () => {
     setRecentMenuOpen(true);
   };
+
+  useEffect(() => {
+    const openFromAppMenu = () => setRecentMenuOpen(true);
+    window.addEventListener("deskassist:open-recent-menu", openFromAppMenu);
+    return () => {
+      window.removeEventListener("deskassist:open-recent-menu", openFromAppMenu);
+    };
+  }, []);
 
   /** Build the items list for the Lane ▾ dropdown. */
   const buildLaneMenuItems = () => {
@@ -233,14 +191,6 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
 
   return (
     <div className="toolbar">
-      <button type="button" onClick={onChooseCasefile}>
-        Open Workspace
-      </button>
-      {casefile && onCloseCasefile && (
-        <button type="button" onClick={onCloseCasefile}>
-          Close Workspace
-        </button>
-      )}
       {recentContexts.length > 0 && (
         <div className="toolbar-lane-menu-wrapper">
           <button
@@ -324,36 +274,6 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
           )}
         </div>
       )}
-      <label htmlFor="providerSelect">Provider</label>
-      <select
-        id="providerSelect"
-        value={provider}
-        onChange={(event) => onProviderChange(event.target.value as Provider)}
-      >
-        <option value="openai">OpenAI</option>
-        <option value="anthropic">Anthropic</option>
-        <option value="deepseek">DeepSeek</option>
-      </select>
-      <span
-        className="toolbar-model"
-        title={modelIsDefault ? "Backend default — change in API Keys & Models" : "Custom model"}
-      >
-        Model: <code>{activeModel}</code>
-        {modelIsDefault && <span className="muted"> (default)</span>}
-      </span>
-      <button type="button" onClick={onOpenKeys}>
-        API Keys &amp; Models
-      </button>
-      <button
-        type="button"
-        className={`toolbar-terminal-toggle${terminalOpen ? " active" : ""}`}
-        onClick={onToggleTerminal}
-        aria-pressed={terminalOpen}
-        title={`Toggle integrated terminal (${terminalShortcutHint})`}
-      >
-        Terminal
-      </button>
-      <span className="keys-status">{describeKeys(keyStatus)}</span>
     </div>
   );
 }

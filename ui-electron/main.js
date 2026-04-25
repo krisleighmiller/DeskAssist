@@ -462,57 +462,46 @@ function createWindow() {
     }
   });
 
-  const settingsSubmenu = [
-    {
-      label: "API Keys",
-      click: () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("app:open-api-keys");
-        }
-      },
-    },
-  ];
-
   const sendToRenderer = (channel) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send(channel);
     }
   };
 
+  const settingsSubmenu = [
+    {
+      label: "API Keys and Models",
+      click: () => sendToRenderer("app:open-api-keys"),
+    },
+    {
+      label: "Preferences",
+      click: () => sendToRenderer("app:open-preferences"),
+    },
+  ];
+
   const laneSubmenu = [
     {
-      label: "Create Context…",
+      label: "Create New Lane",
       accelerator: "CmdOrCtrl+Shift+L",
       click: () => sendToRenderer("app:lane:create"),
     },
     {
-      label: "Attach to Context…",
+      label: "Attach to Lane",
       accelerator: "CmdOrCtrl+Shift+A",
       click: () => sendToRenderer("app:lane:attach"),
     },
-    { type: "separator" },
     {
-      label: "Rename Active Context…",
-      accelerator: "CmdOrCtrl+Shift+N",
-      click: () => sendToRenderer("app:lane:rename"),
-    },
-    {
-      label: "Toggle AI Write Access",
+      label: "Toggle AI Access",
       accelerator: "CmdOrCtrl+Shift+W",
       click: () => sendToRenderer("app:lane:toggle-access"),
     },
     {
-      label: "Remove Active Context",
-      click: () => sendToRenderer("app:lane:remove"),
-    },
-    { type: "separator" },
-    {
-      label: "Reset Workspace (soft)…",
-      click: () => sendToRenderer("app:casefile:soft-reset"),
+      label: "Rename",
+      click: () => sendToRenderer("app:lane:rename"),
     },
     {
-      label: "Hard Reset Workspace…",
-      click: () => sendToRenderer("app:casefile:hard-reset"),
+      label: "Compare",
+      click: () => sendToRenderer("app:lane:compare"),
     },
   ];
   const template = [
@@ -540,16 +529,30 @@ function createWindow() {
       label: "File",
       submenu: [
         {
-          label: "Open Workspace…",
+          label: "Open Casefile",
           accelerator: "CmdOrCtrl+Shift+O",
           click: () => sendToRenderer("app:open-casefile"),
         },
         {
-          label: "Close Workspace",
+          label: "Close Casefile",
           accelerator: "CmdOrCtrl+Shift+K",
           click: () => sendToRenderer("app:close-casefile"),
         },
-        ...(process.platform === "darwin" ? [{ role: "close" }] : [{ role: "quit" }]),
+        {
+          label: "Recent",
+          click: () => sendToRenderer("app:recent:open"),
+        },
+        { type: "separator" },
+        {
+          label: "New File",
+          accelerator: "CmdOrCtrl+N",
+          click: () => sendToRenderer("app:file:new"),
+        },
+        {
+          label: "New Folder",
+          accelerator: "CmdOrCtrl+Shift+N",
+          click: () => sendToRenderer("app:folder:new"),
+        },
       ],
     },
     {
@@ -576,14 +579,10 @@ function createWindow() {
       ],
     },
     {
-      label: "Context",
-      submenu: laneSubmenu,
-    },
-    {
       label: "View",
       submenu: [
         {
-          label: "Toggle Integrated Terminal",
+          label: "Terminal",
           // Mirrors the well-known VS Code shortcut. Electron normalises
           // `CmdOrCtrl` to ⌘ on macOS and Ctrl elsewhere, so this is a
           // single binding that does the right thing on every platform.
@@ -594,10 +593,17 @@ function createWindow() {
             }
           },
         },
+        {
+          label: "show/hide left panel",
+          click: () => sendToRenderer("app:toggle-left-panel"),
+        },
+        {
+          label: "show/hide right panel",
+          click: () => sendToRenderer("app:toggle-right-panel"),
+        },
         { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
-        { role: "toggleDevTools" },
         { type: "separator" },
         { role: "resetZoom" },
         { role: "zoomIn" },
@@ -605,6 +611,14 @@ function createWindow() {
         { type: "separator" },
         { role: "togglefullscreen" },
       ],
+    },
+    {
+      label: "Context",
+      submenu: laneSubmenu,
+    },
+    {
+      label: "Settings",
+      submenu: settingsSubmenu,
     },
     {
       label: "Window",
@@ -615,10 +629,6 @@ function createWindow() {
           ? [{ type: "separator" }, { role: "front" }]
           : [{ role: "close" }]),
       ],
-    },
-    {
-      label: "Settings",
-      submenu: settingsSubmenu,
     },
     {
       role: "help",

@@ -72,10 +72,30 @@ contextBridge.exposeInMainWorld("assistantApi", {
     ipcRenderer.on("app:open-api-keys", wrapped);
     return () => ipcRenderer.removeListener("app:open-api-keys", wrapped);
   },
+  onOpenPreferences: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:open-preferences", wrapped);
+    return () => ipcRenderer.removeListener("app:open-preferences", wrapped);
+  },
+  onOpenRecent: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:recent:open", wrapped);
+    return () => ipcRenderer.removeListener("app:recent:open", wrapped);
+  },
   onToggleTerminal: (handler) => {
     const wrapped = () => handler();
     ipcRenderer.on("app:toggle-terminal", wrapped);
     return () => ipcRenderer.removeListener("app:toggle-terminal", wrapped);
+  },
+  onToggleLeftPanel: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:toggle-left-panel", wrapped);
+    return () => ipcRenderer.removeListener("app:toggle-left-panel", wrapped);
+  },
+  onToggleRightPanel: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:toggle-right-panel", wrapped);
+    return () => ipcRenderer.removeListener("app:toggle-right-panel", wrapped);
   },
 
   // Menu-bar → renderer: lane management actions.
@@ -91,6 +111,16 @@ contextBridge.exposeInMainWorld("assistantApi", {
     const wrapped = () => handler();
     ipcRenderer.on("app:close-casefile", wrapped);
     return () => ipcRenderer.removeListener("app:close-casefile", wrapped);
+  },
+  onNewFile: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:file:new", wrapped);
+    return () => ipcRenderer.removeListener("app:file:new", wrapped);
+  },
+  onNewFolder: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:folder:new", wrapped);
+    return () => ipcRenderer.removeListener("app:folder:new", wrapped);
   },
   onLaneCreate: (handler) => {
     const wrapped = () => handler();
@@ -116,6 +146,11 @@ contextBridge.exposeInMainWorld("assistantApi", {
     const wrapped = () => handler();
     ipcRenderer.on("app:lane:remove", wrapped);
     return () => ipcRenderer.removeListener("app:lane:remove", wrapped);
+  },
+  onLaneCompare: (handler) => {
+    const wrapped = () => handler();
+    ipcRenderer.on("app:lane:compare", wrapped);
+    return () => ipcRenderer.removeListener("app:lane:compare", wrapped);
   },
   onCasefileSoftReset: (handler) => {
     const wrapped = () => handler();

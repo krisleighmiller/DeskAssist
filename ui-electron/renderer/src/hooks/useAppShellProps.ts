@@ -22,6 +22,7 @@ import type {
   ToolCall,
   UpdateLaneResult,
 } from "../types";
+import { DEFAULT_PROVIDER_MODELS } from "../types";
 
 interface ShellViewModelState {
   casefile: CasefileSnapshot | null;
@@ -130,16 +131,13 @@ export function useAppShellProps({
         root: state.activeLane.root,
       }
     : null;
+  const activeModel =
+    state.providerModels[state.provider]?.trim() || DEFAULT_PROVIDER_MODELS[state.provider];
+  const modelIsDefault = !state.providerModels[state.provider]?.trim();
 
   return {
     toolbar: {
       casefile: state.casefile,
-      provider: state.provider,
-      onProviderChange: actions.onProviderChange,
-      keyStatus: state.keyStatus,
-      providerModels: state.providerModels,
-      onChooseCasefile: actions.onChooseCasefile,
-      onCloseCasefile: state.casefile ? actions.onCloseCasefile : undefined,
       recentContexts: state.recentContexts,
       onOpenRecentContext: actions.onOpenRecentContext,
       onSwitchLane: actions.onSwitchLane,
@@ -234,6 +232,8 @@ export function useAppShellProps({
           laneChat: {
             provider: state.provider,
             keyStatus: state.keyStatus,
+            activeModel,
+            modelIsDefault,
             messages: state.sessionMessages,
             pendingApprovals: state.sessionPendingApprovals,
             busy: state.chatBusy,
@@ -266,6 +266,8 @@ export function useAppShellProps({
           compareChat: {
             provider: state.provider,
             keyStatus: state.keyStatus,
+            activeModel,
+            modelIsDefault,
             session: state.focusedComparisonSession,
             busy: state.comparisonChatBusy,
             onSend: actions.onSendComparisonChat,

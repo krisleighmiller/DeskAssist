@@ -9,10 +9,7 @@ import { RightPanel } from "./RightPanel";
 import { Toolbar } from "./Toolbar";
 import { WorkbenchShell } from "./WorkbenchShell";
 
-type ToolbarBaseProps = Omit<
-  ComponentProps<typeof Toolbar>,
-  "onOpenKeys" | "onToggleTerminal" | "terminalOpen"
->;
+type ToolbarBaseProps = ComponentProps<typeof Toolbar>;
 
 type RightPanelBaseProps = Omit<
   ComponentProps<typeof RightPanel>,
@@ -61,7 +58,6 @@ export function AppShell({
     handleNewTerminal,
     handleSelectTerminal,
     handleCloseTerminal,
-    toggleTerminalOpen,
   } = useTerminalManager({
     activeLane,
     casefileRoot,
@@ -76,13 +72,28 @@ export function AppShell({
     };
   }, []);
 
+  useEffect(() => {
+    const remove = api().onOpenPreferences(() => {
+      window.alert("Preferences will be added in a later update.");
+    });
+    return () => {
+      remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    const removeLeft = api().onToggleLeftPanel(toggleLeftPane);
+    const removeRight = api().onToggleRightPanel(toggleRightPane);
+    return () => {
+      removeLeft();
+      removeRight();
+    };
+  }, [toggleLeftPane, toggleRightPane]);
+
   return (
     <div className="app">
       <Toolbar
         {...toolbar}
-        onOpenKeys={() => setKeysOpen(true)}
-        onToggleTerminal={toggleTerminalOpen}
-        terminalOpen={terminalOpen}
       />
       <WorkbenchShell
         workspaceTitle={workbench.workspaceTitle}
