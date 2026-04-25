@@ -7,8 +7,8 @@ Covers:
   the bridge for idempotency.
 * Oversized / missing / empty charter files raise `CharterError`.
 * `chat:send` prepends the charter at index 0 — even with no casefile.
-* When auto-context and a user prompt draft are also active, the on-the-
-  wire system-message order is `[charter, context, prompt]`.
+* When auto-context is active, the on-the-wire system-message order is
+  `[charter, context]`.
 * Resumed turns (history already contains the charter) do not stack a
   duplicate.
 * `casefile:sendComparisonChat` prepends the charter at the head of the
@@ -24,6 +24,7 @@ import pytest
 
 from assistant_app import electron_bridge as bridge
 from assistant_app import prompts as charter_module
+from assistant_app.casefile import CasefileService, ContextManifest
 from assistant_app.prompts import (
     CHARTER_MARKER,
     CharterError,
@@ -159,12 +160,10 @@ def test_chat_send_injects_charter_with_no_casefile(
     assert systems[0].startswith(CHARTER_MARKER)
 
 
-def test_chat_send_layers_charter_context_and_prompt_in_order(
+def test_chat_send_layers_charter_and_context_in_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """With all three layers active the order is [charter, context, prompt]."""
-    from assistant_app.casefile import PromptsStore
-
+    """With auto-context active the order is [charter, context]."""
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
     # An auto-included context file under the casefile root triggers the
@@ -174,14 +173,8 @@ def test_chat_send_layers_charter_context_and_prompt_in_order(
         "Always be analytical.", encoding="utf-8"
     )
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
-    # Tell the casefile context manifest to auto-include the rubric so the
-    # M3.5a context-injection layer fires on chat:send.
-    bridge.dispatch(
-        {
-            "command": "casefile:saveContext",
-            "casefileRoot": str(casefile_root),
-            "context": {"files": ["_context/rubric.md"]},
-        }
+    CasefileService(casefile_root).save_context_manifest(
+        ContextManifest(files=("_context/rubric.md",))
     )
     lane_a = tmp_path / "lane_a"
     lane_a.mkdir()
@@ -199,8 +192,6 @@ def test_chat_send_layers_charter_context_and_prompt_in_order(
             "laneId": "a",
         }
     )
-    PromptsStore(casefile_root).create(name="Reviewer", body="You are a reviewer.")
-
     captured: dict[str, Any] = {}
     monkeypatch.setattr(bridge, "ChatService", _make_stub_chat_service(captured))
     bridge.dispatch(
@@ -211,14 +202,12 @@ def test_chat_send_layers_charter_context_and_prompt_in_order(
             "provider": "openai",
             "userMessage": "hello",
             "messages": [],
-            "systemPromptId": "reviewer",
         }
     )
     systems = captured["system_prompts"][0]
-    assert len(systems) >= 3, systems
+    assert len(systems) >= 2, systems
     assert systems[0].startswith(CHARTER_MARKER)
     assert systems[1].startswith(bridge._CONTEXT_MARKER)
-    assert systems[2].startswith(bridge._PROMPT_MARKER)
 
 
 def test_chat_send_does_not_duplicate_charter_on_resume(

@@ -84,9 +84,9 @@ export function useContextAndOverlays({
   }, [onCasefileChange, onError]);
 
   const handleSoftResetCasefile = useCallback(
-    async (keepPrompts: boolean) => {
+    async () => {
       try {
-        const snapshot = await api().softResetCasefile(keepPrompts);
+        const snapshot = await api().softResetCasefile();
         onCasefileChange(snapshot);
       } catch (error) {
         const message = errorMessage(error);

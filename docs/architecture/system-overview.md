@@ -63,7 +63,7 @@ Why this layer matters:
 
 - it is the security and ergonomics boundary between the renderer and Electron
 - it defines the effective application API seen by the UI
-- it reveals the current feature surface very clearly: casefiles, lanes, notes, prompts, inbox, comparison chat, workspace IO, and terminals
+- it reveals the current feature surface very clearly: workspaces, contexts, scoped chat, comparison chat, workspace IO, and terminals
 
 ## React Renderer
 
@@ -73,13 +73,12 @@ Supporting implementations:
 
 - [`ui-electron/renderer/src/components/RightPanel.tsx`](../../ui-electron/renderer/src/components/RightPanel.tsx)
 - [`ui-electron/renderer/src/components/FileTree.tsx`](../../ui-electron/renderer/src/components/FileTree.tsx)
-- [`ui-electron/renderer/src/components/LanesTab.tsx`](../../ui-electron/renderer/src/components/LanesTab.tsx)
 - [`ui-electron/renderer/src/types.ts`](../../ui-electron/renderer/src/types.ts)
 
 Responsibilities today:
 
 - own most UI state for the entire workbench
-- orchestrate lane switching, tab state, notes, prompts, inboxes, comparisons, and chat history
+- orchestrate context switching, editor tab state, comparison sessions, and chat history
 - drive the three-column layout and integrated terminal panel
 - translate UI actions into `assistantApi` calls
 - reconcile filesystem change notifications into UI refreshes
@@ -95,10 +94,7 @@ Too much cross-feature orchestration is concentrated in `App.tsx`. That makes th
 - workbench coordinator
 - session store
 - chat session manager
-- notes state manager
-- prompt selection manager
 - comparison session registry
-- overlay refresh coordinator
 - terminal session coordinator
 
 This is one of the clearest refactor seams for the next phase.
@@ -110,7 +106,7 @@ Primary implementation: [`src/assistant_app/electron_bridge.py`](../../src/assis
 Responsibilities today:
 
 - accept one JSON request from Electron main
-- dispatch named commands such as `chat:send`, `casefile:open`, `casefile:compareLanes`, and `casefile:listPrompts`
+- dispatch named commands such as `chat:send`, `casefile:open`, `casefile:openComparison`, and `casefile:updateLaneAttachments`
 - apply API keys to environment variables for provider use
 - resolve casefile and lane scope
 - serialize responses back to Electron in a framed JSON payload
@@ -135,8 +131,8 @@ Responsibilities today:
 - manage the casefile lifecycle and lane persistence
 - resolve scope for single-lane and comparison chats
 - build tool registries with read and write permissions
-- inject the assistant charter, casefile context, and selected prompts into chat history
-- persist chat deltas, notes, prompts, and inbox configuration
+- inject the assistant charter and casefile context into chat history
+- persist chat deltas and workspace/context metadata
 - expose bounded, scoped filesystem access
 
 The most important current domain center is:
@@ -179,18 +175,12 @@ The current `.casefile/` model includes:
 
 - `lanes.json` for lane definitions and the active lane
 - `chats/<session_uuid>.jsonl` for lane and comparison chat history
-- `notes/<lane_id>.md` for per-lane notes
-- `prompts/<id>.md` and `prompts/<id>.json` for prompt drafts
 - `context.json` for casefile-wide auto-include patterns
-- `inbox.json` for configured external inbox sources
 
 Relevant code:
 
 - [`src/assistant_app/casefile/models.py`](../../src/assistant_app/casefile/models.py)
 - [`src/assistant_app/casefile/store.py`](../../src/assistant_app/casefile/store.py)
-- [`src/assistant_app/casefile/notes.py`](../../src/assistant_app/casefile/notes.py)
-- [`src/assistant_app/casefile/prompts.py`](../../src/assistant_app/casefile/prompts.py)
-- [`src/assistant_app/casefile/inbox.py`](../../src/assistant_app/casefile/inbox.py)
 
 This persistence model already separates durable context metadata from lane-owned workspace files, which is exactly the kind of split DeskAssist needs for scoped work.
 
@@ -220,21 +210,11 @@ That gives DeskAssist a controllable model of what the AI can read or write with
 
 ## Current Information Architecture
 
-The current UI is organized around right-panel tabs:
-
-- `Chat`
-- `Notes`
-- `Lanes`
-- `Prompts`
-- `Inbox`
+The current UI is organized around a single right-panel chat surface plus the workspace tree/editor/terminal workbench.
 
 Relevant code: [`ui-electron/renderer/src/components/RightPanel.tsx`](../../ui-electron/renderer/src/components/RightPanel.tsx)
 
-This organization reflects implementation maturity more than product framing:
-
-- `Lanes` is both a setup screen and a core workflow screen
-- `Prompts` and `Notes` are durable artifact types, but appear as separate feature destinations
-- `Inbox` is a source management concept, not yet a higher-level context workflow
+This organization reflects the M2.5 correction: former storage-shaped tabs were removed so the scoped chat and workspace browser carry the primary workflow.
 
 This matches the README's diagnosis that internal concepts are more visible than user value.
 
@@ -251,7 +231,7 @@ This matches the README's diagnosis that internal concepts are more visible than
 - The renderer is carrying too much orchestration in one component tree.
 - The product language in the README does not yet line up cleanly with the UI's visible concepts.
 - File browsing and lane creation are related workflows but still feel separate in the implementation.
-- Notes, prompts, inbox items, chats, and files are all artifact-like, but the system still presents them as separate feature surfaces.
+- Chats and files are artifact-like, but the system does not yet provide a unified artifact model.
 - The current shell can do many things, but it does not yet provide a strong "resume and switch context" home experience.
 
 ## Architectural Summary

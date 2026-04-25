@@ -202,9 +202,8 @@ class ContextManifestStore:
 def matches_any(pattern_set: Iterable[str], relative_path: str) -> bool:
     """True if `relative_path` matches any glob in `pattern_set`.
 
-    Helper used by callers (e.g. the bridge's `casefile:saveContext`) to
-    check whether a candidate addition is already covered by an existing
-    pattern, so the UI can deduplicate cleanly.
+    Helper used by callers to check whether a candidate addition is already
+    covered by an existing pattern.
     """
     for pattern in pattern_set:
         if fnmatch.fnmatchcase(relative_path, pattern):

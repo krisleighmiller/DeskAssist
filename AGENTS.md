@@ -265,6 +265,30 @@ If an implementation choice would create a new subsystem, stop and ask whether t
 
 ---
 
+## Hygiene And Dead-Code Tooling
+
+Fast checks belong in normal development flow:
+
+- Python: `make lint:py` (Ruff).
+- TypeScript/Electron/React: `make lint:ts` (ESLint).
+
+Dead-code scans are advisory and must run as separate commands:
+
+- Python: `make deadcode:py` (Vulture).
+- TypeScript/Electron/React: `make deadcode:ts` (Knip).
+
+Run dead-code scans after refactors, before releases, and whenever an agent claims something is unused.
+
+Review all findings in these buckets before changing code:
+
+- safe to remove
+- likely dead, manual check needed
+- runtime-wired, leave alone for now
+
+Agents must never delete code automatically from Ruff, ESLint, Vulture, or Knip output. Tool output is evidence to inspect, not permission to remove. An agent may only delete code after explaining the specific finding, checking runtime wiring, and receiving or already having explicit user direction for that cleanup.
+
+---
+
 ## Required Response Format After Coding
 
 After implementation, respond using this exact structure:

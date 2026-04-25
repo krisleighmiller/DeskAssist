@@ -31,7 +31,7 @@ When to decide:
 
 Impact areas:
 
-- [`ui-electron/renderer/src/components/LanesTab.tsx`](../../ui-electron/renderer/src/components/LanesTab.tsx)
+- [`ui-electron/renderer/src/components/FileTree.tsx`](../../ui-electron/renderer/src/components/FileTree.tsx)
 - right-panel information architecture
 - user-facing copy across the workbench
 
@@ -67,8 +67,8 @@ Impact areas:
 
 Why it matters:
 
-- files, notes, prompts, inbox items, and chat outputs are all durable work objects
-- the current UI presents them through separate tabs and stores
+- files, chat transcripts, and chat outputs are all durable work objects
+- prior notes/prompts/inbox tabs were removed, but their product needs may return through a unified artifact model
 - artifact sprawl will keep increasing if the project adds more types without a shared model
 
 Provisional default:

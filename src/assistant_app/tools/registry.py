@@ -132,7 +132,7 @@ class ToolRegistry:
         if spec is not None:
             try:
                 sanitized["params"] = self._validate_params(spec, sanitized["params"])
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 self._audit(cmd_id, "failed", f"{type(exc).__name__}: {exc}")
                 return {
                     "ok": False,
@@ -154,7 +154,7 @@ class ToolRegistry:
                 "summary": f"Tool {cmd_id} executed successfully.",
                 "result": result,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             self._audit(cmd_id, "failed", f"{type(exc).__name__}: {exc}")
             return {
                 "ok": False,
@@ -187,7 +187,7 @@ class ToolRegistry:
         for name, value in params.items():
             expected_type = spec.input_schema[name]
             if expected_type is bool:
-                if type(value) is not bool:  # noqa: E721
+                if type(value) is not bool:
                     raise TypeError(f"Parameter '{name}' must be bool")
                 continue
             if not isinstance(value, expected_type):

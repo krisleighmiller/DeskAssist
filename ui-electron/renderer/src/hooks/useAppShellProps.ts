@@ -82,7 +82,7 @@ interface ShellViewModelActions {
   onUpdateLane: (laneId: string, update: LaneUpdateInput) => Promise<UpdateLaneResult>;
   onRemoveLane: (laneId: string) => Promise<void>;
   onHardResetCasefile: () => Promise<void>;
-  onSoftResetCasefile: (keepPrompts: boolean) => Promise<void>;
+  onSoftResetCasefile: () => Promise<void>;
   /** Called when the user renames a lane via the file tree context menu. */
   onUpdateLaneName?: (laneId: string, newName: string) => Promise<void>;
   /** M3: add another directory to the active lane's AI scope. */
@@ -146,9 +146,7 @@ export function useAppShellProps({
       onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
       onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,
       onSetLaneWritable: state.casefile ? actions.onSetLaneWritable : undefined,
-      onSoftResetCasefile: state.casefile
-        ? () => actions.onSoftResetCasefile(false)
-        : undefined,
+      onSoftResetCasefile: state.casefile ? actions.onSoftResetCasefile : undefined,
       onHardResetCasefile: state.casefile ? actions.onHardResetCasefile : undefined,
     },
     workbench: {
@@ -211,9 +209,7 @@ export function useAppShellProps({
         onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
         onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,
         onSetLaneWritable: state.casefile ? actions.onSetLaneWritable : undefined,
-        onSoftResetCasefile: state.casefile
-          ? () => actions.onSoftResetCasefile(false)
-          : undefined,
+        onSoftResetCasefile: state.casefile ? actions.onSoftResetCasefile : undefined,
         onHardResetCasefile: state.casefile ? actions.onHardResetCasefile : undefined,
       },
       editor: {

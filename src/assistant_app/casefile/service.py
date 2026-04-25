@@ -100,11 +100,9 @@ class CasefileService:
     def remove_lane(self, lane_id: str) -> CasefileSnapshot:
         """Remove a lane from the casefile (M4.6).
 
-        On-disk per-lane data files (`chats/<id>.jsonl`,
-        `notes/<id>.md`) are intentionally **not** deleted.
-        Re-registering a lane with the same id will surface the prior
-        data again. This mirrors the "hidden but recoverable" decision
-        from the M4.6 spec.
+        On-disk per-lane chat logs (`chats/<session_id>.jsonl`) are
+        intentionally **not** deleted. Re-registering a lane with the
+        same session id will surface the prior data again.
         """
         return self.store.remove_lane(lane_id)
 
@@ -119,9 +117,9 @@ class CasefileService:
         self.store.hard_reset()
         return self.open()
 
-    def soft_reset(self, *, keep_prompts: bool) -> CasefileSnapshot:
+    def soft_reset(self) -> CasefileSnapshot:
         """Clear per-task scratch but keep durable setup (M4.6)."""
-        self.store.soft_reset(keep_prompts=keep_prompts)
+        self.store.soft_reset()
         return self.snapshot()
 
     def find_root_conflict(

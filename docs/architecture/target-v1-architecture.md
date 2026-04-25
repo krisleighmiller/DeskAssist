@@ -126,16 +126,13 @@ Introduce a renderer-side context session model that is broader than raw lane se
 
 Product meaning:
 
-Artifacts are the things users actually work with: files, notes, prompts, chat transcripts, comparisons, context files, attachments, and external source material.
+Artifacts are the things users actually work with: files, chat transcripts, comparisons, context files, attachments, and future captured material.
 
 Current implementation:
 
 - files through lane-root file IO
-- notes through `NotesStore`
-- prompts through `PromptsStore`
-- inbox items through `InboxStore`
 - chat logs through casefile chat persistence
-- comparison results through compare services and comparison logs
+- comparison sessions through comparison chat logs
 
 What already aligns:
 
@@ -145,14 +142,13 @@ What already aligns:
 
 Where the current system leaks:
 
-- notes, prompts, and inbox are presented as parallel tabs rather than related artifact types
-- discoverability is siloed by storage subsystem
+- capture/discovery is still under-modeled after removing the old storage-shaped tabs
 - there is no shared artifact vocabulary or browser surface
 
 V1 target:
 
 - a coherent artifact model, even if it is still backed by multiple stores
-- easier insertion of prompts and notes into chat and workflows
+- easier insertion of captured material into chat and workflows
 - a clearer difference between:
   - lane-owned artifacts
   - casefile-scoped artifacts
@@ -190,10 +186,10 @@ Capabilities are the actions DeskAssist makes available over contexts and artifa
 Current implementation:
 
 - browsing and editing through Electron main and the renderer workbench
-- compare through casefile compare services and diff tabs
+- compare through scoped comparison chat
 - chat through the Python bridge and `ChatService`
 - scoped context through lane and comparison scope resolution
-- capture through notes, prompts, and inbox source registration
+- capture is not yet a first-class workflow
 
 What already aligns:
 
@@ -204,8 +200,7 @@ What already aligns:
 
 Where the current system leaks:
 
-- some capabilities start from the `Lanes` tab rather than from the browser or context itself
-- capture is split across notes, prompts, and inbox instead of one obvious workflow
+- capture does not yet have one obvious workflow
 - scope adjustment is technically strong but not yet obvious in the UI
 
 V1 target:
@@ -219,7 +214,7 @@ Recommended technical boundary:
 
 Treat capabilities as workflows that can be initiated from multiple surfaces. For example:
 
-- compare should be launchable from the browser, lane list, or context home
+- compare should be launchable from the browser or context home
 - capture should be launchable from the shell, current context, or home
 - scope controls should live with chat and context state, not only in setup-oriented screens
 
@@ -241,7 +236,7 @@ Examples from the roadmap:
 Current implementation:
 
 - no formal extension framework yet
-- inbox sources are the closest existing example of an external context source
+- explicit context attachments are the closest existing example of an external context source
 - provider integrations exist, but they are model providers rather than product extensions
 
 V1 target:

@@ -45,11 +45,6 @@ Sequence:
 7. The renderer stores the casefile snapshot and then triggers follow-up reloads:
    - workspace tree
    - lane chat history
-   - notes
-   - context manifest
-   - prompts
-   - inbox sources
-   - overlays when enabled
 
 Lane switching follows the same shape, except the bridge command is `casefile:switchLane` and the returned snapshot updates the active lane root instead of creating a new casefile.
 
@@ -57,7 +52,7 @@ Why it matters:
 
 - the active lane root is the enforcement boundary for renderer-side file IO
 - the casefile snapshot is the renderer's source of truth for current scoped work
-- switching lanes is more than a selection change; it rebinds the workspace tree, notes, chats, and write scope
+- switching contexts is more than a selection change; it rebinds the workspace tree, chat history, and write scope
 
 ## Scoped Chat Send
 
@@ -99,7 +94,6 @@ Sequence:
    - provider
    - optional model override
    - prior message history
-   - current `systemPromptId` if selected
    - `allowWriteTools` set to `false` for the initial turn
 3. Electron main adds the active `casefileRoot` and `laneId`, applies saved model defaults when needed, and forwards `chat:send` to Python.
 4. The bridge resolves the active lane scope:
@@ -110,7 +104,6 @@ Sequence:
 6. The bridge injects system layers in order:
    - product-owned assistant charter
    - casefile context system prompt when applicable
-   - selected prompt draft when applicable
 7. `ChatService` sends the turn to the chosen provider with tool definitions.
 8. If the model requests write tools, the turn pauses and the renderer receives pending approvals instead of executing writes immediately.
 9. If the model requests only read tools, `ChatService` executes them inside the scoped registry and continues the loop until it gets a final assistant message or hits the tool-turn cap.
@@ -122,13 +115,13 @@ Important current behaviors:
 - the model can read only what the resolved scope exposes
 - the model can write only after explicit approval
 - write approval resumes the existing assistant turn instead of starting a new one
-- the active prompt is lane-specific in the renderer, even though prompt drafts are casefile-scoped
+- the scoped chat prompt stack is product-owned: charter first, then casefile context when applicable
 
 ## Comparison Chat
 
 Primary code paths:
 
-- [`ui-electron/renderer/src/components/LanesTab.tsx`](../../ui-electron/renderer/src/components/LanesTab.tsx)
+- [`ui-electron/renderer/src/components/ChatTab.tsx`](../../ui-electron/renderer/src/components/ChatTab.tsx)
 - [`ui-electron/main.js`](../../ui-electron/main.js)
 - [`src/assistant_app/electron_bridge.py`](../../src/assistant_app/electron_bridge.py)
 - [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
@@ -170,7 +163,7 @@ Sequence for listing and opening files:
 
 1. The renderer calls `assistantApi.listWorkspace(maxDepth)` when the active lane changes or a refresh is needed.
 2. Electron main lists the filesystem under `activeLaneRoot`.
-3. The renderer renders the returned tree and, when enabled, separately loads overlay trees from `casefile:resolveScope`.
+3. The renderer renders the returned tree and marks active scope visually from the current casefile snapshot.
 4. Clicking a regular file triggers `assistantApi.readFile(path)`.
 5. Electron main validates that the path stays inside `activeLaneRoot`, reads bounded UTF-8 text, and returns content.
 6. The renderer opens the file in an editor tab keyed by path.
@@ -195,43 +188,9 @@ Important current limitations:
 - overlay files are readable in the editor, but they are read-only views
 - the file browser is already a navigation and context-selection surface, but not yet a complete workspace management surface
 
-## Notes, Prompts, And Inbox Persistence
+## Removed Storage-Shaped Tabs
 
-Primary code paths:
-
-- [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx)
-- [`src/assistant_app/electron_bridge.py`](../../src/assistant_app/electron_bridge.py)
-- [`src/assistant_app/casefile/notes.py`](../../src/assistant_app/casefile/notes.py)
-- [`src/assistant_app/casefile/prompts.py`](../../src/assistant_app/casefile/prompts.py)
-- [`src/assistant_app/casefile/inbox.py`](../../src/assistant_app/casefile/inbox.py)
-
-Notes flow:
-
-1. When the active lane changes, the renderer loads the note for that lane.
-2. Edits are kept in renderer state and debounced before save.
-3. The bridge writes note content to `.casefile/notes/<lane_id>.md`.
-
-Prompt flow:
-
-1. Prompt drafts are loaded at the casefile level.
-2. Creating, saving, and deleting prompts all go through explicit bridge commands.
-3. The selected prompt id is stored per lane in the renderer.
-4. When selected, the prompt body is injected into chat as a tagged system message.
-
-Inbox flow:
-
-1. Inbox sources are configured at the casefile level.
-2. The bridge persists source configuration to `.casefile/inbox.json`.
-3. Item listing and bounded reads happen directly against the configured external directories.
-4. Inbox items are currently read-only references, not lane-owned artifacts.
-
-Why this matters:
-
-These flows already prove that DeskAssist is not just a repo viewer with chat. The app already has multiple durable artifact channels and multiple persistence scopes:
-
-- lane-scoped
-- casefile-scoped
-- external read-only source scoped
+Notes, prompt drafts, and inbox sources previously existed as separate right-panel tabs and bridge command families. Those surfaces were removed in the M2.5/M3 cleanup so the workbench centers on scoped chat, files, comparison chat, and explicit context attachments. Future artifact work should reintroduce capture/discovery through a unified model rather than restoring isolated tabs.
 
 The next product step is to unify how those artifact types are framed and discovered.
 

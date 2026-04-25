@@ -48,10 +48,7 @@ What it currently owns:
 - lane definitions
 - active lane
 - lane chat logs
-- lane notes
-- prompt drafts
 - context manifest
-- inbox source configuration
 
 Recommendation:
 
@@ -71,7 +68,7 @@ There is not yet one single data structure called `context` that covers the full
 - the active lane
 - resolved AI scope
 - open editor tabs
-- associated notes, prompts, inbox references, and comparison sessions
+- associated chat and comparison sessions
 
 Recommendation:
 
@@ -143,11 +140,8 @@ Current implementation reality:
 Artifacts exist, but they are not yet modeled uniformly. They currently live in separate systems:
 
 - lane-root files through Electron file IO
-- notes through `NotesStore`
-- prompts through `PromptsStore`
-- inbox items through `InboxStore`
 - chat logs through casefile chat persistence
-- comparison results in memory and comparison logs
+- comparison chat logs through casefile chat persistence
 
 Recommendation:
 
@@ -202,7 +196,6 @@ A comparison is a multi-directory session where related work can be inspected an
 
 Current implementation reality:
 
-- file-level lane comparison is initiated from the `Lanes` tab
 - comparison chat opens a synthetic session over two or more lanes
 - the session gets its own persistent log keyed by a stable session UUID
 
@@ -248,23 +241,6 @@ Recommendation:
 
 Keep `attachment` as an implementation term for a directory associated with a session. In product copy, prefer "related directory" or "additional context." The read-only assumption should not be baked into the definition.
 
-## Inbox Source
-
-Current meaning:
-
-An inbox source is a configured external directory of read-only material that is not owned by any lane.
-
-Current implementation:
-
-- stored in `.casefile/inbox.json`
-- managed by [`src/assistant_app/casefile/inbox.py`](../../src/assistant_app/casefile/inbox.py)
-
-Recommendation:
-
-Treat `inbox source` as an implementation and advanced workflow term.
-
-The broader product concept is closer to "external context source" or "reference source." The current `Inbox` tab is useful, but it should not define the long-term product taxonomy.
-
 ## Recommended Language Rules
 
 When talking about the product:
@@ -280,7 +256,6 @@ When talking about the current implementation:
 - say `casefile` for the on-disk metadata root
 - say `lane` for the current scoped work record and write boundary
 - say `attachment` for mounted read-only sibling directories
-- say `inbox source` for configured external read-only directories
 
 ## Practical Mapping
 

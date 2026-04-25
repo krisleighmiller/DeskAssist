@@ -13,8 +13,7 @@ contextBridge.exposeInMainWorld("assistantApi", {
     ipcRenderer.invoke("casefile:updateLane", { laneId, ...update }),
   removeLane: (laneId) => ipcRenderer.invoke("casefile:removeLane", { laneId }),
   hardResetCasefile: () => ipcRenderer.invoke("casefile:hardReset"),
-  softResetCasefile: (keepPrompts) =>
-    ipcRenderer.invoke("casefile:softReset", { keepPrompts }),
+  softResetCasefile: () => ipcRenderer.invoke("casefile:softReset"),
   listChat: (laneId) => ipcRenderer.invoke("casefile:listChat", { laneId }),
 
   // Lane-scoped filesystem (rooted at the active lane).

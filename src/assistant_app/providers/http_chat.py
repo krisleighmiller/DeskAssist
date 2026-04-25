@@ -27,7 +27,7 @@ class HttpChatProvider(BaseProvider):
         )
         try:
             message = self.parse_response(response)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise RuntimeError(f"{self.metadata.name} response parse failed: {exc}") from exc
         if message.content is None and not message.tool_calls:
             raise RuntimeError(f"{self.metadata.name} response parse failed: empty assistant payload")

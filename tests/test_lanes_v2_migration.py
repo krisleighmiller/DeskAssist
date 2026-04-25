@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from assistant_app.casefile import CasefileStore, Lane, LaneAttachment
+from assistant_app.casefile import CasefileStore, LaneAttachment
 from assistant_app.casefile.store import LanesFileError
 
 

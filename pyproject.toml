@@ -11,8 +11,27 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = [
+  "pytest>=8.0",
+  "ruff",
+  "vulture",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+  "F",
+  "RUF100",
+]
+
+[tool.vulture]
+paths = ["src", "tests"]
+min_confidence = 80
+sort_by_size = true

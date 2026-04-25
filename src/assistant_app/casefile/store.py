@@ -357,7 +357,7 @@ class CasefileStore:
         Each kwarg is independently optional: ``None`` means "leave the
         field unchanged". The lane id, parent, and attachments are
         explicitly *not* editable here — the id is the filename stem for
-        chats / notes and renaming it would require migrating those
+        chats and renaming it would require migrating those
         files; parent + attachments have their own dedicated mutators
         from M3.5b.
 
@@ -452,31 +452,25 @@ class CasefileStore:
         if meta.exists():
             shutil.rmtree(meta)
 
-    def soft_reset(self, *, keep_prompts: bool) -> None:
+    def soft_reset(self) -> None:
         """Wipe per-task scratch but preserve durable casefile setup.
 
         Removes:
 
         * ``chats/`` (per-lane and ``_compare__*`` logs).
-        * ``notes/`` (all entries).
         * ``lanes.json`` — re-initialized to the default single ``main``
           lane via ``ensure_initialized`` after deletion.
-        * ``prompts/`` if and only if ``keep_prompts`` is False.
+        * Legacy ``notes/`` and ``prompts/`` directories if present.
 
         Preserves:
 
         * ``context.json`` (auto-include manifest).
-        * ``inbox.json`` (configured external sources).
-        * ``prompts/`` if ``keep_prompts`` is True.
 
         Idempotent: running this on a casefile that's already in the
         target state succeeds without error.
         """
         meta = self.casefile.metadata_dir
-        per_task_subdirs = ["chats", "notes"]
-        if not keep_prompts:
-            per_task_subdirs.append("prompts")
-        for name in per_task_subdirs:
+        for name in ("chats", "notes", "prompts"):
             path = meta / name
             if path.exists():
                 shutil.rmtree(path)

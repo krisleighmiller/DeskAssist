@@ -290,7 +290,7 @@ export interface AssistantApi {
   ) => Promise<UpdateLaneResult>;
   removeLane: (laneId: string) => Promise<CasefileSnapshot>;
   hardResetCasefile: () => Promise<CasefileSnapshot>;
-  softResetCasefile: (keepPrompts: boolean) => Promise<CasefileSnapshot>;
+  softResetCasefile: () => Promise<CasefileSnapshot>;
 
   // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;

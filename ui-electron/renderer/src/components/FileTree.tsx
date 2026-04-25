@@ -105,11 +105,9 @@ interface FileTreeProps {
   /** Toggle the AI write access for the lane whose root was right-clicked.
    * M2.5: per-directory read/write permissions. */
   onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void> | void;
-  /** Reset the casefile metadata (soft reset — keeps data files on disk).
-   * M2.5: restored from LanesTab. */
+  /** Reset the casefile metadata (soft reset — keeps data files on disk). */
   onSoftResetCasefile?: () => Promise<void> | void;
-  /** Hard-reset the casefile metadata directory entirely.
-   * M2.5: restored from LanesTab. */
+  /** Hard-reset the casefile metadata directory entirely. */
   onHardResetCasefile?: () => Promise<void> | void;
 }
 

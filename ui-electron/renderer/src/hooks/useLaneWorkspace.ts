@@ -26,7 +26,7 @@ interface UseLaneWorkspaceArgs {
 }
 
 export function useLaneWorkspace({
-  casefile,
+  casefile: _casefile,
   activeLane,
   activeLaneId,
   session,

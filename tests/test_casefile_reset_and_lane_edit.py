@@ -8,22 +8,20 @@ Covers:
   per-lane on-disk data; the M4.6 service wrapper does too.
 * `CasefileStore.hard_reset` deletes `.casefile/` outright; subsequent
   `load_snapshot` re-initializes a fresh casefile.
-* `CasefileStore.soft_reset` wipes per-task scratch (chats / notes),
-  conditionally wipes prompts, preserves context.json + inbox.json,
-  and re-creates the default `main` lane.
+* `CasefileStore.soft_reset` wipes per-task scratch and legacy scratch
+  directories, preserves context.json, and re-creates the default `main` lane.
 * Both resets are idempotent.
 * `CasefileService.find_root_conflict` detects overlap and respects
   `exclude_lane_id`.
 * Bridge dispatch: `casefile:updateLane` round-trips and emits
   `rootConflict` when the new root collides with another lane.
 * Bridge dispatch: `casefile:removeLane`, `casefile:hardReset`,
-  `casefile:softReset` (`keepPrompts` toggle).
+  `casefile:softReset`.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -191,41 +189,26 @@ def test_soft_reset_wipes_per_task_scratch(tmp_path: Path) -> None:
         (meta / sub).mkdir(parents=True, exist_ok=True)
         (meta / sub / "leftover.txt").write_text("x", encoding="utf-8")
     service = CasefileService(casefile_root)
-    service.soft_reset(keep_prompts=False)
+    service.soft_reset()
     for sub in ("chats", "notes", "prompts"):
         assert not (meta / sub / "leftover.txt").exists(), sub
 
 
-def test_soft_reset_keep_prompts_preserves_prompts_dir(tmp_path: Path) -> None:
-    casefile_root, _, _ = _bootstrap(tmp_path)
-    meta = casefile_root / ".casefile"
-    (meta / "prompts").mkdir(parents=True, exist_ok=True)
-    (meta / "prompts" / "rubric.md").write_text("rubric body", encoding="utf-8")
-    (meta / "chats").mkdir(parents=True, exist_ok=True)
-    (meta / "chats" / "scratch.jsonl").write_text("{}\n", encoding="utf-8")
-    service = CasefileService(casefile_root)
-    service.soft_reset(keep_prompts=True)
-    assert (meta / "prompts" / "rubric.md").exists()
-    assert not (meta / "chats" / "scratch.jsonl").exists()
-
-
-def test_soft_reset_preserves_context_and_inbox(tmp_path: Path) -> None:
+def test_soft_reset_preserves_context(tmp_path: Path) -> None:
     casefile_root, _, _ = _bootstrap(tmp_path)
     meta = casefile_root / ".casefile"
     (meta / "context.json").write_text(
         '{"version": 1, "files": ["doc.md"]}', encoding="utf-8"
     )
-    (meta / "inbox.json").write_text('{"version": 1, "sources": []}', encoding="utf-8")
     service = CasefileService(casefile_root)
-    service.soft_reset(keep_prompts=True)
+    service.soft_reset()
     assert (meta / "context.json").exists()
-    assert (meta / "inbox.json").exists()
 
 
 def test_soft_reset_recreates_default_main_lane(tmp_path: Path) -> None:
     casefile_root, _, _ = _bootstrap(tmp_path)
     service = CasefileService(casefile_root)
-    snapshot = service.soft_reset(keep_prompts=True)
+    snapshot = service.soft_reset()
     assert [lane.id for lane in snapshot.lanes] == ["main"]
     assert snapshot.active_lane_id == "main"
 
@@ -233,8 +216,8 @@ def test_soft_reset_recreates_default_main_lane(tmp_path: Path) -> None:
 def test_soft_reset_is_idempotent(tmp_path: Path) -> None:
     casefile_root, _, _ = _bootstrap(tmp_path)
     service = CasefileService(casefile_root)
-    service.soft_reset(keep_prompts=False)
-    snapshot = service.soft_reset(keep_prompts=False)
+    service.soft_reset()
+    snapshot = service.soft_reset()
     assert [lane.id for lane in snapshot.lanes] == ["main"]
 
 
@@ -345,19 +328,7 @@ def test_dispatch_hard_reset(tmp_path: Path) -> None:
     assert not (casefile_root / ".casefile" / "chats" / "a.jsonl").exists()
 
 
-def test_dispatch_soft_reset_keep_prompts_default_true(tmp_path: Path) -> None:
-    casefile_root, _, _ = _bootstrap(tmp_path)
-    meta = casefile_root / ".casefile"
-    (meta / "prompts").mkdir(parents=True, exist_ok=True)
-    (meta / "prompts" / "k.md").write_text("k", encoding="utf-8")
-    response = bridge.dispatch(
-        {"command": "casefile:softReset", "casefileRoot": str(casefile_root)}
-    )
-    assert response["ok"] is True
-    assert (meta / "prompts" / "k.md").exists()
-
-
-def test_dispatch_soft_reset_keep_prompts_false_wipes_prompts(tmp_path: Path) -> None:
+def test_dispatch_soft_reset_wipes_legacy_prompts(tmp_path: Path) -> None:
     casefile_root, _, _ = _bootstrap(tmp_path)
     meta = casefile_root / ".casefile"
     (meta / "prompts").mkdir(parents=True, exist_ok=True)
@@ -366,20 +337,7 @@ def test_dispatch_soft_reset_keep_prompts_false_wipes_prompts(tmp_path: Path) ->
         {
             "command": "casefile:softReset",
             "casefileRoot": str(casefile_root),
-            "keepPrompts": False,
         }
     )
     assert response["ok"] is True
     assert not (meta / "prompts" / "k.md").exists()
-
-
-def test_dispatch_soft_reset_rejects_non_bool_keep_prompts(tmp_path: Path) -> None:
-    casefile_root, _, _ = _bootstrap(tmp_path)
-    with pytest.raises(ValueError):
-        bridge.dispatch(
-            {
-                "command": "casefile:softReset",
-                "casefileRoot": str(casefile_root),
-                "keepPrompts": "yes",
-            }
-        )

@@ -1205,13 +1205,11 @@ ipcMain.handle("casefile:hardReset", async () => {
   return adoptCasefileSnapshot(response.casefile);
 });
 
-ipcMain.handle("casefile:softReset", async (_, args = {}) => {
+ipcMain.handle("casefile:softReset", async () => {
   const casefileRoot = requireCasefile();
-  const keepPrompts = args.keepPrompts !== false; // default true
   const response = await runPythonBridgeMeta({
     command: "casefile:softReset",
     casefileRoot,
-    keepPrompts,
   });
   return adoptCasefileSnapshot(response.casefile);
 });

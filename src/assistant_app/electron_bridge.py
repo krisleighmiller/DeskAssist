@@ -9,15 +9,7 @@ from typing import Any
 
 from assistant_app.casefile import (
     CasefileService,
-    ContextManifest,
-    InboxItem,
-    InboxSource,
-    InboxStore,
-    NotesStore,
-    PromptsStore,
-    ResolvedContextFile,
     ScopeContext,
-    compare_lanes,
 )
 from assistant_app.casefile.context import (
     MAX_AUTO_INCLUDE_MAX_BYTES,
@@ -26,12 +18,9 @@ from assistant_app.casefile.context import (
 from assistant_app.casefile.service import (
     parse_attachments,
     serialize_attachment,
-    serialize_context_manifest,
     serialize_scope,
 )
-from assistant_app.casefile.prompts import PromptDraft, PromptSummary
 from assistant_app.chat_service import ChatService
-from assistant_app.filesystem import WorkspaceFilesystem
 from assistant_app.models import ChatMessage
 from assistant_app.prompts import CHARTER_MARKER, build_charter_system_content
 
@@ -65,7 +54,6 @@ def _parse_messages(raw_messages: list[dict[str, Any]]) -> list[ChatMessage]:
 
 
 _CONTEXT_MARKER = "You are operating inside a DeskAssist scoped session."
-_PROMPT_MARKER = "[DeskAssist prompt: "
 
 
 def _require_bool(value: object, field: str) -> bool:
@@ -74,37 +62,13 @@ def _require_bool(value: object, field: str) -> bool:
     raise ValueError(f"{field} must be a boolean")
 
 
-def _history_has_prompt_marker(history: list[ChatMessage], prompt_id: str) -> bool:
-    """True if the given prompt is already injected as a system message.
-
-    The marker carries the prompt id so resuming a turn with the *same*
-    prompt selection is idempotent, but switching prompts mid-conversation
-    correctly appends a new system message rather than de-duping silently.
-    """
-    needle = f"{_PROMPT_MARKER}{prompt_id}]"
-    for msg in history:
-        if msg.role == "system" and isinstance(msg.content, str) and msg.content.startswith(needle):
-            return True
-    return False
-
-
-def _build_prompt_system_message(prompt: PromptDraft) -> str:
-    """Wrap a stored prompt body in a tagged system message.
-
-    The tag (`[DeskAssist prompt: <id>]`) is the marker used by
-    `_history_has_prompt_marker` to keep injection idempotent on retries.
-    """
-    return f"{_PROMPT_MARKER}{prompt.id}] {prompt.name}\n\n{prompt.body}"
-
-
 def _history_has_context_marker(history: list[ChatMessage]) -> bool:
     """True if the auto-injected casefile-context system message is present.
 
     Auto-include is recomputed on every chat:send (cheaper than tracking
     state in the renderer), so we need a stable marker to avoid stacking
-    duplicates when a turn is resumed. Scans the *full* history (mirroring
-    `_history_has_prompt_marker`) so a context message reordered behind
-    another system message is still detected.
+    duplicates when a turn is resumed. Scans the *full* history so a
+    context message reordered behind another system message is still detected.
     """
     for msg in history:
         if (
@@ -119,9 +83,8 @@ def _history_has_context_marker(history: list[ChatMessage]) -> bool:
 def _history_has_charter_marker(history: list[ChatMessage]) -> bool:
     """True if the product-owned assistant charter is already in history.
 
-    Mirrors `_history_has_context_marker` / `_history_has_prompt_marker`
-    so a resumed turn does not stack duplicate charters at the head of
-    the conversation.
+    Mirrors `_history_has_context_marker` so a resumed turn does not stack
+    duplicate charters at the head of the conversation.
     """
     for msg in history:
         if (
@@ -137,11 +100,10 @@ def _prepend_assistant_charter(history: list[ChatMessage]) -> None:
     """Prepend the assistant charter at index 0 unless already present.
 
     Layer 1 of the system-prompt stack (M4.5). Casefile auto-context
-    (M3.5a) and user-selected prompt drafts (M4.1) insert *after* this
-    layer using `_history_has_charter_marker` to compute their offsets,
-    so the on-the-wire ordering is always:
+    (M3.5a) inserts *after* this layer using `_history_has_charter_marker`
+    to compute its offset, so the on-the-wire ordering is always:
 
-        [charter, context?, prompt?, ...conversation...]
+        [charter, context?, ...conversation...]
 
     Each layer narrows the previous one; the charter is the only layer
     the user cannot override.
@@ -353,38 +315,11 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
         # Only inject when (a) there's actually context to inject and (b) the
         # caller hasn't already placed one (idempotent for resumed turns).
         # Offset by 1 when the charter is at index 0 so the on-the-wire order
-        # is always `[charter, context, prompt, ...]`.
+        # is always `[charter, context, ...]`.
         if context_prompt and not _history_has_context_marker(parsed_history):
             ctx_idx = 1 if _history_has_charter_marker(parsed_history) else 0
             parsed_history.insert(
                 ctx_idx, ChatMessage(role="system", content=context_prompt)
-            )
-
-    # M4.1: optional user-selected prompt draft. Loaded after the auto-context
-    # block so casefile-wide instructions are still in effect; the user's
-    # prompt augments them rather than replacing them. We tag the injected
-    # message with the prompt id so a resumed turn does not stack duplicates,
-    # but switching prompts mid-conversation does correctly append a new one.
-    raw_prompt_id = request.get("systemPromptId")
-    if (
-        casefile_root is not None
-        and isinstance(raw_prompt_id, str)
-        and raw_prompt_id.strip()
-    ):
-        try:
-            prompt = PromptsStore(casefile_root).get(raw_prompt_id.strip())
-        except (KeyError, ValueError) as exc:
-            raise ValueError(f"systemPromptId {raw_prompt_id!r}: {exc}") from exc
-        if not _history_has_prompt_marker(parsed_history, prompt.id):
-            # Insert after charter (M4.5) and context (M3.5a) so the layered
-            # order is preserved even when only some layers are present.
-            insert_at = (
-                (1 if _history_has_charter_marker(parsed_history) else 0)
-                + (1 if _history_has_context_marker(parsed_history) else 0)
-            )
-            parsed_history.insert(
-                insert_at,
-                ChatMessage(role="system", content=_build_prompt_system_message(prompt)),
             )
 
     service.replace_history(parsed_history)
@@ -514,9 +449,8 @@ def handle_casefile_update_lane(request: dict[str, Any]) -> dict[str, Any]:
 
     Each of ``name``, ``kind``, ``root`` is independently optional.
     Omitting a field (or passing ``null``) leaves the existing value
-    unchanged. Parent and attachments are handled by their own
-    dedicated commands (``casefile:setLaneParent`` /
-    ``casefile:updateLaneAttachments``); the lane id is immutable.
+    unchanged. Attachments are handled by ``casefile:updateLaneAttachments``;
+    the lane id is immutable.
 
     When the resulting lane root matches another lane's root, a
     non-blocking warning is surfaced via ``rootConflict`` so the
@@ -582,9 +516,8 @@ def handle_casefile_update_lane(request: dict[str, Any]) -> dict[str, Any]:
 def handle_casefile_remove_lane(request: dict[str, Any]) -> dict[str, Any]:
     """M4.6: remove a lane from the casefile.
 
-    On-disk per-lane data files (``chats/<id>.jsonl``,
-    ``notes/<id>.md``) are intentionally preserved so
-    re-registering a lane with the same id resurrects the
+    On-disk per-lane chat logs are intentionally preserved so
+    re-registering a lane with the same session id resurrects the
     prior history. The renderer is responsible for surfacing a
     confirmation dialog before invoking this.
     """
@@ -601,9 +534,8 @@ def handle_casefile_hard_reset(request: dict[str, Any]) -> dict[str, Any]:
     """M4.6: nuke ``.casefile/`` and re-initialize it.
 
     The returned snapshot is the freshly initialized casefile (default
-    ``main`` lane, no chats, no notes, no prompts, etc.). The
-    renderer must gate this behind a confirmation dialog; the bridge
-    does not.
+    ``main`` lane and no chats). The renderer must gate this behind a
+    confirmation dialog; the bridge does not.
     """
     casefile_root_path = _require_casefile_root(request)
     service = CasefileService(casefile_root_path)
@@ -612,72 +544,15 @@ def handle_casefile_hard_reset(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def handle_casefile_soft_reset(request: dict[str, Any]) -> dict[str, Any]:
-    """M4.6: clear per-task scratch (lanes, chats, notes).
-    Optionally also clear prompts via ``keepPrompts``.
+    """M4.6: clear per-task scratch while preserving workspace context.
 
-    Preserves ``context.json`` and ``inbox.json`` regardless. Also
-    re-creates the default ``main`` lane so the casefile is immediately
+    Re-creates the default ``main`` lane so the casefile is immediately
     usable for a new task.
     """
     casefile_root_path = _require_casefile_root(request)
-    keep_prompts_raw = request.get("keepPrompts", True)
-    if not isinstance(keep_prompts_raw, bool):
-        raise ValueError("keepPrompts must be a boolean")
     service = CasefileService(casefile_root_path)
-    snapshot = service.soft_reset(keep_prompts=keep_prompts_raw)
+    snapshot = service.soft_reset()
     return {"ok": True, "casefile": service.serialize(snapshot)}
-
-
-def handle_casefile_set_lane_parent(request: dict[str, Any]) -> dict[str, Any]:
-    casefile_root_path = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
-    raw_parent = request.get("parentId")
-    parent_id: str | None
-    if raw_parent is None:
-        parent_id = None
-    elif isinstance(raw_parent, str):
-        parent_id = raw_parent.strip() or None
-    else:
-        raise ValueError("parentId must be a string or null")
-    service = CasefileService(casefile_root_path)
-    snapshot = service.set_lane_parent(lane_id, parent_id)
-    return {"ok": True, "casefile": service.serialize(snapshot)}
-
-
-def handle_casefile_get_context(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    service = CasefileService(root)
-    manifest = service.load_context_manifest()
-    files = service.context_store().resolve_files(manifest)
-    return {"ok": True, "context": serialize_context_manifest(manifest, files)}
-
-
-def handle_casefile_save_context(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    raw = request.get("context")
-    if not isinstance(raw, dict):
-        raise ValueError("context object is required")
-    raw_files = raw.get("files", [])
-    if not isinstance(raw_files, list):
-        raise ValueError("context.files must be an array")
-    files: list[str] = []
-    for entry in raw_files:
-        if isinstance(entry, str) and entry.strip():
-            files.append(entry.strip())
-    raw_max = raw.get("autoIncludeMaxBytes") if "autoIncludeMaxBytes" in raw else raw.get("auto_include_max_bytes")
-    manifest_kwargs: dict[str, Any] = {"files": tuple(files)}
-    if isinstance(raw_max, int) and not isinstance(raw_max, bool) and raw_max >= 0:
-        if raw_max > MAX_AUTO_INCLUDE_MAX_BYTES:
-            raise ValueError(
-                f"autoIncludeMaxBytes must be <= {MAX_AUTO_INCLUDE_MAX_BYTES}"
-            )
-        manifest_kwargs["auto_include_max_bytes"] = raw_max
-    service = CasefileService(root)
-    saved = service.save_context_manifest(ContextManifest(**manifest_kwargs))
-    files_resolved = service.context_store().resolve_files(saved)
-    return {"ok": True, "context": serialize_context_manifest(saved, files_resolved)}
 
 
 def handle_casefile_resolve_scope(request: dict[str, Any]) -> dict[str, Any]:
@@ -714,7 +589,7 @@ def handle_casefile_list_chat(request: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# M3 handlers: notes / compare / lane-scoped read / save chat output
+# Chat output save
 # ---------------------------------------------------------------------------
 
 
@@ -793,62 +668,6 @@ def _build_sensitive_prefixes() -> tuple[Path, ...]:
 _SENSITIVE_PATH_PREFIXES: tuple[Path, ...] = _build_sensitive_prefixes()
 
 
-def handle_casefile_get_note(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
-    content = NotesStore(root).read(lane_id)
-    return {"ok": True, "content": content}
-
-
-def handle_casefile_save_note(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
-    content = request.get("content")
-    if not isinstance(content, str):
-        raise ValueError("content must be a string")
-    path = NotesStore(root).write(lane_id, content)
-    return {"ok": True, "path": str(path)}
-
-
-def handle_casefile_compare_lanes(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    left_id = request.get("leftLaneId")
-    right_id = request.get("rightLaneId")
-    if not isinstance(left_id, str) or not left_id.strip():
-        raise ValueError("leftLaneId is required")
-    if not isinstance(right_id, str) or not right_id.strip():
-        raise ValueError("rightLaneId is required")
-    if left_id == right_id:
-        raise ValueError("leftLaneId and rightLaneId must differ")
-    service = CasefileService(root)
-    snapshot = service.snapshot()
-    left = snapshot.lane_by_id(left_id)
-    right = snapshot.lane_by_id(right_id)
-    # Optional per-call overrides for the safety caps.  The defaults in
-    # compare.compare_lanes are tuned for "monorepo-sized" lanes (250k
-    # files / 2 GB combined); callers that know they need more can pass
-    # explicit values, but we still validate they are positive ints to
-    # avoid accidental "unbounded" comparisons.
-    kwargs: dict[str, Any] = {}
-    for key, src in (
-        ("max_files_per_lane", "maxFilesPerLane"),
-        ("max_bytes_per_file", "maxBytesPerFile"),
-        ("max_total_bytes", "maxTotalBytes"),
-    ):
-        raw = request.get(src)
-        if raw is None:
-            continue
-        if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
-            raise ValueError(f"{src} must be a positive integer")
-        kwargs[key] = raw
-    comparison = compare_lanes(left, right, **kwargs)
-    return {"ok": True, "comparison": comparison.to_json()}
-
-
 def handle_chat_save_output(request: dict[str, Any]) -> dict[str, Any]:
     """Write a chat message body to ``<destinationDir>/<filename>`` as text.
 
@@ -908,9 +727,8 @@ def handle_chat_save_output(request: dict[str, Any]) -> dict[str, Any]:
     target = destination / filename
     if target.exists():
         raise FileExistsError(f"Refusing to overwrite existing file: {target}")
-    # Atomic-ish write via a sibling temp file; mirrors the pattern used by
-    # NotesStore / PromptsStore so a crash mid-write doesn't leave a
-    # half-written file behind.
+    # Atomic-ish write via a sibling temp file so a crash mid-write doesn't
+    # leave a half-written file behind.
     tmp = target.with_suffix(target.suffix + ".tmp")
     try:
         tmp.write_text(body, encoding="utf-8")
@@ -922,236 +740,6 @@ def handle_chat_save_output(request: dict[str, Any]) -> dict[str, Any]:
             except OSError:
                 pass
     return {"ok": True, "path": str(target)}
-
-
-def handle_casefile_read_overlay_file(request: dict[str, Any]) -> dict[str, Any]:
-    """Read a file from one of the active scope's read overlays.
-
-    Used by the renderer's "Show ancestor files" file-tree view. The path
-    must use a virtual prefix (e.g. `_ancestors/<lane>/foo.md`,
-    `_attachments/notes/log.txt`, `_context/Rubric.md`); the scope's
-    overlay map handles the rewrite to a real disk path. Reads are
-    bounded just like `lane:readFile`.
-    """
-    root = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    file_path = request.get("path")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
-    if not isinstance(file_path, str) or not file_path.strip():
-        raise ValueError("path is required")
-    max_chars_raw = request.get("maxChars")
-    max_chars = (
-        int(max_chars_raw)
-        if isinstance(max_chars_raw, int)
-        and not isinstance(max_chars_raw, bool)
-        and max_chars_raw > 0
-        else 200_000
-    )
-    service = CasefileService(root)
-    scope = service.resolve_scope(lane_id)
-    fs = WorkspaceFilesystem(scope.write_root, read_overlays=scope.overlay_map())
-    content, truncated, target = fs.read_text_bounded(file_path, max_chars)
-    return {"ok": True, "path": str(target), "content": content, "truncated": truncated}
-
-
-# ---------------------------------------------------------------------------
-# M4.1: prompt drafts
-# ---------------------------------------------------------------------------
-
-
-def _serialize_prompt_summary(summary: PromptSummary) -> dict[str, Any]:
-    return {
-        "id": summary.id,
-        "name": summary.name,
-        "createdAt": summary.created_at,
-        "updatedAt": summary.updated_at,
-        "sizeBytes": summary.size_bytes,
-    }
-
-
-def _serialize_prompt(draft: PromptDraft) -> dict[str, Any]:
-    return {
-        "id": draft.id,
-        "name": draft.name,
-        "body": draft.body,
-        "createdAt": draft.created_at,
-        "updatedAt": draft.updated_at,
-    }
-
-
-def handle_casefile_list_prompts(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    summaries = PromptsStore(root).list()
-    return {"ok": True, "prompts": [_serialize_prompt_summary(s) for s in summaries]}
-
-
-def handle_casefile_get_prompt(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    prompt_id = request.get("promptId")
-    if not isinstance(prompt_id, str) or not prompt_id.strip():
-        raise ValueError("promptId is required")
-    draft = PromptsStore(root).get(prompt_id.strip())
-    return {"ok": True, "prompt": _serialize_prompt(draft)}
-
-
-def _prompt_input(request: dict[str, Any]) -> dict[str, Any]:
-    raw = request.get("prompt")
-    if not isinstance(raw, dict):
-        raise ValueError("prompt object is required")
-    return raw
-
-
-def handle_casefile_create_prompt(request: dict[str, Any]) -> dict[str, Any]:
-    """Create a new prompt draft. The id is derived from the name unless one
-    is explicitly supplied; an existing-id collision is resolved by suffixing
-    `-2`, `-3`, ... so the renderer never has to handle a 409-shaped error.
-    """
-    root = _require_casefile_root(request)
-    raw = _prompt_input(request)
-    name = raw.get("name")
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("prompt.name is required")
-    body = raw.get("body") if isinstance(raw.get("body"), str) else ""
-    raw_id = raw.get("id")
-    prompt_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else None
-    draft = PromptsStore(root).create(name=name, body=body, prompt_id=prompt_id)
-    return {"ok": True, "prompt": _serialize_prompt(draft)}
-
-
-def handle_casefile_save_prompt(request: dict[str, Any]) -> dict[str, Any]:
-    """Update an existing prompt's name or body. Either field is optional;
-    omitting both is a no-op (still returns the current draft so the
-    renderer can refresh its view without a separate `get`)."""
-    root = _require_casefile_root(request)
-    prompt_id = request.get("promptId")
-    if not isinstance(prompt_id, str) or not prompt_id.strip():
-        raise ValueError("promptId is required")
-    raw = _prompt_input(request)
-    update_kwargs: dict[str, Any] = {}
-    if "name" in raw and isinstance(raw["name"], str):
-        update_kwargs["name"] = raw["name"]
-    if "body" in raw and isinstance(raw["body"], str):
-        update_kwargs["body"] = raw["body"]
-    draft = PromptsStore(root).save(prompt_id.strip(), **update_kwargs)
-    return {"ok": True, "prompt": _serialize_prompt(draft)}
-
-
-def handle_casefile_delete_prompt(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    prompt_id = request.get("promptId")
-    if not isinstance(prompt_id, str) or not prompt_id.strip():
-        raise ValueError("promptId is required")
-    PromptsStore(root).delete(prompt_id.strip())
-    return {"ok": True}
-
-
-# ---------------------------------------------------------------------------
-# M4.3: inbox handlers
-# ---------------------------------------------------------------------------
-
-
-def _serialize_inbox_source(source: InboxSource) -> dict[str, Any]:
-    return {"id": source.id, "name": source.name, "root": source.root}
-
-
-def _serialize_inbox_item(item: InboxItem) -> dict[str, Any]:
-    return {
-        "sourceId": item.source_id,
-        "path": item.path,
-        "sizeBytes": item.size_bytes,
-    }
-
-
-def handle_casefile_list_inbox_sources(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    sources = InboxStore(root).list_sources()
-    return {"ok": True, "sources": [_serialize_inbox_source(s) for s in sources]}
-
-
-def handle_casefile_add_inbox_source(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    name = request.get("name")
-    src_root = request.get("root")
-    raw_id = request.get("sourceId")
-    if not isinstance(name, str) or not name.strip():
-        raise ValueError("name is required")
-    if not isinstance(src_root, str) or not src_root.strip():
-        raise ValueError("root is required")
-    source_id = raw_id.strip() if isinstance(raw_id, str) and raw_id.strip() else None
-    source = InboxStore(root).add_source(
-        name=name, root=src_root, source_id=source_id
-    )
-    return {"ok": True, "source": _serialize_inbox_source(source)}
-
-
-def handle_casefile_update_inbox_source(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    source_id = request.get("sourceId")
-    if not isinstance(source_id, str) or not source_id.strip():
-        raise ValueError("sourceId is required")
-    name = request.get("name")
-    src_root = request.get("root")
-    update_kwargs: dict[str, Any] = {}
-    if isinstance(name, str):
-        update_kwargs["name"] = name
-    if isinstance(src_root, str):
-        update_kwargs["root"] = src_root
-    if not update_kwargs:
-        raise ValueError("nothing to update: provide name and/or root")
-    source = InboxStore(root).update_source(source_id.strip(), **update_kwargs)
-    return {"ok": True, "source": _serialize_inbox_source(source)}
-
-
-def handle_casefile_remove_inbox_source(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    source_id = request.get("sourceId")
-    if not isinstance(source_id, str) or not source_id.strip():
-        raise ValueError("sourceId is required")
-    InboxStore(root).remove_source(source_id.strip())
-    return {"ok": True}
-
-
-def handle_casefile_list_inbox_items(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    source_id = request.get("sourceId")
-    if not isinstance(source_id, str) or not source_id.strip():
-        raise ValueError("sourceId is required")
-    raw_depth = request.get("maxDepth")
-    max_depth = (
-        int(raw_depth)
-        if isinstance(raw_depth, int)
-        and not isinstance(raw_depth, bool)
-        and raw_depth > 0
-        else None
-    )
-    items = InboxStore(root).list_items(source_id.strip(), max_depth=max_depth)
-    return {"ok": True, "items": [_serialize_inbox_item(it) for it in items]}
-
-
-def handle_casefile_read_inbox_item(request: dict[str, Any]) -> dict[str, Any]:
-    root = _require_casefile_root(request)
-    source_id = request.get("sourceId")
-    relative = request.get("path")
-    if not isinstance(source_id, str) or not source_id.strip():
-        raise ValueError("sourceId is required")
-    if not isinstance(relative, str) or not relative.strip():
-        raise ValueError("path is required")
-    raw_max = request.get("maxChars")
-    if isinstance(raw_max, int) and not isinstance(raw_max, bool) and raw_max > 0:
-        content, truncated, abs_path = InboxStore(root).read_item(
-            source_id.strip(), relative, max_chars=raw_max
-        )
-    else:
-        content, truncated, abs_path = InboxStore(root).read_item(
-            source_id.strip(), relative
-        )
-    return {
-        "ok": True,
-        "content": content,
-        "truncated": truncated,
-        "absolutePath": abs_path,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1293,7 +881,7 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
     persistence_error: str | None = None
     try:
         service.append_comparison_chat(lane_ids, serialized_delta)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         persistence_error = (
             f"comparison chat persistence failed: {type(exc).__name__}: {exc}"
         )
@@ -1322,29 +910,6 @@ def handle_casefile_update_comparison_attachments(request: dict[str, Any]) -> di
     }
 
 
-def handle_lane_read_file(request: dict[str, Any]) -> dict[str, Any]:
-    """Read a file from a specific lane (not necessarily the active one).
-
-    Used by the diff editor to fetch both sides of a comparison without
-    having to switch the active lane. Lane scoping is preserved by routing
-    the read through `WorkspaceFilesystem(lane.root)`.
-    """
-    root = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    file_path = request.get("path")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
-    if not isinstance(file_path, str) or not file_path.strip():
-        raise ValueError("path is required")
-    max_chars_raw = request.get("maxChars")
-    max_chars = int(max_chars_raw) if isinstance(max_chars_raw, int) and max_chars_raw > 0 else 200_000
-    snapshot = CasefileService(root).snapshot()
-    lane = snapshot.lane_by_id(lane_id)
-    fs = WorkspaceFilesystem(lane.root)
-    content, truncated, target = fs.read_text_bounded(file_path, max_chars)
-    return {"ok": True, "path": str(target), "content": content, "truncated": truncated}
-
-
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -1357,34 +922,15 @@ _HANDLERS = {
     "casefile:updateLane": handle_casefile_update_lane,
     "casefile:removeLane": handle_casefile_remove_lane,
     "casefile:updateLaneAttachments": handle_casefile_update_lane_attachments,
-    "casefile:setLaneParent": handle_casefile_set_lane_parent,
     "casefile:hardReset": handle_casefile_hard_reset,
     "casefile:softReset": handle_casefile_soft_reset,
     "casefile:switchLane": handle_casefile_switch_lane,
-    "casefile:getContext": handle_casefile_get_context,
-    "casefile:saveContext": handle_casefile_save_context,
     "casefile:resolveScope": handle_casefile_resolve_scope,
     "casefile:listChat": handle_casefile_list_chat,
-    "casefile:getNote": handle_casefile_get_note,
-    "casefile:saveNote": handle_casefile_save_note,
-    "casefile:compareLanes": handle_casefile_compare_lanes,
     "chat:saveOutput": handle_chat_save_output,
-    "lane:readFile": handle_lane_read_file,
-    "casefile:readOverlayFile": handle_casefile_read_overlay_file,
     "casefile:openComparison": handle_casefile_open_comparison,
     "casefile:sendComparisonChat": handle_casefile_send_comparison_chat,
     "casefile:updateComparisonAttachments": handle_casefile_update_comparison_attachments,
-    "casefile:listPrompts": handle_casefile_list_prompts,
-    "casefile:getPrompt": handle_casefile_get_prompt,
-    "casefile:createPrompt": handle_casefile_create_prompt,
-    "casefile:savePrompt": handle_casefile_save_prompt,
-    "casefile:deletePrompt": handle_casefile_delete_prompt,
-    "casefile:listInboxSources": handle_casefile_list_inbox_sources,
-    "casefile:addInboxSource": handle_casefile_add_inbox_source,
-    "casefile:updateInboxSource": handle_casefile_update_inbox_source,
-    "casefile:removeInboxSource": handle_casefile_remove_inbox_source,
-    "casefile:listInboxItems": handle_casefile_list_inbox_items,
-    "casefile:readInboxItem": handle_casefile_read_inbox_item,
 }
 
 
@@ -1414,7 +960,7 @@ def main() -> None:
         raw_input = sys.stdin.read()
         request = json.loads(raw_input or "{}")
         response = dispatch(request)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # All handler and parse exceptions are returned as structured errors on
         # stdout inside the sentinel frame.  This ensures the Electron main
         # process always receives a well-formed JSON object it can inspect
