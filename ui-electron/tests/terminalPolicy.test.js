@@ -12,35 +12,35 @@ test("terminal cwd falls back inside workspace when requested path is outside", 
   const cwd = resolveAllowedTerminalCwd({
     requestedCwd: "/tmp",
     activeCasefileRoot: "/case",
-    activeLaneRoot: "/case/lane",
-    registeredLaneRoots: ["/case/lane"],
+    activeContextRoot: "/case/context",
+    registeredContextRoots: ["/case/context"],
     realpathIfDirectory: makeRealpath({
       "/case": "/real/case",
-      "/case/lane": "/real/case/lane",
+      "/case/context": "/real/case/context",
       "/tmp": "/tmp",
     }),
     homeDir: "/home/user",
   });
 
-  assert.equal(cwd, "/real/case/lane");
+  assert.equal(cwd, "/real/case/context");
 });
 
-test("terminal cwd accepts registered lane roots outside casefile", () => {
+test("terminal cwd accepts registered context roots outside casefile", () => {
   const cwd = resolveAllowedTerminalCwd({
-    requestedCwd: "/external/lane/subdir",
+    requestedCwd: "/external/context/subdir",
     activeCasefileRoot: "/case",
-    activeLaneRoot: "/case/main",
-    registeredLaneRoots: ["/external/lane"],
+    activeContextRoot: "/case/main",
+    registeredContextRoots: ["/external/context"],
     realpathIfDirectory: makeRealpath({
       "/case": "/real/case",
       "/case/main": "/real/case/main",
-      "/external/lane": "/external/lane",
-      "/external/lane/subdir": "/external/lane/subdir",
+      "/external/context": "/external/context",
+      "/external/context/subdir": "/external/context/subdir",
     }),
     homeDir: "/home/user",
   });
 
-  assert.equal(cwd, "/external/lane/subdir");
+  assert.equal(cwd, "/external/context/subdir");
 });
 
 test("terminal cwd fails when an open workspace has no valid roots", () => {
@@ -49,8 +49,8 @@ test("terminal cwd fails when an open workspace has no valid roots", () => {
       resolveAllowedTerminalCwd({
         requestedCwd: "/tmp",
         activeCasefileRoot: "/missing/case",
-        activeLaneRoot: "/missing/lane",
-        registeredLaneRoots: [],
+        activeContextRoot: "/missing/context",
+        registeredContextRoots: [],
         realpathIfDirectory: makeRealpath({ "/tmp": "/tmp" }),
         homeDir: "/home/user",
       }),
@@ -62,8 +62,8 @@ test("terminal cwd may use home only when no casefile is open", () => {
   const cwd = resolveAllowedTerminalCwd({
     requestedCwd: "/missing",
     activeCasefileRoot: null,
-    activeLaneRoot: null,
-    registeredLaneRoots: [],
+    activeContextRoot: null,
+    registeredContextRoots: [],
     realpathIfDirectory: makeRealpath({}),
     homeDir: "/home/user",
   });

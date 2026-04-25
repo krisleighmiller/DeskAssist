@@ -3,15 +3,15 @@ import { useCallback, useEffect } from "react";
 import { api } from "../lib/api";
 import type {
   CasefileSnapshot,
-  LaneAttachmentInput,
-  LaneUpdateInput,
-  UpdateLaneResult,
+  ContextAttachmentInput,
+  ContextUpdateInput,
+  UpdateContextResult,
 } from "../types";
 import { errorMessage } from "./appModelTypes";
 
 interface UseContextAndOverlaysArgs {
   casefile: CasefileSnapshot | null;
-  activeLaneId: string | null;
+  activeContextId: string | null;
   onCasefileChange: (casefile: CasefileSnapshot) => void;
   onError: (message: string) => void;
 }
@@ -20,19 +20,19 @@ interface UseContextAndOverlaysArgs {
 // context overlay trees for the FileTree UI. The tree no longer renders those
 // overlays or the casefile-context manifest as user-facing controls. Scope
 // resolution for AI chat lives entirely in `src/assistant_app/casefile/scope.py`
-// and the bridge; this hook now only keeps lane management actions together.
+// and the bridge; this hook now only keeps context management actions together.
 export function useContextAndOverlays({
   casefile,
-  activeLaneId: _activeLaneId,
+  activeContextId: _activeContextId,
   onCasefileChange,
   onError,
 }: UseContextAndOverlaysArgs) {
   const casefileRoot = casefile?.root ?? null;
 
-  const handleUpdateLaneAttachments = useCallback(
-    async (laneId: string, attachments: LaneAttachmentInput[]) => {
+  const handleUpdateContextAttachments = useCallback(
+    async (contextId: string, attachments: ContextAttachmentInput[]) => {
       try {
-        const snapshot = await api().updateLaneAttachments(laneId, attachments);
+        const snapshot = await api().updateContextAttachments(contextId, attachments);
         onCasefileChange(snapshot);
       } catch (error) {
         const message = errorMessage(error);
@@ -43,10 +43,10 @@ export function useContextAndOverlays({
     [onCasefileChange, onError]
   );
 
-  const handleUpdateLane = useCallback(
-    async (laneId: string, update: LaneUpdateInput): Promise<UpdateLaneResult> => {
+  const handleUpdateContext = useCallback(
+    async (contextId: string, update: ContextUpdateInput): Promise<UpdateContextResult> => {
       try {
-        const result = await api().updateLane(laneId, update);
+        const result = await api().updateContext(contextId, update);
         onCasefileChange(result.casefile);
         return result;
       } catch (error) {
@@ -58,10 +58,10 @@ export function useContextAndOverlays({
     [onCasefileChange, onError]
   );
 
-  const handleRemoveLane = useCallback(
-    async (laneId: string) => {
+  const handleRemoveContext = useCallback(
+    async (contextId: string) => {
       try {
-        const snapshot = await api().removeLane(laneId);
+        const snapshot = await api().removeContext(contextId);
         onCasefileChange(snapshot);
       } catch (error) {
         const message = errorMessage(error);
@@ -112,9 +112,9 @@ export function useContextAndOverlays({
   }, [casefileRoot]);
 
   return {
-    handleUpdateLaneAttachments,
-    handleUpdateLane,
-    handleRemoveLane,
+    handleUpdateContextAttachments,
+    handleUpdateContext,
+    handleRemoveContext,
     handleHardResetCasefile,
     handleSoftResetCasefile,
   };

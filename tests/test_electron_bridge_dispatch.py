@@ -32,64 +32,64 @@ def test_casefile_open_creates_metadata_and_returns_snapshot(tmp_path: Path):
     assert response["ok"] is True
     case = response["casefile"]
     assert case["root"] == str(tmp_path.resolve())
-    assert case["activeLaneId"] == "main"
-    assert case["lanes"][0]["id"] == "main"
-    assert (tmp_path / ".casefile" / "lanes.json").is_file()
+    assert case["activeContextId"] == "main"
+    assert case["contexts"][0]["id"] == "main"
+    assert (tmp_path / ".casefile" / "contexts.json").is_file()
 
 
-def test_casefile_register_lane_then_switch(tmp_path: Path):
+def test_casefile_register_context_then_switch(tmp_path: Path):
     bridge.dispatch({"command": "casefile:open", "root": str(tmp_path)})
     sibling = tmp_path / "second"
     sibling.mkdir()
     register_response = bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(tmp_path),
-            "lane": {"name": "Second", "kind": "doc", "root": "second"},
+            "context": {"name": "Second", "kind": "doc", "root": "second"},
         }
     )
     assert register_response["ok"] is True
-    ids = {lane["id"] for lane in register_response["casefile"]["lanes"]}
+    ids = {context["id"] for context in register_response["casefile"]["contexts"]}
     assert ids == {"main", "second"}
 
     switch_response = bridge.dispatch(
         {
-            "command": "casefile:switchLane",
+            "command": "casefile:switchContext",
             "casefileRoot": str(tmp_path),
-            "laneId": "second",
+            "contextId": "second",
         }
     )
-    assert switch_response["casefile"]["activeLaneId"] == "second"
+    assert switch_response["casefile"]["activeContextId"] == "second"
 
 
-def test_casefile_register_lane_requires_lane_object(tmp_path: Path):
+def test_casefile_register_context_requires_context_object(tmp_path: Path):
     bridge.dispatch({"command": "casefile:open", "root": str(tmp_path)})
     with pytest.raises(ValueError):
-        bridge.dispatch({"command": "casefile:registerLane", "casefileRoot": str(tmp_path)})
+        bridge.dispatch({"command": "casefile:registerContext", "casefileRoot": str(tmp_path)})
 
 
-def test_chat_send_resolves_workspace_root_from_active_lane(
+def test_chat_send_resolves_workspace_root_from_active_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """`chat:send` with `casefileRoot` but no `laneId` must use the active lane."""
+    """`chat:send` with `casefileRoot` but no `contextId` must use the active context."""
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane_a = tmp_path / "lane_a"
-    lane_a.mkdir()
+    context_a = tmp_path / "context_a"
+    context_a.mkdir()
 
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+            "context": {"name": "A", "kind": "repo", "root": str(context_a), "id": "a"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:switchLane",
+            "command": "casefile:switchContext",
             "casefileRoot": str(casefile_root),
-            "laneId": "a",
+            "contextId": "a",
         }
     )
 
@@ -135,7 +135,7 @@ def test_chat_send_resolves_workspace_root_from_active_lane(
         }
     )
     assert response["ok"] is True
-    assert captured_roots == [lane_a.resolve()]
+    assert captured_roots == [context_a.resolve()]
 
 
 # ---------------------------------------------------------------------------
@@ -143,26 +143,26 @@ def test_chat_send_resolves_workspace_root_from_active_lane(
 # ---------------------------------------------------------------------------
 
 
-def _bootstrap_casefile_with_lanes(tmp_path: Path) -> Path:
+def _bootstrap_casefile_with_scope(tmp_path: Path) -> Path:
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane_a = tmp_path / "lane_a"
-    lane_a.mkdir()
-    lane_b = tmp_path / "lane_b"
-    lane_b.mkdir()
+    context_a = tmp_path / "context_a"
+    context_a.mkdir()
+    context_b = tmp_path / "context_b"
+    context_b.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+            "context": {"name": "A", "kind": "repo", "root": str(context_a), "id": "a"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "B", "kind": "repo", "root": str(lane_b), "id": "b"},
+            "context": {"name": "B", "kind": "repo", "root": str(context_b), "id": "b"},
         }
     )
     return casefile_root
@@ -171,11 +171,11 @@ def _bootstrap_casefile_with_lanes(tmp_path: Path) -> Path:
 def test_chat_save_output_writes_markdown_under_destination(tmp_path: Path):
     """`chat:saveOutput` writes the message body to ``<destinationDir>/<filename>``.
 
-    The destination is an absolute directory the user picks (typically a lane
-    attachment, but the bridge does not require it to be inside any lane).
+    The destination is an absolute directory the user picks (typically a context
+    attachment, but the bridge does not require it to be inside any context).
     """
-    casefile_root = _bootstrap_casefile_with_lanes(tmp_path)
-    destination = tmp_path / "lane_a" / "ash_notes"
+    casefile_root = _bootstrap_casefile_with_scope(tmp_path)
+    destination = tmp_path / "context_a" / "ash_reference"
     destination.mkdir()
     response = bridge.dispatch(
         {
@@ -192,8 +192,8 @@ def test_chat_save_output_writes_markdown_under_destination(tmp_path: Path):
 
 
 def test_chat_save_output_rejects_path_separator_in_filename(tmp_path: Path):
-    casefile_root = _bootstrap_casefile_with_lanes(tmp_path)
-    destination = tmp_path / "lane_a"
+    casefile_root = _bootstrap_casefile_with_scope(tmp_path)
+    destination = tmp_path / "context_a"
     with pytest.raises(ValueError):
         bridge.dispatch(
             {
@@ -207,7 +207,7 @@ def test_chat_save_output_rejects_path_separator_in_filename(tmp_path: Path):
 
 
 def test_chat_save_output_rejects_missing_destination(tmp_path: Path):
-    casefile_root = _bootstrap_casefile_with_lanes(tmp_path)
+    casefile_root = _bootstrap_casefile_with_scope(tmp_path)
     with pytest.raises(FileNotFoundError):
         bridge.dispatch(
             {
@@ -221,8 +221,8 @@ def test_chat_save_output_rejects_missing_destination(tmp_path: Path):
 
 
 def test_chat_save_output_refuses_to_overwrite(tmp_path: Path):
-    casefile_root = _bootstrap_casefile_with_lanes(tmp_path)
-    destination = tmp_path / "lane_a"
+    casefile_root = _bootstrap_casefile_with_scope(tmp_path)
+    destination = tmp_path / "context_a"
     (destination / "existing.md").write_text("old", encoding="utf-8")
     with pytest.raises(FileExistsError):
         bridge.dispatch(
@@ -236,7 +236,7 @@ def test_chat_save_output_refuses_to_overwrite(tmp_path: Path):
         )
 
 
-def test_chat_send_persists_history_delta_to_lane_log(
+def test_chat_send_persists_history_delta_to_context_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     casefile_root = tmp_path / "case"
@@ -271,7 +271,7 @@ def test_chat_send_persists_history_delta_to_lane_log(
         {
             "command": "chat:send",
             "casefileRoot": str(casefile_root),
-            "laneId": "main",
+            "contextId": "main",
             "provider": "openai",
             "userMessage": "hi",
             "messages": [],
@@ -281,7 +281,7 @@ def test_chat_send_persists_history_delta_to_lane_log(
         {
             "command": "casefile:listChat",
             "casefileRoot": str(casefile_root),
-            "laneId": "main",
+            "contextId": "main",
         }
     )
     persisted = list_response["messages"]
@@ -410,45 +410,45 @@ def test_chat_send_mints_and_accepts_write_approval_token(
 
 
 # ---------------------------------------------------------------------------
-# M3.5a dispatch coverage: hierarchical lanes, context manifest, scope cascade
+# M3.5a dispatch coverage: hierarchical contexts, context manifest, scope cascade
 # ---------------------------------------------------------------------------
 
 
-def test_register_lane_with_parent_and_attachment(tmp_path: Path):
+def test_register_context_with_parent_and_attachment(tmp_path: Path):
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
     parent_dir = tmp_path / "parent"
     parent_dir.mkdir()
     child_dir = tmp_path / "child"
     child_dir.mkdir()
-    notes_dir = tmp_path / "child_notes"
-    notes_dir.mkdir()
+    reference_dir = tmp_path / "child_reference"
+    reference_dir.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
+            "context": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
         }
     )
     response = bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {
+            "context": {
                 "name": "Child",
                 "kind": "repo",
                 "root": str(child_dir),
                 "id": "child",
                 "parentId": "parent",
-                "attachments": [{"name": "notes", "root": str(notes_dir)}],
+                "attachments": [{"name": "reference", "root": str(reference_dir)}],
             },
         }
     )
-    child = next(lane for lane in response["casefile"]["lanes"] if lane["id"] == "child")
+    child = next(context for context in response["casefile"]["contexts"] if context["id"] == "child")
     assert child["parentId"] == "parent"
     assert child["attachments"] == [
-        {"name": "notes", "root": str(notes_dir.resolve()), "mode": "write"}
+        {"name": "reference", "root": str(reference_dir.resolve()), "mode": "write"}
     ]
 
 
@@ -460,27 +460,27 @@ def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
     parent_dir.mkdir()
     child_dir = tmp_path / "child"
     child_dir.mkdir()
-    notes_dir = tmp_path / "child_notes"
-    notes_dir.mkdir()
+    reference_dir = tmp_path / "child_reference"
+    reference_dir.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
+            "context": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {
+            "context": {
                 "name": "Child",
                 "kind": "repo",
                 "root": str(child_dir),
                 "id": "child",
                 "parentId": "parent",
-                "attachments": [{"name": "notes", "root": str(notes_dir)}],
+                "attachments": [{"name": "reference", "root": str(reference_dir)}],
             },
         }
     )
@@ -491,7 +491,7 @@ def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
         {
             "command": "casefile:resolveScope",
             "casefileRoot": str(casefile_root),
-            "laneId": "child",
+            "contextId": "child",
         }
     )
     scope = response["scope"]
@@ -504,7 +504,7 @@ def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
     labels = [d["label"] for d in directories]
     write_labels = [d["label"] for d in directories if d["writable"]]
     read_labels = [d["label"] for d in directories if not d["writable"]]
-    assert write_labels == ["child", "notes"]
+    assert write_labels == ["child", "reference"]
     assert "parent" not in labels
     assert read_labels == []
     assert [entry["path"] for entry in scope["contextFiles"]] == ["rubric.md"]
@@ -521,28 +521,28 @@ def test_chat_send_layers_overlays_into_chat_service(
     parent_dir.mkdir()
     child_dir = tmp_path / "child"
     child_dir.mkdir()
-    notes_dir = tmp_path / "child_notes"
-    notes_dir.mkdir()
+    reference_dir = tmp_path / "child_reference"
+    reference_dir.mkdir()
 
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
+            "context": {"name": "Parent", "kind": "other", "root": str(parent_dir), "id": "parent"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {
+            "context": {
                 "name": "Child",
                 "kind": "repo",
                 "root": str(child_dir),
                 "id": "child",
                 "parentId": "parent",
-                "attachments": [{"name": "notes", "root": str(notes_dir)}],
+                "attachments": [{"name": "reference", "root": str(reference_dir)}],
             },
         }
     )
@@ -602,7 +602,7 @@ def test_chat_send_layers_overlays_into_chat_service(
         {
             "command": "chat:send",
             "casefileRoot": str(casefile_root),
-            "laneId": "child",
+            "contextId": "child",
             "provider": "openai",
             "userMessage": "hi",
             "messages": [],
@@ -614,39 +614,39 @@ def test_chat_send_layers_overlays_into_chat_service(
     assert overlays is not None
     # New flat model: active scope directories are passed separately and all
     # writable entries remain addressable through `_scope/<label>/`.
-    assert captured["scoped_labels"] == ["child", "notes"]
+    assert captured["scoped_labels"] == ["child", "reference"]
     assert "_context" in overlays
     # Auto-include: the rubric should appear in a system prompt.
     system_prompts = captured.get("system_prompts", [])
     assert any("rubric body" in str(p) for p in system_prompts)
 
 
-def test_update_lane_attachments_command(tmp_path: Path):
+def test_update_context_attachments_command(tmp_path: Path):
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane_dir = tmp_path / "a"
-    lane_dir.mkdir()
-    notes_dir = tmp_path / "notes"
-    notes_dir.mkdir()
+    context_dir = tmp_path / "a"
+    context_dir.mkdir()
+    reference_dir = tmp_path / "reference"
+    reference_dir.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "A", "kind": "repo", "root": str(lane_dir), "id": "a"},
+            "context": {"name": "A", "kind": "repo", "root": str(context_dir), "id": "a"},
         }
     )
     response = bridge.dispatch(
         {
-            "command": "casefile:updateLaneAttachments",
+            "command": "casefile:updateContextAttachments",
             "casefileRoot": str(casefile_root),
-            "laneId": "a",
-            "attachments": [{"name": "notes", "root": str(notes_dir)}],
+            "contextId": "a",
+            "attachments": [{"name": "reference", "root": str(reference_dir)}],
         }
     )
-    lane_a = next(lane for lane in response["casefile"]["lanes"] if lane["id"] == "a")
-    assert lane_a["attachments"][0]["name"] == "notes"
-    assert lane_a["attachments"][0]["root"] == str(notes_dir.resolve())
+    context_a = next(context for context in response["casefile"]["contexts"] if context["id"] == "a")
+    assert context_a["attachments"][0]["name"] == "reference"
+    assert context_a["attachments"][0]["root"] == str(reference_dir.resolve())
 
 
 # ---------------------------------------------------------------------------
@@ -654,24 +654,24 @@ def test_update_lane_attachments_command(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_register_lane_rejects_attachment_pointing_at_sensitive_path(tmp_path: Path):
+def test_register_context_rejects_attachment_pointing_at_sensitive_path(tmp_path: Path):
     """SECURITY (H6): an attachment root inside a denylisted system dir
     must be rejected at registration time, not at first use.
     """
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane_dir = tmp_path / "lane"
-    lane_dir.mkdir()
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     with pytest.raises(ValueError, match="sensitive"):
         bridge.dispatch(
             {
-                "command": "casefile:registerLane",
+                "command": "casefile:registerContext",
                 "casefileRoot": str(casefile_root),
-                "lane": {
+                "context": {
                     "name": "Bad",
                     "kind": "repo",
-                    "root": str(lane_dir),
+                    "root": str(context_dir),
                     "id": "bad",
                     "attachments": [{"name": "leak", "root": "/etc/ssl/private"}],
                 },
@@ -679,24 +679,24 @@ def test_register_lane_rejects_attachment_pointing_at_sensitive_path(tmp_path: P
         )
 
 
-def test_update_lane_attachments_rejects_sensitive_root(tmp_path: Path):
+def test_update_context_attachments_rejects_sensitive_root(tmp_path: Path):
     """SECURITY (H6): the same denylist applies to attachment edits, not
     just initial registration. Otherwise a renderer compromise can
     sidestep the gate by registering with a benign root then mutating.
     """
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane_dir = tmp_path / "lane"
-    lane_dir.mkdir()
+    context_dir = tmp_path / "context"
+    context_dir.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {
+            "context": {
                 "name": "L",
                 "kind": "repo",
-                "root": str(lane_dir),
+                "root": str(context_dir),
                 "id": "l",
             },
         }
@@ -707,9 +707,9 @@ def test_update_lane_attachments_rejects_sensitive_root(tmp_path: Path):
     with pytest.raises(ValueError, match=r"(sensitive|too shallow)"):
         bridge.dispatch(
             {
-                "command": "casefile:updateLaneAttachments",
+                "command": "casefile:updateContextAttachments",
                 "casefileRoot": str(casefile_root),
-                "laneId": "l",
+                "contextId": "l",
                 "attachments": [{"name": "leak", "root": "/proc/self/root"}],
             }
         )
@@ -717,9 +717,9 @@ def test_update_lane_attachments_rejects_sensitive_root(tmp_path: Path):
     with pytest.raises(ValueError, match="sensitive"):
         bridge.dispatch(
             {
-                "command": "casefile:updateLaneAttachments",
+                "command": "casefile:updateContextAttachments",
                 "casefileRoot": str(casefile_root),
-                "laneId": "l",
+                "contextId": "l",
                 "attachments": [{"name": "leak", "root": "/etc/ssh"}],
             }
         )
@@ -743,21 +743,21 @@ def test_chat_send_pops_api_key_env_after_call(
 
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane = tmp_path / "lane"
-    lane.mkdir()
+    context = tmp_path / "context"
+    context.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "L", "kind": "repo", "root": str(lane), "id": "l"},
+            "context": {"name": "L", "kind": "repo", "root": str(context), "id": "l"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:switchLane",
+            "command": "casefile:switchContext",
             "casefileRoot": str(casefile_root),
-            "laneId": "l",
+            "contextId": "l",
         }
     )
 
@@ -818,21 +818,21 @@ def test_chat_send_pops_api_key_env_even_when_handler_raises(
 
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane = tmp_path / "lane"
-    lane.mkdir()
+    context = tmp_path / "context"
+    context.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "L", "kind": "repo", "root": str(lane), "id": "l"},
+            "context": {"name": "L", "kind": "repo", "root": str(context), "id": "l"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:switchLane",
+            "command": "casefile:switchContext",
             "casefileRoot": str(casefile_root),
-            "laneId": "l",
+            "contextId": "l",
         }
     )
     _os.environ.pop("ANTHROPIC_API_KEY", None)

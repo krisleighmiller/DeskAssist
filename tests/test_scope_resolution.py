@@ -10,7 +10,7 @@ from assistant_app.casefile import (
     CasefileStore,
     ContextManifest,
     ContextManifestStore,
-    LaneAttachment,
+    ContextAttachment,
     resolve_scope,
 )
 
@@ -18,12 +18,12 @@ from assistant_app.casefile import (
 def _setup(tmp_path: Path):
     """Build a small tree:
 
-        family/         <- 'family' lane (top-level)
+        family/         <- 'family' context (top-level)
           rubric.md
-          TASK_9/       <- 'task-9' lane, parent=family
-            ash/        <- 'ash' lane, parent=task-9, attachment=ash_notes
-            elm/        <- 'elm' lane, parent=task-9
-            ash_notes/  <- attached to 'ash'
+          TASK_9/       <- 'task-9' context, parent=family
+            ash/        <- 'ash' context, parent=task-9, attachment=ash_reference
+            elm/        <- 'elm' context, parent=task-9
+            ash_reference/  <- attached to 'ash'
     """
     family_root = tmp_path / "family"
     family_root.mkdir()
@@ -33,25 +33,25 @@ def _setup(tmp_path: Path):
     (task9 / "AGENTS.md").write_text("task 9 agents", encoding="utf-8")
     (task9 / "ash").mkdir()
     (task9 / "elm").mkdir()
-    (task9 / "ash_notes").mkdir()
-    (task9 / "ash_notes" / "log.md").write_text("ash log", encoding="utf-8")
+    (task9 / "ash_reference").mkdir()
+    (task9 / "ash_reference" / "log.md").write_text("ash log", encoding="utf-8")
 
     store = CasefileStore(family_root)
     store.ensure_initialized()  # creates 'main' pointing at family_root
-    store.register_lane(name="Task 9", kind="other", root=task9, parent_id="main")
-    store.register_lane(
+    store.register_context(name="Task 9", kind="other", root=task9, parent_id="main")
+    store.register_context(
         name="Ash",
         kind="repo",
         root=task9 / "ash",
         parent_id="task-9",
-        attachments=[LaneAttachment(name="notes", root=task9 / "ash_notes", mode="read")],
+        attachments=[ContextAttachment(name="reference", root=task9 / "ash_reference", mode="read")],
     )
-    store.register_lane(name="Elm", kind="repo", root=task9 / "elm", parent_id="task-9")
+    store.register_context(name="Elm", kind="repo", root=task9 / "elm", parent_id="task-9")
     return family_root, store
 
 
-def test_root_lane_has_no_read_overlays(tmp_path: Path):
-    """Root lane has only its own writable directory; no _scope entries."""
+def test_root_context_has_no_read_overlays(tmp_path: Path):
+    """Root context has only its own writable directory; no _scope entries."""
     family_root, store = _setup(tmp_path)
     snapshot = store.load_snapshot()
     scope = resolve_scope(snapshot, "main")
@@ -63,8 +63,8 @@ def test_root_lane_has_no_read_overlays(tmp_path: Path):
     assert not any(k.startswith(SCOPE_PREFIX) for k in overlay_map)
 
 
-def test_child_lane_has_only_declared_scope_labels(tmp_path: Path):
-    """Ash lane's scope is flat: own root + directly attached directories only."""
+def test_child_context_has_only_declared_scope_labels(tmp_path: Path):
+    """Ash context's scope is flat: own root + directly attached directories only."""
     family_root, store = _setup(tmp_path)
     snapshot = store.load_snapshot()
     scope = resolve_scope(snapshot, "ash")
@@ -73,19 +73,19 @@ def test_child_lane_has_only_declared_scope_labels(tmp_path: Path):
     read_labels = [d.label for d in scope.directories if not d.writable]
     # All labels must be unique.
     assert len(labels) == len(set(labels))
-    # Notes attachment is explicitly declared, so it is present.
-    assert read_labels == ["notes"]
-    # Parent lanes are UI structure only; they are not implicitly scoped.
+    # Reference attachment is explicitly declared, so it is present.
+    assert read_labels == ["reference"]
+    # Parent contexts are UI structure only; they are not implicitly scoped.
     assert not any(lbl.startswith("task") for lbl in labels), labels
     assert not any(lbl.startswith("main") for lbl in labels), labels
 
 
-def test_sibling_lanes_are_not_in_scope(tmp_path: Path):
+def test_sibling_scope_are_not_in_scope(tmp_path: Path):
     """Cross-sibling isolation: 'ash' must not see 'elm'."""
     _, store = _setup(tmp_path)
     snapshot = store.load_snapshot()
     scope = resolve_scope(snapshot, "ash")
-    elm_root = snapshot.lane_by_id("elm").root
+    elm_root = snapshot.context_by_id("elm").root
     scope_paths = {d.path for d in scope.directories}
     assert elm_root not in scope_paths
 
@@ -136,7 +136,7 @@ def test_overlay_map_uses_scope_prefix_for_read_only_dirs(tmp_path: Path):
     snapshot = store.load_snapshot()
     scope = resolve_scope(snapshot, "ash")
     overlay_map = scope.overlay_map()
-    # Every key should start with _scope/ or _context/ — no _ancestors, no _attachments.
+    # Every key should start with the current scope or context prefix.
     for key in overlay_map:
         assert key.startswith(SCOPE_PREFIX + "/") or key == CONTEXT_PREFIX, (
             f"Unexpected overlay key: {key}"

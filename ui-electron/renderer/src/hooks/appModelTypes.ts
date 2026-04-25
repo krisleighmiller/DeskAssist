@@ -68,8 +68,8 @@ export function normalizeChatTurn(
   ];
 }
 
-export interface LaneSessionState {
-  /** Stable UUID assigned at session creation. Survives lane switches
+export interface ContextSessionState {
+  /** Stable UUID assigned at session creation. Survives context switches
    * so the user (and future cross-session reference UI) can reference
    * "that specific conversation" by ID rather than by structural path. */
   id: string;
@@ -78,16 +78,16 @@ export interface LaneSessionState {
   tabs: OpenTab[];
   activeTabKey: string | null;
   /**
-   * True while a chat send / tool-approval cycle for THIS lane is
-   * in flight. Tracked per-lane (not globally) so switching lanes
-   * mid-request doesn't show a stale spinner on the new lane and
+   * True while a chat send / tool-approval cycle for THIS context is
+   * in flight. Tracked per-context (not globally) so switching contexts
+   * mid-request doesn't show a stale spinner on the new context and
    * doesn't let the response's `setBusy(false)` cancel the new
-   * lane's spinner. See review item #4.
+   * context's spinner. See review item #4.
    */
   busy: boolean;
 }
 
-export const EMPTY_LANE_SESSION: LaneSessionState = {
+export const EMPTY_CONTEXT_SESSION: ContextSessionState = {
   id: "",
   messages: [],
   pendingApprovals: [],
@@ -109,8 +109,8 @@ export function generateSessionId(): string {
 
 /**
  * NUL is illegal in POSIX paths and Windows filenames, so it can't
- * appear in either component of the (root, laneId) pair. Using a
- * non-printable separator means even creatively-named lane ids or
+ * appear in either component of the (root, contextId) pair. Using a
+ * non-printable separator means even creatively-named context ids or
  * paths that happen to contain `::` cannot collide.
  */
 const SESSION_KEY_SEP = "\u0000";
@@ -124,13 +124,13 @@ export function sessionKeyFor(
 }
 
 /**
- * All file tabs are keyed by `(laneId, path)` rather than path alone.
- * This keeps the open-from-tree path and the open-from-lanes-panel
+ * All file tabs are keyed by `(contextId, path)` rather than path alone.
+ * This keeps the open-from-tree path and the open-from-contexts-panel
  * path producing the same tab key for the same file, instead of two
  * disconnected buffers. (Review item #3.)
  */
-export function fileTabKey(laneId: string, path: string): string {
-  return `lane:${laneId}:${path}`;
+export function fileTabKey(contextId: string, path: string): string {
+  return `context:${contextId}:${path}`;
 }
 
 /**

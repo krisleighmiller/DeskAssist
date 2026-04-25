@@ -28,17 +28,16 @@ def build_default_tool_registry(
     registered today (the previous read-only ``findings_list`` /
     ``findings_read`` tools were removed along with the findings store).
 
-    `read_overlays` (M3.5) layers additional read-only roots on top of the
-    write root, addressed by virtual path prefix. Writes still go only to
-    `workspace_root`. The overlays are propagated to the file tools so
-    `read_file("_ancestors/foo/bar.md")` resolves into the right ancestor
-    without exposing absolute paths to the model.
+    `scoped_directories` is the current scope source of truth: each directory
+    is mounted under `_scope/<label>/...` with its own writable flag. Legacy
+    `read_overlays` are still accepted for compatibility and for non-scope
+    overlays such as `_context/...`.
 
-    `enable_writes` (M3.5c) controls whether the write-permission tools
+    `enable_writes` controls whether the write-permission tools
     (``save_file``, ``append_file``, ``delete_file``, ``delete_path``) are
-    registered at all.  Comparison-chat sessions set this to ``False`` so a
-    multi-lane chat physically cannot mutate either side's files even if a
-    bug elsewhere granted ``workspace_write`` permission.
+    registered at all. Scoped sessions with no writable directories set this
+    to ``False`` so the model cannot mutate read-only material even if a bug
+    elsewhere granted ``workspace_write`` permission.
 
     AUDIT INVARIANT: no bridge handler in ``electron_bridge`` passes
     ``capability=INTERNAL_CAPABILITY`` to ``execute_tool_command``.  If

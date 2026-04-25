@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { ComponentProps } from "react";
 
 import { api } from "../lib/api";
-import { useTerminalManager, type TerminalLaneContext } from "../hooks/useTerminalManager";
+import { useTerminalManager, type TerminalContext } from "../hooks/useTerminalManager";
 import { useWorkbenchLayout } from "../hooks/useWorkbenchLayout";
 import { ApiKeysDialog } from "./ApiKeysDialog";
 import { RightPanel } from "./RightPanel";
@@ -26,7 +26,7 @@ export interface AppShellProps {
     rightPanel: RightPanelBaseProps;
   };
   apiKeysDialog: Omit<ComponentProps<typeof ApiKeysDialog>, "onClose">;
-  activeLane: TerminalLaneContext | null;
+  activeContext: TerminalContext | null;
   casefileRoot: string | null;
 }
 
@@ -34,7 +34,7 @@ export function AppShell({
   toolbar,
   workbench,
   apiKeysDialog,
-  activeLane,
+  activeContext,
   casefileRoot,
 }: AppShellProps): JSX.Element {
   const {
@@ -60,7 +60,7 @@ export function AppShell({
     handleSelectTerminal,
     handleCloseTerminal,
   } = useTerminalManager({
-    activeLane,
+    activeContext,
     casefileRoot,
     setTerminalOpen,
   });

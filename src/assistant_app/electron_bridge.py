@@ -309,10 +309,10 @@ def _resolve_chat_context(
     """Resolve write root + casefile root + (optional) full ScopeContext.
 
     Returns a triple `(write_root, casefile_root, scope)`.
-    - When a `casefileRoot` + `laneId` is provided, `scope` is the full
+    - When a `casefileRoot` + `contextId` is provided, `scope` is the full
       cascade (ancestors + attachments + casefile context files) and
-      `write_root` is the lane's own directory.
-    - When only `casefileRoot` is provided, the casefile's active lane is
+      `write_root` is the context's own directory.
+    - When only `casefileRoot` is provided, the casefile's active context is
       used, with the same cascade semantics.
     - When neither is provided, falls back to `workspaceRoot` or cwd. This
       is the back-compat path for any caller that has not migrated to
@@ -323,14 +323,14 @@ def _resolve_chat_context(
     if isinstance(casefile_root_raw, str) and casefile_root_raw.strip():
         casefile_root = Path(casefile_root_raw).resolve()
         service = CasefileService(casefile_root)
-        lane_id_raw = request.get("laneId")
-        lane_id = (
-            lane_id_raw.strip()
-            if isinstance(lane_id_raw, str) and lane_id_raw.strip()
+        context_id_raw = request.get("contextId")
+        context_id = (
+            context_id_raw.strip()
+            if isinstance(context_id_raw, str) and context_id_raw.strip()
             else None
         )
-        lane = service.resolve_lane(lane_id)
-        scope = service.resolve_scope(lane.id)
+        context = service.resolve_context(context_id)
+        scope = service.resolve_scope(context.id)
         return scope.write_root, casefile_root, scope
     workspace_root_raw = request.get("workspaceRoot")
     if isinstance(workspace_root_raw, str) and workspace_root_raw.strip():
@@ -523,23 +523,23 @@ def _handle_chat_send_inner(request: dict[str, Any]) -> dict[str, Any]:
     pending_write_approvals = service.pending_write_tool_calls(response)
     serialized_delta = [_serialize_message(message) for message in history_delta]
 
-    # Persist the turn under the casefile lane (if one was provided). Best-effort:
+    # Persist the turn under the casefile context (if one was provided). Best-effort:
     # a persistence failure should not poison the response that the renderer
     # already received from the model. We surface it as an error field.
     persistence_error: str | None = None
-    lane_id_raw = request.get("laneId")
+    context_id_raw = request.get("contextId")
     if (
         casefile_root is not None
-        and isinstance(lane_id_raw, str)
-        and lane_id_raw.strip()
+        and isinstance(context_id_raw, str)
+        and context_id_raw.strip()
     ):
         try:
             cs = CasefileService(casefile_root)
-            cs.append_chat(lane_id_raw, serialized_delta)
+            cs.append_chat(context_id_raw, serialized_delta)
         except (OSError, ValueError) as exc:
             # Only catch the failure modes that are *expected* to occur
             # during routine persistence (disk full, permission denied,
-            # malformed lane id, oversize message). Programmer errors
+            # malformed context id, oversize message). Programmer errors
             # (AttributeError, NameError, TypeError, etc.) are allowed to
             # propagate so they surface in development instead of being
             # silently returned to the renderer as a `persistenceError`
@@ -569,82 +569,82 @@ def handle_casefile_open(request: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
 
-def handle_casefile_register_lane(request: dict[str, Any]) -> dict[str, Any]:
+def handle_casefile_register_context(request: dict[str, Any]) -> dict[str, Any]:
     casefile_root_path = _require_casefile_root(request)
-    lane_raw = request.get("lane")
-    if not isinstance(lane_raw, dict):
-        raise ValueError("lane object is required")
-    name = lane_raw.get("name")
+    context_raw = request.get("context")
+    if not isinstance(context_raw, dict):
+        raise ValueError("context object is required")
+    name = context_raw.get("name")
     if not isinstance(name, str) or not name.strip():
-        raise ValueError("lane.name is required")
-    kind = lane_raw.get("kind") if isinstance(lane_raw.get("kind"), str) else "other"
-    lane_root_raw = lane_raw.get("root")
-    if not isinstance(lane_root_raw, str) or not lane_root_raw.strip():
-        raise ValueError("lane.root is required")
-    raw_lane_path = Path(lane_root_raw.strip())
-    resolved_lane_root = (
-        raw_lane_path.resolve()
-        if raw_lane_path.is_absolute()
-        else (casefile_root_path / raw_lane_path).resolve()
+        raise ValueError("context.name is required")
+    kind = context_raw.get("kind") if isinstance(context_raw.get("kind"), str) else "other"
+    context_root_raw = context_raw.get("root")
+    if not isinstance(context_root_raw, str) or not context_root_raw.strip():
+        raise ValueError("context.root is required")
+    raw_context_path = Path(context_root_raw.strip())
+    resolved_context_root = (
+        raw_context_path.resolve()
+        if raw_context_path.is_absolute()
+        else (casefile_root_path / raw_context_path).resolve()
     )
-    _validate_path_depth(resolved_lane_root, "lane.root")
-    lane_id_raw = lane_raw.get("id")
-    lane_id = lane_id_raw if isinstance(lane_id_raw, str) and lane_id_raw.strip() else None
+    _validate_path_depth(resolved_context_root, "context.root")
+    context_id_raw = context_raw.get("id")
+    context_id = context_id_raw if isinstance(context_id_raw, str) and context_id_raw.strip() else None
     # Renderer uses camelCase (`parentId`); the snake_case `parent_id`
     # fallback is retained because hand-edited test fixtures and earlier
     # renderer revisions have used both. New IPC senders should always
     # use `parentId`.
-    parent_id_raw = lane_raw.get("parentId")
+    parent_id_raw = context_raw.get("parentId")
     if parent_id_raw is None:
-        parent_id_raw = lane_raw.get("parent_id")
+        parent_id_raw = context_raw.get("parent_id")
     parent_id = (
         parent_id_raw.strip()
         if isinstance(parent_id_raw, str) and parent_id_raw.strip()
         else None
     )
-    attachments = parse_attachments(lane_raw.get("attachments"))
+    attachments = parse_attachments(context_raw.get("attachments"))
     # SECURITY (H6): apply the same depth + sensitive-prefix denylist
-    # to every attachment root that we apply to lane roots. Without
+    # to every attachment root that we apply to context roots. Without
     # this an attachment can target `/proc/self/root`, `~/.ssh`, etc.
     # — and once registered, it is read by every subsequent AI tool
     # call that walks `_scope/<label>/`.
     _validate_attachment_roots(attachments, casefile_root_path)
-    lane_writable_raw = lane_raw.get("writable")
-    lane_writable = True if lane_writable_raw is None else _require_bool(lane_writable_raw, "lane.writable")
+    context_writable_raw = context_raw.get("writable")
+    context_writable = True if context_writable_raw is None else _require_bool(context_writable_raw, "context.writable")
     service = CasefileService(casefile_root_path)
-    snapshot = service.register_lane(
+    snapshot = service.register_context(
         name=name,
         kind=kind,
-        root=resolved_lane_root,
-        lane_id=lane_id,
+        root=resolved_context_root,
+        context_id=context_id,
         parent_id=parent_id,
         attachments=attachments,
-        writable=lane_writable,
+        writable=context_writable,
     )
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
 
-def handle_casefile_update_lane_attachments(request: dict[str, Any]) -> dict[str, Any]:
+def handle_casefile_update_context_attachments(request: dict[str, Any]) -> dict[str, Any]:
     casefile_root_path = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
+    context_id = request.get("contextId")
+    if not isinstance(context_id, str) or not context_id.strip():
+        raise ValueError("contextId is required")
     attachments = parse_attachments(request.get("attachments"))
-    # SECURITY (H6): see `handle_casefile_register_lane`.
+    # SECURITY (H6): see `handle_casefile_register_context`.
     _validate_attachment_roots(attachments, casefile_root_path)
     service = CasefileService(casefile_root_path)
-    snapshot = service.update_lane_attachments(lane_id, attachments)
+    snapshot = service.update_context_attachments(context_id, attachments)
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
 
 def _validate_attachment_roots(
     attachments: list, casefile_root: Path
 ) -> None:
-    """SECURITY (H6): enforce the lane-root rules on attachment roots.
+    """SECURITY (H6): enforce the context-root rules on attachment roots.
 
     Attachments are mounted as scoped overlays (`_scope/<label>/`) and
     are walked by every AI tool call. They MUST clear the same
-    depth + sensitive-prefix gate as a lane root or a renderer
+    depth + sensitive-prefix gate as a context root or a renderer
     compromise can attach `~/.ssh` and have the assistant exfiltrate
     its contents on the next read tool call.
 
@@ -662,22 +662,22 @@ def _validate_attachment_roots(
         _validate_path_depth(resolved, f"attachment.root[{attachment.name!r}]")
 
 
-def handle_casefile_update_lane(request: dict[str, Any]) -> dict[str, Any]:
-    """M4.6: edit a lane's name / kind / root.
+def handle_casefile_update_context(request: dict[str, Any]) -> dict[str, Any]:
+    """M4.6: edit a context's name / kind / root.
 
     Each of ``name``, ``kind``, ``root`` is independently optional.
     Omitting a field (or passing ``null``) leaves the existing value
-    unchanged. Attachments are handled by ``casefile:updateLaneAttachments``;
-    the lane id is immutable.
+    unchanged. Attachments are handled by ``casefile:updateContextAttachments``;
+    the context id is immutable.
 
-    When the resulting lane root matches another lane's root, a
+    When the resulting context root matches another context's root, a
     non-blocking warning is surfaced via ``rootConflict`` so the
     renderer can highlight the overlap without aborting the edit.
     """
     casefile_root_path = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
+    context_id = request.get("contextId")
+    if not isinstance(context_id, str) or not context_id.strip():
+        raise ValueError("contextId is required")
     name_raw = request.get("name")
     kind_raw = request.get("kind")
     root_raw = request.get("root")
@@ -713,8 +713,8 @@ def handle_casefile_update_lane(request: dict[str, Any]) -> dict[str, Any]:
     if writable_raw is not None:
         new_writable = _require_bool(writable_raw, "writable")
     service = CasefileService(casefile_root_path)
-    snapshot = service.update_lane(
-        lane_id.strip(), name=name, kind=kind, root=new_root, writable=new_writable,
+    snapshot = service.update_context(
+        context_id.strip(), name=name, kind=kind, root=new_root, writable=new_writable,
     )
     payload: dict[str, Any] = {
         "ok": True,
@@ -724,27 +724,27 @@ def handle_casefile_update_lane(request: dict[str, Any]) -> dict[str, Any]:
     # name/kind cannot create or remove a conflict.
     if new_root is not None:
         conflict = service.find_root_conflict(
-            new_root, exclude_lane_id=lane_id.strip()
+            new_root, exclude_context_id=context_id.strip()
         )
         if conflict:
-            payload["rootConflict"] = {"conflictingLaneId": conflict}
+            payload["rootConflict"] = {"conflictingContextId": conflict}
     return payload
 
 
-def handle_casefile_remove_lane(request: dict[str, Any]) -> dict[str, Any]:
-    """M4.6: remove a lane from the casefile.
+def handle_casefile_remove_context(request: dict[str, Any]) -> dict[str, Any]:
+    """M4.6: remove a context from the casefile.
 
-    On-disk per-lane chat logs are intentionally preserved so
-    re-registering a lane with the same session id resurrects the
+    On-disk per-context chat logs are intentionally preserved so
+    re-registering a context with the same session id resurrects the
     prior history. The renderer is responsible for surfacing a
     confirmation dialog before invoking this.
     """
     casefile_root_path = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
+    context_id = request.get("contextId")
+    if not isinstance(context_id, str) or not context_id.strip():
+        raise ValueError("contextId is required")
     service = CasefileService(casefile_root_path)
-    snapshot = service.remove_lane(lane_id.strip())
+    snapshot = service.remove_context(context_id.strip())
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
 
@@ -752,7 +752,7 @@ def handle_casefile_hard_reset(request: dict[str, Any]) -> dict[str, Any]:
     """M4.6: nuke ``.casefile/`` and re-initialize it.
 
     The returned snapshot is the freshly initialized casefile (default
-    ``main`` lane and no chats). The renderer must gate this behind a
+    ``main`` context and no chats). The renderer must gate this behind a
     confirmation dialog; the bridge does not.
     """
     casefile_root_path = _require_casefile_root(request)
@@ -764,7 +764,7 @@ def handle_casefile_hard_reset(request: dict[str, Any]) -> dict[str, Any]:
 def handle_casefile_soft_reset(request: dict[str, Any]) -> dict[str, Any]:
     """M4.6: clear per-task scratch while preserving workspace context.
 
-    Re-creates the default ``main`` lane so the casefile is immediately
+    Re-creates the default ``main`` context so the casefile is immediately
     usable for a new task.
     """
     casefile_root_path = _require_casefile_root(request)
@@ -775,31 +775,31 @@ def handle_casefile_soft_reset(request: dict[str, Any]) -> dict[str, Any]:
 
 def handle_casefile_resolve_scope(request: dict[str, Any]) -> dict[str, Any]:
     root = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
+    context_id = request.get("contextId")
+    if not isinstance(context_id, str) or not context_id.strip():
+        raise ValueError("contextId is required")
     service = CasefileService(root)
-    scope = service.resolve_scope(lane_id)
+    scope = service.resolve_scope(context_id)
     return {"ok": True, "scope": serialize_scope(scope)}
 
 
-def handle_casefile_switch_lane(request: dict[str, Any]) -> dict[str, Any]:
+def handle_casefile_switch_context(request: dict[str, Any]) -> dict[str, Any]:
     casefile_root_path = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
+    context_id = request.get("contextId")
+    if not isinstance(context_id, str) or not context_id.strip():
+        raise ValueError("contextId is required")
     service = CasefileService(casefile_root_path)
-    snapshot = service.set_active_lane(lane_id)
+    snapshot = service.set_active_context(context_id)
     return {"ok": True, "casefile": service.serialize(snapshot)}
 
 
 def handle_casefile_list_chat(request: dict[str, Any]) -> dict[str, Any]:
     casefile_root_path = _require_casefile_root(request)
-    lane_id = request.get("laneId")
-    if not isinstance(lane_id, str) or not lane_id.strip():
-        raise ValueError("laneId is required")
+    context_id = request.get("contextId")
+    if not isinstance(context_id, str) or not context_id.strip():
+        raise ValueError("contextId is required")
     service = CasefileService(casefile_root_path)
-    messages, skipped = service.read_chat(lane_id)
+    messages, skipped = service.read_chat(context_id)
     result: dict[str, Any] = {"ok": True, "messages": messages}
     if skipped:
         result["skippedCorruptLines"] = skipped
@@ -827,7 +827,7 @@ def _validate_path_depth(p: Path, field: str) -> None:
 
     1. **Depth** — at least 3 components (e.g. ``/home/user/x``).  This
        prevents ``/``, ``/etc``, and other single-level paths from being used
-       as casefile or lane roots.
+       as casefile or context roots.
 
     2. **Absolute path length** — rejects paths exceeding the POSIX
        ``PATH_MAX`` (4 096 bytes). A 64-segment path of short components can
@@ -907,10 +907,10 @@ def handle_chat_save_output(request: dict[str, Any]) -> dict[str, Any]:
 
     This is the single shared mechanism for the renderer's "Save..." action
     on assistant messages. It accepts an *absolute* destination directory
-    so the picker can target lane attachments, the active lane root, or
+    so the picker can target context attachments, the active context root, or
     any directory the user chooses via the system file dialog — all
-    without going through the lane-scoped filesystem (which would refuse
-    writes outside the active lane).
+    without going through the context-scoped filesystem (which would refuse
+    writes outside the active context).
 
     Validation:
 
@@ -991,63 +991,63 @@ def handle_chat_save_output(request: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _parse_lane_ids(request: dict[str, Any]) -> list[str]:
-    raw = request.get("laneIds")
+def _parse_context_ids(request: dict[str, Any]) -> list[str]:
+    raw = request.get("contextIds")
     if not isinstance(raw, list) or len(raw) < 2:
-        raise ValueError("laneIds must be an array of at least two lane ids")
+        raise ValueError("contextIds must be an array of at least two context ids")
     ids: list[str] = []
     for item in raw:
         if not isinstance(item, str) or not item.strip():
-            raise ValueError("each laneIds entry must be a non-empty string")
+            raise ValueError("each contextIds entry must be a non-empty string")
         ids.append(item.strip())
     if len(set(ids)) < 2:
-        raise ValueError("laneIds must contain at least two distinct ids")
+        raise ValueError("contextIds must contain at least two distinct ids")
     return ids
 
 
 def _serialize_comparison_summary(
-    service: CasefileService, lane_ids: list[str]
+    service: CasefileService, context_ids: list[str]
 ) -> dict[str, Any]:
     """Build the IPC-shaped session metadata for a comparison chat.
 
-    Lane summaries are emitted in the *same sorted order* used to build the
+    Context summaries are emitted in the *same sorted order* used to build the
     synthetic id and the log filename, so the renderer banner stays stable
     across selection orderings.
     """
     snapshot = service.snapshot()
-    sorted_ids = sorted(set(lane_ids))
-    lanes = [snapshot.lane_by_id(lid) for lid in sorted_ids]
+    sorted_ids = sorted(set(context_ids))
+    contexts = [snapshot.context_by_id(lid) for lid in sorted_ids]
     session = service.get_comparison_session(sorted_ids)
     return {
         "id": service.comparison_id(sorted_ids),
         "sessionId": session.session_id,
-        "laneIds": sorted_ids,
-        "lanes": [
-            {"id": lane.id, "name": lane.name, "root": str(lane.root)}
-            for lane in lanes
+        "contextIds": sorted_ids,
+        "contexts": [
+            {"id": context.id, "name": context.name, "root": str(context.root)}
+            for context in contexts
         ],
         "attachments": [serialize_attachment(att) for att in session.attachments],
     }
 
 
 def handle_casefile_open_comparison(request: dict[str, Any]) -> dict[str, Any]:
-    """Open (or re-open) a comparison chat session over ``laneIds``.
+    """Open (or re-open) a comparison chat session over ``contextIds``.
 
-    Returns the synthetic session id, the lane summaries (in the canonical
+    Returns the synthetic session id, the context summaries (in the canonical
     sorted order), and any persisted history loaded from the comparison
-    chat log.  Idempotent: re-opening the same set of lanes yields the
+    chat log.  Idempotent: re-opening the same set of contexts yields the
     same id and surfaces the existing history.
     """
     root = _require_casefile_root(request)
-    lane_ids = _parse_lane_ids(request)
+    context_ids = _parse_context_ids(request)
     service = CasefileService(root)
-    # Validate the lanes exist and the cascade resolves cleanly.  If a lane
+    # Validate the contexts exist and the cascade resolves cleanly.  If a context
     # in the set was deleted out-of-band, this raises before we report a
     # "loaded" session that is already broken.
-    service.ensure_comparison_session(lane_ids)
-    service.resolve_comparison_scope(lane_ids)
-    summary = _serialize_comparison_summary(service, lane_ids)
-    messages, skipped = service.read_comparison_chat(lane_ids)
+    service.ensure_comparison_session(context_ids)
+    service.resolve_comparison_scope(context_ids)
+    summary = _serialize_comparison_summary(service, context_ids)
+    messages, skipped = service.read_comparison_chat(context_ids)
     payload: dict[str, Any] = {
         "ok": True,
         "comparison": {**summary, "messages": messages},
@@ -1061,7 +1061,7 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
     """Run one chat turn against a comparison session.
 
     The comparison session reuses the same scoped-directory access model as
-    single-lane chat: each mounted directory is independently read-only or
+    single-context chat: each mounted directory is independently read-only or
     writable, and write-tool approvals are emitted only when the model asks
     to touch a writable path.
     """
@@ -1075,7 +1075,7 @@ def _handle_casefile_send_comparison_chat_inner(
     request: dict[str, Any],
 ) -> dict[str, Any]:
     root = _require_casefile_root(request)
-    lane_ids = _parse_lane_ids(request)
+    context_ids = _parse_context_ids(request)
     provider = str(request.get("provider") or "openai")
     model = request.get("model")
     user_message = request.get("userMessage")
@@ -1091,8 +1091,8 @@ def _handle_casefile_send_comparison_chat_inner(
         raise ValueError("messages must be an array")
 
     service = CasefileService(root)
-    service.ensure_comparison_session(lane_ids)
-    scope = service.resolve_comparison_scope(lane_ids)
+    service.ensure_comparison_session(context_ids)
+    scope = service.resolve_comparison_scope(context_ids)
 
     chat = ChatService(
         default_provider_name=provider,
@@ -1106,7 +1106,7 @@ def _handle_casefile_send_comparison_chat_inner(
     # M4.5: charter applies to comparison sessions too. Comparison chats are
     # the most likely place for the model to drift into "let me plan this
     # diff review" if left to its own defaults, so the charter is at least
-    # as important here as in single-lane chat.
+    # as important here as in single-context chat.
     _prepend_assistant_charter(parsed_history)
     context_prompt = _build_context_system_prompt(scope)
     if context_prompt and not _history_has_context_marker(parsed_history):
@@ -1133,7 +1133,7 @@ def _handle_casefile_send_comparison_chat_inner(
 
     persistence_error: str | None = None
     try:
-        service.append_comparison_chat(lane_ids, serialized_delta)
+        service.append_comparison_chat(context_ids, serialized_delta)
     except (OSError, ValueError) as exc:
         persistence_error = (
             f"comparison chat persistence failed: {type(exc).__name__}: {exc}"
@@ -1144,7 +1144,7 @@ def _handle_casefile_send_comparison_chat_inner(
         "message": _serialize_message(response),
         "messages": serialized_delta,
         "pendingApprovals": pending_write_approvals,
-        "comparison": _serialize_comparison_summary(service, lane_ids),
+        "comparison": _serialize_comparison_summary(service, context_ids),
     }
     _attach_pending_approval_token(payload, request, pending_write_approvals)
     if persistence_error:
@@ -1154,13 +1154,13 @@ def _handle_casefile_send_comparison_chat_inner(
 
 def handle_casefile_update_comparison_attachments(request: dict[str, Any]) -> dict[str, Any]:
     root = _require_casefile_root(request)
-    lane_ids = _parse_lane_ids(request)
+    context_ids = _parse_context_ids(request)
     attachments = parse_attachments(request.get("attachments"))
     service = CasefileService(root)
-    service.update_comparison_attachments(lane_ids, attachments)
+    service.update_comparison_attachments(context_ids, attachments)
     return {
         "ok": True,
-        "comparison": _serialize_comparison_summary(service, lane_ids),
+        "comparison": _serialize_comparison_summary(service, context_ids),
     }
 
 
@@ -1172,13 +1172,13 @@ def handle_casefile_update_comparison_attachments(request: dict[str, Any]) -> di
 _HANDLERS = {
     "chat:send": handle_chat_send,
     "casefile:open": handle_casefile_open,
-    "casefile:registerLane": handle_casefile_register_lane,
-    "casefile:updateLane": handle_casefile_update_lane,
-    "casefile:removeLane": handle_casefile_remove_lane,
-    "casefile:updateLaneAttachments": handle_casefile_update_lane_attachments,
+    "casefile:registerContext": handle_casefile_register_context,
+    "casefile:updateContext": handle_casefile_update_context,
+    "casefile:removeContext": handle_casefile_remove_context,
+    "casefile:updateContextAttachments": handle_casefile_update_context_attachments,
     "casefile:hardReset": handle_casefile_hard_reset,
     "casefile:softReset": handle_casefile_soft_reset,
-    "casefile:switchLane": handle_casefile_switch_lane,
+    "casefile:switchContext": handle_casefile_switch_context,
     "casefile:resolveScope": handle_casefile_resolve_scope,
     "casefile:listChat": handle_casefile_list_chat,
     "chat:saveOutput": handle_chat_save_output,

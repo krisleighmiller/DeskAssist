@@ -33,7 +33,7 @@ Responsibilities today:
 
 - create the application window and menus
 - expose filesystem and terminal functionality through IPC
-- keep track of the active casefile root and active lane root
+- keep track of the active casefile root and active context root
 - run a Python subprocess for metadata and chat commands
 - maintain filesystem watchers for the active casefile and external overlay roots
 - host PTY-backed integrated terminal sessions
@@ -43,7 +43,7 @@ Why this layer exists:
 
 - the renderer should not have direct Node or filesystem access
 - desktop features such as PTY shells, file dialogs, menus, and watchers belong at the process boundary
-- the Python bridge can stay stateless per request because Electron main owns app-level session context such as the active lane root
+- the Python bridge can stay stateless per request because Electron main owns app-level session context such as the active context root
 
 Important consequence:
 
@@ -73,12 +73,13 @@ Supporting implementations:
 
 - [`ui-electron/renderer/src/components/RightPanel.tsx`](../../ui-electron/renderer/src/components/RightPanel.tsx)
 - [`ui-electron/renderer/src/components/FileTree.tsx`](../../ui-electron/renderer/src/components/FileTree.tsx)
+- [`ui-electron/renderer/src/components/HomeView.tsx`](../../ui-electron/renderer/src/components/HomeView.tsx)
 - [`ui-electron/renderer/src/types.ts`](../../ui-electron/renderer/src/types.ts)
 
 Responsibilities today:
 
-- own most UI state for the entire workbench
-- orchestrate context switching, editor tab state, comparison sessions, and chat history
+- own most UI state for the workbench
+- orchestrate context switching, recent contexts, editor tab state, comparison sessions, and chat history
 - drive the three-column layout and integrated terminal panel
 - translate UI actions into `assistantApi` calls
 - reconcile filesystem change notifications into UI refreshes
@@ -89,13 +90,14 @@ The renderer already expresses the app as a single persistent workbench rather t
 
 Current weakness:
 
-Too much cross-feature orchestration is concentrated in `App.tsx`. That makes the runtime understandable, but it also means the renderer currently acts as:
+Much of the cross-feature orchestration is still concentrated in `App.tsx`, though some shell prop shaping and context workspace behavior has been extracted into renderer hooks. The renderer still effectively acts as:
 
 - workbench coordinator
 - session store
 - chat session manager
 - comparison session registry
 - terminal session coordinator
+- recent-context coordinator
 
 This is one of the clearest refactor seams for the next phase.
 
@@ -106,9 +108,9 @@ Primary implementation: [`src/assistant_app/electron_bridge.py`](../../src/assis
 Responsibilities today:
 
 - accept one JSON request from Electron main
-- dispatch named commands such as `chat:send`, `casefile:open`, `casefile:openComparison`, and `casefile:updateLaneAttachments`
+- dispatch named commands such as `chat:send`, `casefile:open`, `casefile:openComparison`, and `casefile:updateContextAttachments`
 - apply API keys to environment variables for provider use
-- resolve casefile and lane scope
+- resolve casefile and context scope
 - serialize responses back to Electron in a framed JSON payload
 
 Why this layer matters:
@@ -128,8 +130,8 @@ Primary implementations:
 
 Responsibilities today:
 
-- manage the casefile lifecycle and lane persistence
-- resolve scope for single-lane and comparison chats
+- manage the casefile lifecycle and context persistence
+- resolve scope for single-context and comparison chats
 - build tool registries with read and write permissions
 - inject the assistant charter and casefile context into chat history
 - persist chat deltas and workspace/context metadata
@@ -137,7 +139,7 @@ Responsibilities today:
 
 The most important current domain center is:
 
-`casefile -> lane -> scope -> overlays`
+`casefile -> context -> scope -> overlays`
 
 That chain is what makes DeskAssist more than a generic repo chat UI. It is already the core of the app's scoped-work behavior.
 
@@ -160,7 +162,7 @@ Current model:
 - providers normalize API-specific chat responses into one internal shape
 - tools are exposed to models through a registry with per-command schemas and permissions
 - write tools require explicit approval from the renderer before execution
-- comparison chat uses the same per-directory read/write scope model as lane chat
+- comparison chat uses the same per-directory read/write scope model as context chat
 
 This is a solid safety model for the current scope of the app.
 
@@ -168,21 +170,24 @@ This is a solid safety model for the current scope of the app.
 
 DeskAssist currently stores user-facing state in two broad places:
 
-- the workspace or lane filesystem itself
+- the workspace or context filesystem itself
 - a `.casefile/` metadata directory rooted at the selected casefile
 
 The current `.casefile/` model includes:
 
-- `lanes.json` for lane definitions and the active lane
-- `chats/<session_uuid>.jsonl` for lane and comparison chat history
+- `contexts.json` for context definitions and the active context
+- `comparisons.json` for persistent comparison session metadata
+- `chats/<session_uuid>.jsonl` for context and comparison chat history
 - `context.json` for casefile-wide auto-include patterns
+
+The renderer also keeps a small user-level recent-context index in `localStorage` via [`ui-electron/renderer/src/lib/recentContexts.ts`](../../ui-electron/renderer/src/lib/recentContexts.ts). That supports the current home/recents surface, but it is not yet a backend-backed user-level persistence model.
 
 Relevant code:
 
 - [`src/assistant_app/casefile/models.py`](../../src/assistant_app/casefile/models.py)
 - [`src/assistant_app/casefile/store.py`](../../src/assistant_app/casefile/store.py)
 
-This persistence model already separates durable context metadata from lane-owned workspace files, which is exactly the kind of split DeskAssist needs for scoped work.
+This persistence model already separates durable context metadata from context-owned workspace files, which is exactly the kind of split DeskAssist needs for scoped work.
 
 ## Scope Resolution Model
 
@@ -190,23 +195,23 @@ Primary implementation: [`src/assistant_app/casefile/scope.py`](../../src/assist
 
 The current scoping model is one of the most mature parts of the system.
 
-For a lane chat, the resolved scope includes:
+For a context chat, the resolved scope includes:
 
-- one write root, which is the lane's own root
-- zero or more read-only attachment overlays
-- zero or more ancestor lane overlays
-- zero or more ancestor attachment overlays
+- the context root as a scoped directory with its own writable flag
+- zero or more attachment scoped directories, each with its own read/write mode
 - zero or more casefile context files under `_context/...`
 
 For a comparison chat, the resolved scope includes:
 
 - a stable synthetic comparison id
-- scoped directory entries for each participating lane
-- inherited ancestor and attachment scope entries
+- scoped directory entries for each participating context
+- direct attachment scope entries for participating contexts plus any comparison-session attachments
 - casefile context files
 - write tools when at least one scoped directory is writable
 
 That gives DeskAssist a controllable model of what the AI can read or write without giving up stable workspace organization.
+
+The current code resolves scope as a flat set of `_scope/<label>/...` directories; structural parents are UI organization only and are not inherited into AI scope.
 
 ## Current Information Architecture
 
@@ -223,16 +228,16 @@ This matches the README's diagnosis that internal concepts are more visible than
 - The runtime split is clear and sensible for a desktop app.
 - Scope resolution is already a real differentiator, not a placeholder.
 - Storage is explicit and testable rather than hidden in renderer-only state.
-- Comparison chat intentionally follows the same per-directory read/write scope rules as lane chat.
+- Comparison chat intentionally follows the same per-directory read/write scope rules as context chat.
 - The file tree, editor, chat, and terminal already form a credible always-open workbench.
 
 ## Pressure Points
 
 - The renderer is carrying too much orchestration in one component tree.
 - The product language in the README does not yet line up cleanly with the UI's visible concepts.
-- File browsing and lane creation are related workflows but still feel separate in the implementation.
+- File browsing and context creation are related workflows but still feel separate in the implementation.
 - Chats and files are artifact-like, but the system does not yet provide a unified artifact model.
-- The current shell can do many things, but it does not yet provide a strong "resume and switch context" home experience.
+- A home/recents surface exists, but it is still lightweight: it uses renderer `localStorage`, lists recent and pinned casefiles/active contexts, and offers quick capture inside an opened workspace. It is not yet the full cross-context continuity or non-code context model described by later milestones.
 
 ## Architectural Summary
 

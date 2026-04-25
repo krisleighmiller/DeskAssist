@@ -49,7 +49,7 @@ These rules apply to every DeskAssist build session:
 2. DO NOT build future milestones early.
 3. DO NOT add integrations, plugins, automation systems, orchestration, or assistant behavior unless the milestone explicitly calls for them.
 4. DO NOT invent a new persistence model unless the current milestone cannot be satisfied without it.
-5. DO NOT replace working casefile, lane, comparison, or scope mechanics just to improve naming or symmetry.
+5. DO NOT replace working casefile, context, comparison, or scope mechanics just to improve naming or symmetry.
 6. Prefer the smallest implementation that satisfies the milestone exit criteria.
 7. Preserve existing runtime boundaries unless a milestone explicitly requires a change.
 8. DO NOT broaden a task because it feels architecturally cleaner.
@@ -64,159 +64,12 @@ These are fixed unless explicitly changed:
 
 - Keep the Electron main / preload / renderer / Python bridge split.
 - Keep scope resolution in Python.
-- Keep comparison chat governed by the same per-directory read/write scope model as lane chat.
-- Keep active-lane containment enforcement in Electron main for file operations.
-- Treat `lane` as the current implementation of a scoped context, not the product identity.
+- Keep comparison chat governed by the same per-directory read/write scope model as context chat.
+- Keep active-context containment enforcement in Electron main for file operations.
+- Treat `context` as the current implementation of a scoped context, not the product identity.
 - Treat `context` as the product-facing work unit.
 - DO NOT duplicate scope logic in the renderer.
 - DO NOT bypass existing write-approval and safety boundaries.
-
----
-
-## Milestone Order
-
-Build in this order. DO NOT skip ahead.
-
-### Milestone 1 — Stable Shell
-Goal: make the workbench layout reliable.
-
-Includes:
-- predictable resizing
-- sensible panel minimums
-- usable right panel
-- terminal/editor/browser coexistence
-- layout persistence
-
-Does not include:
-- home dashboard
-- cross-casefile switching
-- journal
-- integrations
-- artifact unification
-
-### Milestone 2 — Browser Is a Real Control Surface
-Goal: make the browser the normal place to begin work.
-
-Includes:
-- create file
-- create folder
-- delete entry
-- move or safe relocate flow
-- rename works cleanly
-- open from browser into editor
-- create scoped context from selection
-- compare from selection
-
-Does not include:
-- new storage systems
-- plugin hooks
-- generic action framework
-- cross-casefile navigation
-
-### Milestone 2.5 — Scope Model Correction
-Goal: fix the core scope and session model before building visible scope features on top of it.
-
-Includes:
-- remove `_ancestors` virtual prefix; scope becomes a flat labeled list of directories with per-entry permissions
-- per-directory read/write permissions (not fixed by structural role)
-- unified scoped session model: lane chat and N-lane comparison become one concept
-- stable UUID-based session identity
-- right panel reduced to chat with conversation tabs only (Notes, Prompts, Inbox removed)
-- context inclusion via @mention and drag-drop, replacing the ContextEditor manifest UI
-
-Does not include:
-- cross-session reference UI
-- polished scope summary display in chat (that is Milestone 3)
-- home or resume features
-- artifact unification
-
-### Milestone 3 — Scoped AI Is Obvious
-Goal: make scope visible and understandable.
-
-Includes:
-- current-scope summary in chat (built on the corrected M2.5 model)
-- clear session framing (single-directory vs multi-directory)
-- better scope language
-- narrow / widen / switch scope controls where needed
-- empty states that explain scope behavior
-
-Does not include:
-- new scope engine
-- renderer-side scope duplication
-- large onboarding framework
-
-### Milestone 4 — Cross-Context Continuity
-Goal: prove DeskAssist is bigger than one active casefile.
-
-Includes:
-- switch between casefiles/projects inside DeskAssist
-- recent work or recent contexts list
-- reopen prior active work
-- lightweight user-level persistence for recents
-
-Does not include:
-- polished dashboard
-- journal
-- integrations
-- full artifact unification
-
-### Milestone 5 — Home and Resume
-Goal: give the app a real starting place.
-
-Includes:
-- home view
-- recent contexts
-- pinned work
-- resume last active work
-- quick capture entry point
-
-Does not include:
-- full life dashboard
-- recommendation engine
-- integration hub
-
-### Milestone 6 — First Non-Code Context
-Goal: validate that DeskAssist supports non-repo work.
-
-Recommended first target:
-- journal
-- daily log
-- scratch context
-
-Does not include:
-- email
-- Slack
-- SMS
-- calendar
-- health tracking
-
-### Milestone 7 — Artifact Unification
-Goal: make notes, prompts, files, chat outputs, and related material feel connected.
-
-Includes:
-- lightweight artifact descriptor model
-- better discovery
-- better insertion into workflows
-- fewer isolated storage-shaped tabs
-
-Does not include:
-- database rewrite
-- total persistence redesign
-- unnecessary taxonomy work
-
-### Milestone 8 — Extensions and Integrations
-Goal: add clean boundaries for future integrations.
-
-Includes:
-- extension boundary
-- registration/configuration model
-- permissions model
-
-Does not include:
-- building all the integrations
-- reshaping the core product around extension needs
-
----
 
 ## Required Response Format Before Coding
 
@@ -351,55 +204,7 @@ Using “cleanup” or “refactor” as an excuse to redesign unrelated behavio
 Adding flexibility for imagined future use cases that are not in the current milestone.
 
 ### 6. Repo-analysis gravity
-Improving only the casefile/lane analysis path in ways that make the broader context-switching workspace vision harder to reach.
-
----
-
-## Session Prompt Template
-
-Copy and paste this at the start of a DeskAssist implementation session:
-
-> Follow the DeskAssist Agent Execution Contract exactly.
->
-> Current task: [replace with task]
->
-> Current milestone: [replace with milestone number and name]
->
-> DO NOT introduce new concepts, abstractions, tabs, systems, or persistence unless they are required by this milestone.
-> DO NOT solve future milestones early.
-> Prefer the smallest implementation that satisfies the task.
->
-> Before coding, respond with:
-> 1. current milestone
-> 2. requested task
-> 3. in scope
-> 4. out of scope
-> 5. exit criteria
-> 6. minimal implementation plan
-> 7. complexity check
-> 8. drift check
->
-> After coding, respond with:
-> 1. what changed
-> 2. what did not change
-> 3. exit criteria status
-> 4. new complexity introduced
-> 5. follow-up risks
-> 6. milestone status
-
----
-
-## Review Filter For Approving Agent Plans
-
-Before approving a plan, verify these questions are answered clearly:
-
-1. Which milestone is this for?
-2. Which exit criteria does it satisfy?
-3. What is explicitly not being changed?
-4. What new complexity is being introduced, and why is it necessary now?
-5. How does this avoid narrowing DeskAssist into a repo-analysis-only tool?
-
-If those answers are vague, do not approve the plan yet.
+Improving only the casefile/context analysis path in ways that make the broader context-switching workspace vision harder to reach.
 
 ---
 

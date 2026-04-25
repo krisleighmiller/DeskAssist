@@ -1144,16 +1144,16 @@ a {
   border-color: #6366f1;
 }
 
-.compare-lanes-dialog {
+.compare-contexts-dialog {
   min-width: 420px;
 }
 
-.compare-lanes-source {
+.compare-contexts-source {
   color: #e5e7eb;
   font-weight: 600;
 }
 
-.compare-lanes-list {
+.compare-contexts-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1162,7 +1162,7 @@ a {
   overflow: auto;
 }
 
-.compare-lanes-option {
+.compare-contexts-option {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1173,11 +1173,11 @@ a {
   cursor: pointer;
 }
 
-.compare-lanes-option input {
+.compare-contexts-option input {
   margin: 0;
 }
 
-.compare-lanes-option-label {
+.compare-contexts-option-label {
   color: #e5e7eb;
 }
 
@@ -1242,7 +1242,7 @@ a {
   padding: 2px 0;
 }
 
-/* Scoped sessions (multi-lane) mirror compare layout */
+/* Scoped sessions (multi-context) mirror compare layout */
 .chat-session.scoped {
   padding: 0 4px 0 10px;
 }
@@ -1341,7 +1341,7 @@ a {
   overflow-y: auto;
 }
 
-.chat-save-output-lane {
+.chat-save-output-context {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -1349,7 +1349,7 @@ a {
   border-bottom: 1px dashed #1f2937;
 }
 
-.chat-save-output-lane-header {
+.chat-save-output-context-header {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1434,7 +1434,7 @@ a {
   font-size: 11px;
 }
 
-/* ---------- M3.5: breadcrumb, lane tree, attachments, context, overlays ---------- */
+/* ---------- M3.5: breadcrumb, context tree, attachments, context, overlays ---------- */
 
 .breadcrumb {
   display: inline-flex;
@@ -1573,11 +1573,11 @@ a {
   outline-offset: -2px;
 }
 
-/* Small badge marking a tree row whose path equals a registered lane
+/* Small badge marking a tree row whose path equals a registered context
    root. Helps users recognise the difference between "this folder is
-   a lane" (eligible for Compare with…) and "this folder is just a
-   subdirectory of the active lane". */
-.lane-badge {
+   a context" (eligible for Compare with…) and "this folder is just a
+   subdirectory of the active context". */
+.context-badge {
   margin-left: 6px;
   padding: 0 4px;
   font-size: 9px;
@@ -1609,18 +1609,18 @@ a {
   background: #1e40af;
 }
 
-/* M2.1: rows whose path falls inside the active lane's scope (its
-   write root *or* any of its read-only attachment roots) are tinted
-   so the user can see at a glance which directories the active lane
+/* M2.1: rows whose path falls inside the active context's scope (its
+   write root *or* any of its read-only related directory roots) are tinted
+   so the user can see at a glance which directories the active context
    covers. The previous overlay sections (`_ancestors`, `_attachments`,
    …) used to do this by fragmenting the tree; now the tree stays
    unified and colour does the work. We tint the *name* span and the
    leading glyph rather than the row background so the active / selected
    backgrounds keep working without stacking conflicts. */
-.tree-row.in-active-lane > span:not(.twisty):not(.lane-badge) {
+.tree-row.in-active-context > span:not(.twisty):not(.context-badge) {
   color: #93c5fd;
 }
-.tree-row.in-active-lane .twisty {
+.tree-row.in-active-context .twisty {
   color: #60a5fa;
 }
 
@@ -1632,13 +1632,13 @@ a {
 }
 
 /* ================================================================
-   Toolbar — Lane ▾ dropdown
+   Toolbar — Context ▾ dropdown
    ================================================================ */
-.toolbar-lane-menu-wrapper {
+.toolbar-context-menu-wrapper {
   position: relative;
 }
 
-.toolbar-lane-btn {
+.toolbar-context-btn {
   background: #1e293b;
   border: 1px solid #334155;
   border-radius: 4px;
@@ -1649,13 +1649,13 @@ a {
   transition: background 0.15s, border-color 0.15s;
 }
 
-.toolbar-lane-btn:hover {
+.toolbar-context-btn:hover {
   background: #273449;
   border-color: #4b6280;
   color: #e2e8f0;
 }
 
-.toolbar-lane-btn[aria-expanded="true"] {
+.toolbar-context-btn[aria-expanded="true"] {
   background: #1d4ed8;
   border-color: #1d4ed8;
   color: #f9fafb;

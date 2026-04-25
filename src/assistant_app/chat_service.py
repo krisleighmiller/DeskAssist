@@ -22,7 +22,7 @@ MAX_TOOL_TURNS = 32
 
 # SECURITY (M9): hard cap on the total serialised size (in bytes) of
 # the conversation history we are willing to send to a provider. A
-# malicious lane chat log that somebody has written to directly (or a
+# malicious context chat log that somebody has written to directly (or a
 # renderer compromise that inflates the history array) can otherwise
 # cost the user arbitrary money on the next `send_user_message`.
 # 4 MB is large enough for several hundred normal turns (including

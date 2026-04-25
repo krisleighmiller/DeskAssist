@@ -19,8 +19,8 @@ export interface TerminalSession {
   label: string;
   /** cwd the shell was spawned in (informational). */
   cwd: string;
-  /** Optional lane id this terminal was associated with at spawn. */
-  laneId: string | null;
+  /** Optional context id this terminal was associated with at spawn. */
+  contextId: string | null;
   /** True once the underlying PTY has exited. */
   exited?: boolean;
 }
@@ -151,7 +151,7 @@ function TerminalView({
           .terminalSpawn({
             id: session.id,
             cwd: session.cwd || null,
-            laneId: session.laneId,
+            contextId: session.contextId,
             cols,
             rows,
           })
@@ -197,7 +197,7 @@ function TerminalView({
       // parent decides when to dispose by calling disposeTerminalSession
       // on real session close.
     };
-  }, [session.id, session.cwd, session.laneId]);
+  }, [session.id, session.cwd, session.contextId]);
 
   // Refocus when the tab becomes active so the user can immediately
   // start typing without an extra click.

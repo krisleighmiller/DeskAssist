@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   type CasefileSnapshot,
-  type Lane,
+  type Context,
   type RecentContext,
 } from "../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
@@ -9,23 +9,23 @@ import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 interface ToolbarProps {
   casefile: CasefileSnapshot | null;
   recentContexts: RecentContext[];
-  onOpenRecentContext: (root: string, activeLaneId: string | null) => void | Promise<void>;
-  onSwitchLane?: (laneId: string) => void;
-  /** M2.5: Lane management actions surfaced in the toolbar dropdown so
+  onOpenRecentContext: (root: string, activeContextId: string | null) => void | Promise<void>;
+  onSwitchContext?: (contextId: string) => void;
+  /** M2.5: Context management actions surfaced in the toolbar dropdown so
    * they are reachable without right-clicking the file tree. */
-  onUpdateLaneName?: (laneId: string, newName: string) => Promise<void>;
-  onRemoveLane?: (laneId: string) => Promise<void>;
-  onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void>;
+  onUpdateContextName?: (contextId: string, newName: string) => Promise<void>;
+  onRemoveContext?: (contextId: string) => Promise<void>;
+  onSetContextWritable?: (contextId: string, writable: boolean) => Promise<void>;
   onHardResetCasefile?: () => Promise<void>;
   onSoftResetCasefile?: () => Promise<void>;
   onQuickCapture?: () => void | Promise<void>;
 }
 
-function ancestorChain(casefile: CasefileSnapshot, laneId: string | null): Lane[] {
-  if (!laneId) return [];
-  const byId = new Map(casefile.lanes.map((l) => [l.id, l]));
-  const chain: Lane[] = [];
-  let current = byId.get(laneId);
+function ancestorChain(casefile: CasefileSnapshot, contextId: string | null): Context[] {
+  if (!contextId) return [];
+  const byId = new Map(casefile.contexts.map((l) => [l.id, l]));
+  const chain: Context[] = [];
+  let current = byId.get(contextId);
   const seen = new Set<string>();
   while (current && !seen.has(current.id)) {
     chain.unshift(current);
@@ -45,28 +45,28 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     casefile,
     recentContexts,
     onOpenRecentContext,
-    onSwitchLane,
-    onUpdateLaneName,
-    onRemoveLane,
-    onSetLaneWritable,
+    onSwitchContext,
+    onUpdateContextName,
+    onRemoveContext,
+    onSetContextWritable,
     onHardResetCasefile,
     onSoftResetCasefile,
     onQuickCapture,
   } = props;
 
-  const chain = casefile ? ancestorChain(casefile, casefile.activeLaneId) : [];
+  const chain = casefile ? ancestorChain(casefile, casefile.activeContextId) : [];
 
-  const [laneMenuOpen, setLaneMenuOpen] = useState(false);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [recentMenuOpen, setRecentMenuOpen] = useState(false);
-  const laneButtonRef = useRef<HTMLButtonElement>(null);
+  const contextButtonRef = useRef<HTMLButtonElement>(null);
   const recentButtonRef = useRef<HTMLButtonElement>(null);
 
-  const activeLane = casefile
-    ? casefile.lanes.find((l) => l.id === casefile.activeLaneId) ?? null
+  const activeContext = casefile
+    ? casefile.contexts.find((l) => l.id === casefile.activeContextId) ?? null
     : null;
 
-  const openLaneMenu = () => {
-    setLaneMenuOpen(true);
+  const openContextMenu = () => {
+    setContextMenuOpen(true);
   };
 
   const openRecentMenu = () => {
@@ -81,57 +81,57 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     };
   }, []);
 
-  /** Build the items list for the Lane ▾ dropdown. */
-  const buildLaneMenuItems = () => {
+  /** Build the items list for the Context ▾ dropdown. */
+  const buildContextMenuItems = () => {
     if (!casefile) return [];
     const items: import("./ContextMenu").ContextMenuItem[] = [];
 
-    // Switch to another lane.
-    const others = casefile.lanes.filter((l) => l.id !== casefile.activeLaneId);
+    // Switch to another context.
+    const others = casefile.contexts.filter((l) => l.id !== casefile.activeContextId);
     if (others.length > 0) {
-      for (const lane of others) {
+      for (const context of others) {
         items.push({
-          label: `Switch to "${lane.name}"`,
+          label: `Switch to "${context.name}"`,
           onSelect: () => {
-            void Promise.resolve(onSwitchLane?.(lane.id));
+            void Promise.resolve(onSwitchContext?.(context.id));
           },
         });
       }
       items[items.length - 1] = { ...items[items.length - 1], separator: true };
     }
 
-    // Active-lane management (rename, access toggle, remove).
-    if (activeLane) {
-      if (onUpdateLaneName) {
+    // Active-context management (rename, access toggle, remove).
+    if (activeContext) {
+      if (onUpdateContextName) {
         items.push({
           label: "Rename context…",
           onSelect: () => {
-            const newName = window.prompt("New name for this context:", activeLane.name);
-            if (!newName?.trim() || newName.trim() === activeLane.name) return;
-            void onUpdateLaneName(activeLane.id, newName.trim());
+            const newName = window.prompt("New name for this context:", activeContext.name);
+            if (!newName?.trim() || newName.trim() === activeContext.name) return;
+            void onUpdateContextName(activeContext.id, newName.trim());
           },
         });
       }
-      if (onSetLaneWritable) {
-        const isWritable = activeLane.writable !== false;
+      if (onSetContextWritable) {
+        const isWritable = activeContext.writable !== false;
         items.push({
           label: isWritable
             ? "Set AI access: read-only"
             : "Set AI access: writable",
           onSelect: () => {
-            void onSetLaneWritable(activeLane.id, !isWritable);
+            void onSetContextWritable(activeContext.id, !isWritable);
           },
         });
       }
-      if (onRemoveLane) {
+      if (onRemoveContext) {
         items.push({
           label: "Remove context",
           onSelect: () => {
             const ok = window.confirm(
-              `Remove context "${activeLane.name}"?\n\nThis removes it from the workspace but does not delete any files.`
+              `Remove context "${activeContext.name}"?\n\nThis removes it from the workspace but does not delete any files.`
             );
             if (!ok) return;
-            void onRemoveLane(activeLane.id);
+            void onRemoveContext(activeContext.id);
           },
           separator: !!(onSoftResetCasefile || onHardResetCasefile),
         });
@@ -167,10 +167,10 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     return items;
   };
 
-  // Position the dropdown flush below the "Lane ▾" button.
-  const laneMenuPos = (() => {
-    if (!laneButtonRef.current) return { x: 0, y: 32 };
-    const rect = laneButtonRef.current.getBoundingClientRect();
+  // Position the dropdown flush below the "Context ▾" button.
+  const contextMenuPos = (() => {
+    if (!contextButtonRef.current) return { x: 0, y: 32 };
+    const rect = contextButtonRef.current.getBoundingClientRect();
     return { x: rect.left, y: rect.bottom + 2 };
   })();
 
@@ -182,11 +182,11 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
 
   const recentItems: ContextMenuItem[] = recentContexts.map((context) => {
     const rootName = basenameFromPath(context.root);
-    const laneSuffix = context.activeLaneName ? ` / ${context.activeLaneName}` : "";
+    const contextSuffix = context.activeContextName ? ` / ${context.activeContextName}` : "";
     return {
-      label: `${rootName}${laneSuffix}`,
+      label: `${rootName}${contextSuffix}`,
       onSelect: () => {
-        void Promise.resolve(onOpenRecentContext(context.root, context.activeLaneId));
+        void Promise.resolve(onOpenRecentContext(context.root, context.activeContextId));
       },
     };
   });
@@ -194,11 +194,11 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
   return (
     <div className="toolbar">
       {recentContexts.length > 0 && (
-        <div className="toolbar-lane-menu-wrapper">
+        <div className="toolbar-context-menu-wrapper">
           <button
             ref={recentButtonRef}
             type="button"
-            className="toolbar-lane-btn"
+            className="toolbar-context-btn"
             aria-haspopup="menu"
             aria-expanded={recentMenuOpen}
             onClick={openRecentMenu}
@@ -222,27 +222,27 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
           {chain.length === 0 ? (
             <span className="breadcrumb-empty"> — no active context</span>
           ) : (
-            chain.map((lane, idx) => {
+            chain.map((context, idx) => {
               const isLast = idx === chain.length - 1;
               return (
-                <span key={lane.id} className="breadcrumb-segment">
+                <span key={context.id} className="breadcrumb-segment">
                   <span className="breadcrumb-sep"> / </span>
-                  {onSwitchLane && !isLast ? (
+                  {onSwitchContext && !isLast ? (
                     <button
                       type="button"
                       className="breadcrumb-link"
-                      onClick={() => onSwitchLane(lane.id)}
-                      title={lane.root}
+                      onClick={() => onSwitchContext(context.id)}
+                      title={context.root}
                     >
-                      {lane.name}
+                      {context.name}
                     </button>
                   ) : (
                     <span
                       className={`breadcrumb-segment-label${isLast ? " active" : ""}`}
-                      title={lane.root}
+                      title={context.root}
                     >
-                      {lane.name}
-                      <span className="breadcrumb-kind"> ({lane.kind})</span>
+                      {context.name}
+                      <span className="breadcrumb-kind"> ({context.kind})</span>
                     </span>
                   )}
                 </span>
@@ -254,24 +254,24 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
         <span className="breadcrumb breadcrumb-empty">No workspace open</span>
       )}
       {casefile && (
-        <div className="toolbar-lane-menu-wrapper">
+        <div className="toolbar-context-menu-wrapper">
           <button
-            ref={laneButtonRef}
+            ref={contextButtonRef}
             type="button"
-            className="toolbar-lane-btn"
+            className="toolbar-context-btn"
             aria-haspopup="menu"
-            aria-expanded={laneMenuOpen}
-            onClick={openLaneMenu}
+            aria-expanded={contextMenuOpen}
+            onClick={openContextMenu}
             title="Context management actions"
           >
             Context ▾
           </button>
-          {laneMenuOpen && (
+          {contextMenuOpen && (
             <ContextMenu
-              x={laneMenuPos.x}
-              y={laneMenuPos.y}
-              items={buildLaneMenuItems()}
-              onClose={() => setLaneMenuOpen(false)}
+              x={contextMenuPos.x}
+              y={contextMenuPos.y}
+              items={buildContextMenuItems()}
+              onClose={() => setContextMenuOpen(false)}
             />
           )}
         </div>
@@ -279,7 +279,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
       {casefile && onQuickCapture && (
         <button
           type="button"
-          className="toolbar-lane-btn"
+          className="toolbar-context-btn"
           onClick={() => {
             void Promise.resolve(onQuickCapture());
           }}

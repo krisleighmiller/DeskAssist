@@ -11,23 +11,23 @@ from assistant_app.casefile.models import (
     ComparisonSessionConfig,
     CasefileSnapshot,
     DEFAULT_ATTACHMENT_MODE,
-    DEFAULT_LANE_KIND,
-    Lane,
-    LaneAttachment,
-    LaneKind,
-    LANE_KINDS,
+    DEFAULT_CONTEXT_KIND,
+    Context,
+    ContextAttachment,
+    ContextKind,
+    CONTEXT_KINDS,
     ScopedDirectory,
 )
 from assistant_app.casefile.scope import (
     CONTEXT_PREFIX,
     SCOPE_PREFIX,
     ScopeContext,
-    comparison_id_for_lanes,
+    comparison_id_for_contexts,
     resolve_comparison_scope,
     resolve_scope,
 )
-from assistant_app.casefile.service import CasefileService, serialize_lane
-from assistant_app.casefile.store import CasefileStore, LanesFileError, normalize_attachment_name
+from assistant_app.casefile.service import CasefileService, serialize_context
+from assistant_app.casefile.store import CasefileStore, ContextsFileError, normalize_attachment_name
 
 __all__ = [
     "CONTEXT_FILE_VERSION",
@@ -42,19 +42,19 @@ __all__ = [
     "ContextManifestStore",
     "DEFAULT_ATTACHMENT_MODE",
     "DEFAULT_AUTO_INCLUDE_MAX_BYTES",
-    "DEFAULT_LANE_KIND",
-    "LANE_KINDS",
-    "Lane",
-    "LaneAttachment",
-    "LaneKind",
-    "LanesFileError",
+    "DEFAULT_CONTEXT_KIND",
+    "CONTEXT_KINDS",
+    "Context",
+    "ContextAttachment",
+    "ContextKind",
+    "ContextsFileError",
     "ResolvedContextFile",
     "SCOPE_PREFIX",
     "ScopeContext",
     "ScopedDirectory",
-    "comparison_id_for_lanes",
+    "comparison_id_for_contexts",
     "normalize_attachment_name",
     "resolve_comparison_scope",
     "resolve_scope",
-    "serialize_lane",
+    "serialize_context",
 ]

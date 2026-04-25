@@ -6,15 +6,15 @@ function isPathWithinRoot(child, root) {
 
 function allowedTerminalRoots({
   activeCasefileRoot,
-  activeLaneRoot,
-  registeredLaneRoots,
+  activeContextRoot,
+  registeredContextRoots,
   realpathIfDirectory,
 }) {
   const roots = new Set();
   for (const root of [
     activeCasefileRoot,
-    activeLaneRoot,
-    ...(Array.isArray(registeredLaneRoots) ? registeredLaneRoots : []),
+    activeContextRoot,
+    ...(Array.isArray(registeredContextRoots) ? registeredContextRoots : []),
   ]) {
     const real = root ? realpathIfDirectory(root) : null;
     if (real) roots.add(real);
@@ -25,8 +25,8 @@ function allowedTerminalRoots({
 function resolveAllowedTerminalCwd({
   requestedCwd,
   activeCasefileRoot,
-  activeLaneRoot,
-  registeredLaneRoots,
+  activeContextRoot,
+  registeredContextRoots,
   realpathIfDirectory,
   homeDir,
 }) {
@@ -35,11 +35,11 @@ function resolveAllowedTerminalCwd({
   }
   const allowedRoots = allowedTerminalRoots({
     activeCasefileRoot,
-    activeLaneRoot,
-    registeredLaneRoots,
+    activeContextRoot,
+    registeredContextRoots,
     realpathIfDirectory,
   });
-  const fallback = realpathIfDirectory(activeLaneRoot) || allowedRoots[0];
+  const fallback = realpathIfDirectory(activeContextRoot) || allowedRoots[0];
   if (!fallback) {
     throw new Error("No valid workspace root is available for terminal startup");
   }

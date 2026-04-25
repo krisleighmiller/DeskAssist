@@ -29,42 +29,42 @@ def test_save_append_delete_file_roundtrip(tmp_path: Path):
     save_result = registry.execute(
         {
             "cmd": "save_file",
-            "params": {"path": "notes/todo.txt", "content": "one\n", "overwrite": False},
+            "params": {"path": "scratch/todo.txt", "content": "one\n", "overwrite": False},
         }
     )
     assert save_result["ok"] is True
 
     append_result = registry.execute(
-        {"cmd": "append_file", "params": {"path": "notes/todo.txt", "content": "two\n"}}
+        {"cmd": "append_file", "params": {"path": "scratch/todo.txt", "content": "two\n"}}
     )
     assert append_result["ok"] is True
 
-    read_result = registry.execute({"cmd": "read_file", "params": {"path": "notes/todo.txt"}})
+    read_result = registry.execute({"cmd": "read_file", "params": {"path": "scratch/todo.txt"}})
     assert read_result["ok"] is True
     assert read_result["result"]["content"] == "one\ntwo\n"
 
-    delete_result = registry.execute({"cmd": "delete_file", "params": {"path": "notes/todo.txt"}})
+    delete_result = registry.execute({"cmd": "delete_file", "params": {"path": "scratch/todo.txt"}})
     assert delete_result["ok"] is True
 
 
 def test_delete_path_can_delete_directory_recursively(tmp_path: Path):
-    target_dir = tmp_path / "notes" / "nested"
+    target_dir = tmp_path / "scratch" / "nested"
     target_dir.mkdir(parents=True, exist_ok=True)
     (target_dir / "a.txt").write_text("a", encoding="utf-8")
     registry = build_default_tool_registry(tmp_path)
     result = registry.execute(
-        {"cmd": "delete_path", "params": {"path": "notes", "recursive": True}}
+        {"cmd": "delete_path", "params": {"path": "scratch", "recursive": True}}
     )
     assert result["ok"] is True
     assert result["result"]["deleted_type"] == "dir"
-    assert not (tmp_path / "notes").exists()
+    assert not (tmp_path / "reference").exists()
 
 
 def test_delete_path_directory_requires_recursive_flag(tmp_path: Path):
-    target_dir = tmp_path / "notes"
+    target_dir = tmp_path / "scratch"
     target_dir.mkdir(parents=True, exist_ok=True)
     registry = build_default_tool_registry(tmp_path)
-    result = registry.execute({"cmd": "delete_path", "params": {"path": "notes"}})
+    result = registry.execute({"cmd": "delete_path", "params": {"path": "scratch"}})
     assert result["ok"] is False
     assert result["error"]["type"] == "IsADirectoryError"
 
@@ -129,7 +129,7 @@ def test_workspace_write_permission_enforced(tmp_path: Path):
     registry = build_default_tool_registry(tmp_path)
     registry.revoke_permission("workspace_write")
     result = registry.execute(
-        {"cmd": "save_file", "params": {"path": "notes/todo.txt", "content": "one\n"}}
+        {"cmd": "save_file", "params": {"path": "scratch/todo.txt", "content": "one\n"}}
     )
     assert result["ok"] is False
     assert result["error"]["type"] == "PermissionError"

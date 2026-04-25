@@ -3,47 +3,47 @@ import type { Dispatch, SetStateAction } from "react";
 
 import type { OpenTab } from "../components/EditorPane";
 import { api } from "../lib/api";
-import type { CasefileSnapshot, FileTreeNode, Lane } from "../types";
+import type { CasefileSnapshot, FileTreeNode, Context } from "../types";
 import {
-  EMPTY_LANE_SESSION,
+  EMPTY_CONTEXT_SESSION,
   errorMessage,
   fileTabKey,
   generateSessionId,
   isPathOrDescendant,
   rewriteDescendantPath,
   rewriteTabKeyForRename,
-  type LaneSessionState,
+  type ContextSessionState,
 } from "./appModelTypes";
 
-interface UseLaneWorkspaceArgs {
+interface UseContextWorkspaceArgs {
   casefile: CasefileSnapshot | null;
-  activeLane: Lane | null;
-  activeLaneId: string | null;
-  session: LaneSessionState;
-  updateSession: (updater: (prev: LaneSessionState) => LaneSessionState) => void;
-  setLaneSessions: React.Dispatch<React.SetStateAction<Map<string, LaneSessionState>>>;
+  activeContext: Context | null;
+  activeContextId: string | null;
+  session: ContextSessionState;
+  updateSession: (updater: (prev: ContextSessionState) => ContextSessionState) => void;
+  setContextSessions: React.Dispatch<React.SetStateAction<Map<string, ContextSessionState>>>;
   setTreeError: Dispatch<SetStateAction<string | null>>;
 }
 
-export function useLaneWorkspace({
+export function useContextWorkspace({
   casefile: _casefile,
-  activeLane,
-  activeLaneId,
+  activeContext,
+  activeContextId,
   session,
   updateSession,
-  setLaneSessions,
+  setContextSessions,
   setTreeError,
-}: UseLaneWorkspaceArgs) {
+}: UseContextWorkspaceArgs) {
   const [tree, setTree] = useState<FileTreeNode | null>(null);
 
   // Token for the in-flight `listWorkspace` request. We bump this on
   // every refresh and only apply a response if the latest token still
-  // matches; otherwise a slow response from a previously-active lane
-  // could clobber the freshly-switched lane's tree. (Review item #5.)
+  // matches; otherwise a slow response from a previously-active context
+  // could clobber the freshly-switched context's tree. (Review item #5.)
   const treeRequestRef = useRef(0);
 
   const refreshTree = useCallback(async () => {
-    if (!activeLane) {
+    if (!activeContext) {
       setTree(null);
       return;
     }
@@ -51,8 +51,8 @@ export function useLaneWorkspace({
     try {
       // Depth 6 matches what the bridge caps to (8) minus a little
       // headroom; the tree now starts at the casefile root rather than
-      // the active lane root, so we need a couple of extra levels for
-      // typical "casefile → lane → src → …" hierarchies to render.
+      // the active context root, so we need a couple of extra levels for
+      // typical "casefile → context → src → …" hierarchies to render.
       const next = await api().listWorkspace(6);
       if (token !== treeRequestRef.current) return;
       setTree(next);
@@ -61,7 +61,7 @@ export function useLaneWorkspace({
       if (token !== treeRequestRef.current) return;
       setTreeError(errorMessage(error));
     }
-  }, [activeLane, setTreeError]);
+  }, [activeContext, setTreeError]);
 
   // Cache of session keys whose persisted chat history has already
   // been loaded. Avoids the wasted IPC roundtrip in the original
@@ -69,40 +69,40 @@ export function useLaneWorkspace({
   // whether the key was cached. (Review item #13.)
   const loadedChatKeysRef = useRef<Set<string>>(new Set());
 
-  const loadLaneChatHistory = useCallback(
-    async (laneId: string, key: string) => {
+  const loadContextChatHistory = useCallback(
+    async (contextId: string, key: string) => {
       if (loadedChatKeysRef.current.has(key)) return;
       loadedChatKeysRef.current.add(key);
       try {
-        const persisted = await api().listChat(laneId);
+        const persisted = await api().listChat(contextId);
         if (persisted.skippedCorruptLines > 0) {
           setTreeError(
             `Loaded chat history, but skipped ${persisted.skippedCorruptLines} corrupt line(s).`
           );
         }
-        setLaneSessions((prev) => {
+        setContextSessions((prev) => {
           if (prev.has(key)) return prev;
           const next = new Map(prev);
           next.set(key, {
-            ...EMPTY_LANE_SESSION,
+            ...EMPTY_CONTEXT_SESSION,
             id: generateSessionId(),
             messages: persisted.messages,
           });
           return next;
         });
       } catch (error) {
-        // Allow a retry on the next lane visit.
+        // Allow a retry on the next context visit.
         loadedChatKeysRef.current.delete(key);
         setTreeError(`Could not load chat history: ${errorMessage(error)}`);
       }
     },
-    [setLaneSessions, setTreeError]
+    [setContextSessions, setTreeError]
   );
 
   const handleOpenFile = useCallback(
     async (filePath: string) => {
-      if (!activeLaneId) return;
-      const key = fileTabKey(activeLaneId, filePath);
+      if (!activeContextId) return;
+      const key = fileTabKey(activeContextId, filePath);
       if (session.tabs.some((tab) => tab.key === key)) {
         updateSession((prev) => ({ ...prev, activeTabKey: key }));
         return;
@@ -112,7 +112,7 @@ export function useLaneWorkspace({
         // The bridge may normalize the path (e.g. resolve symlinks),
         // so always derive the final tab key from `result.path` to
         // match a future open of the canonical path.
-        const finalKey = fileTabKey(activeLaneId, result.path);
+        const finalKey = fileTabKey(activeContextId, result.path);
         updateSession((prev) => {
           if (prev.tabs.some((tab) => tab.key === finalKey)) {
             return { ...prev, activeTabKey: finalKey };
@@ -137,7 +137,7 @@ export function useLaneWorkspace({
         setTreeError(errorMessage(error));
       }
     },
-    [activeLaneId, session.tabs, setTreeError, updateSession]
+    [activeContextId, session.tabs, setTreeError, updateSession]
   );
 
   const handleSelectTab = useCallback(
@@ -280,10 +280,10 @@ export function useLaneWorkspace({
   // also needs its path updated. Pure helper — no IPC, no setState.
   const applyPathChangeToSessions = useCallback(
     (
-      sessions: Map<string, LaneSessionState>,
+      sessions: Map<string, ContextSessionState>,
       oldPath: string,
       newPath: string
-    ): Map<string, LaneSessionState> => {
+    ): Map<string, ContextSessionState> => {
       const next = new Map(sessions);
       let mutated = false;
       for (const [key, sessionState] of sessions.entries()) {
@@ -336,17 +336,17 @@ export function useLaneWorkspace({
       try {
         const result = await api().renameFile(oldPath, newName);
         const newPath = result.newPath;
-        setLaneSessions((prev) => applyPathChangeToSessions(prev, oldPath, newPath));
+        setContextSessions((prev) => applyPathChangeToSessions(prev, oldPath, newPath));
         await refreshTree();
       } catch (error) {
         setTreeError(errorMessage(error));
         throw error;
       }
     },
-    [applyPathChangeToSessions, refreshTree, setLaneSessions, setTreeError]
+    [applyPathChangeToSessions, refreshTree, setContextSessions, setTreeError]
   );
 
-  // M2: cross-directory move/rename. The destination is a full lane-
+  // M2: cross-directory move/rename. The destination is a full context-
   // absolute path (the FileTree composes it from the typed sub-path or
   // the drag-and-drop target row). Tabs whose path equals or descends
   // from the source are rewritten so dirty buffers do not orphan.
@@ -355,7 +355,7 @@ export function useLaneWorkspace({
       try {
         const result = await api().moveEntry(sourcePath, destinationPath);
         if (result.moved) {
-          setLaneSessions((prev) =>
+          setContextSessions((prev) =>
             applyPathChangeToSessions(prev, result.sourcePath, result.destinationPath)
           );
         }
@@ -365,7 +365,7 @@ export function useLaneWorkspace({
         throw error;
       }
     },
-    [applyPathChangeToSessions, refreshTree, setLaneSessions, setTreeError]
+    [applyPathChangeToSessions, refreshTree, setContextSessions, setTreeError]
   );
 
   // M2: trash an entry to the OS trash and prune any open tabs that
@@ -377,7 +377,7 @@ export function useLaneWorkspace({
     async (targetPath: string) => {
       try {
         await api().trashEntry(targetPath);
-        setLaneSessions((prev) => {
+        setContextSessions((prev) => {
           const next = new Map(prev);
           let mutated = false;
           for (const [key, sessionState] of prev.entries()) {
@@ -406,10 +406,10 @@ export function useLaneWorkspace({
         throw error;
       }
     },
-    [refreshTree, setLaneSessions, setTreeError]
+    [refreshTree, setContextSessions, setTreeError]
   );
 
-  // M2: create a new (empty) file inside the active lane and open it
+  // M2: create a new (empty) file inside the active casefile and open it
   // in the editor. We open the file proactively so the user can start
   // typing immediately — the watcher will refresh the tree but we
   // don't want to wait for that round-trip.
@@ -444,7 +444,7 @@ export function useLaneWorkspace({
     tree,
     setTree,
     refreshTree,
-    loadLaneChatHistory,
+    loadContextChatHistory,
     handleOpenFile,
     handleSelectTab,
     handleCloseTab,

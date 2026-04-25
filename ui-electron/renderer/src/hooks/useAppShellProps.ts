@@ -1,33 +1,33 @@
 import {
   compareSessionId,
-  laneSessionId,
+  contextSessionId,
   parseChatSessionId,
   type ChatSessionId,
 } from "../components/ChatTab";
 import type { AppShellProps } from "../components/AppShell";
 import type { OpenTab } from "../components/EditorPane";
-import type { TerminalLaneContext } from "./useTerminalManager";
+import type { TerminalContext } from "./useTerminalManager";
 import type {
   ApiKeyStatus,
   CasefileSnapshot,
   ChatMessage,
   ComparisonSession,
   FileTreeNode,
-  Lane,
-  LaneAttachmentInput,
-  LaneUpdateInput,
+  Context,
+  ContextAttachmentInput,
+  ContextUpdateInput,
   Provider,
   ProviderModels,
   RecentContext,
   ToolCall,
-  UpdateLaneResult,
+  UpdateContextResult,
 } from "../types";
 import { DEFAULT_PROVIDER_MODELS } from "../types";
 
 interface ShellViewModelState {
   casefile: CasefileSnapshot | null;
-  activeLane: Lane | null;
-  activeLaneId: string | null;
+  activeContext: Context | null;
+  activeContextId: string | null;
   activeFilePath: string | null;
   provider: Provider;
   keyStatus: ApiKeyStatus;
@@ -49,9 +49,9 @@ interface ShellViewModelActions {
   onProviderChange: (provider: Provider) => void;
   onChooseCasefile: () => void;
   onCloseCasefile: () => void;
-  onOpenRecentContext: (root: string, activeLaneId: string | null) => void | Promise<void>;
+  onOpenRecentContext: (root: string, activeContextId: string | null) => void | Promise<void>;
   onSetRecentPinned: (root: string, pinned: boolean) => void;
-  onSwitchLane: (laneId: string) => void | Promise<void>;
+  onSwitchContext: (contextId: string) => void | Promise<void>;
   onQuickCapture: () => void | Promise<void>;
   onStatusChange: (status: ApiKeyStatus) => void;
   onModelsChange: (models: ProviderModels) => void;
@@ -64,8 +64,8 @@ interface ShellViewModelActions {
   onCreateFolder?: (parentDir: string, name: string) => Promise<void>;
   onMoveEntry?: (sourcePath: string, destinationPath: string) => Promise<void>;
   onTrashEntry?: (path: string) => Promise<void>;
-  onCreateLaneFromPath?: (path: string, name: string) => Promise<void>;
-  onAttachToLane?: (path: string, laneId: string, name: string) => Promise<void>;
+  onCreateContextFromPath?: (path: string, name: string) => Promise<void>;
+  onAttachToContext?: (path: string, contextId: string, name: string) => Promise<void>;
   onSelectTab: (key: string) => void;
   onCloseTab: (key: string) => void;
   onEditTab: (key: string, content: string) => void;
@@ -78,25 +78,25 @@ interface ShellViewModelActions {
   onSendComparisonChat: (text: string) => void;
   onApproveComparisonTools: () => void;
   onDenyComparisonTools: () => void;
-  onOpenComparisonChat: (laneIds: string[]) => Promise<void>;
+  onOpenComparisonChat: (contextIds: string[]) => Promise<void>;
   onUpdateComparisonAttachments: (
-    laneIds: string[],
-    attachments: LaneAttachmentInput[]
+    contextIds: string[],
+    attachments: ContextAttachmentInput[]
   ) => Promise<void>;
-  onUpdateLane: (laneId: string, update: LaneUpdateInput) => Promise<UpdateLaneResult>;
-  onRemoveLane: (laneId: string) => Promise<void>;
+  onUpdateContext: (contextId: string, update: ContextUpdateInput) => Promise<UpdateContextResult>;
+  onRemoveContext: (contextId: string) => Promise<void>;
   onHardResetCasefile: () => Promise<void>;
   onSoftResetCasefile: () => Promise<void>;
-  /** Called when the user renames a lane via the file tree context menu. */
-  onUpdateLaneName?: (laneId: string, newName: string) => Promise<void>;
-  /** M3: add another directory to the active lane's AI scope. */
-  onAddAttachment?: (path: string, laneId: string, name: string) => Promise<void>;
-  /** M2.5: toggle AI write access for a lane. */
-  onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void>;
-  /** M2.5: remove an attachment from the active lane by its label name. */
-  onRemoveAttachment?: (laneId: string, attName: string) => Promise<void>;
+  /** Called when the user renames a context via the file tree context menu. */
+  onUpdateContextName?: (contextId: string, newName: string) => Promise<void>;
+  /** M3: add another directory to the active context's AI scope. */
+  onAddAttachment?: (path: string, contextId: string, name: string) => Promise<void>;
+  /** M2.5: toggle AI write access for a context. */
+  onSetContextWritable?: (contextId: string, writable: boolean) => Promise<void>;
+  /** M2.5: remove an attachment from the active context by its label name. */
+  onRemoveAttachment?: (contextId: string, attName: string) => Promise<void>;
   /** M2.5: change an attachment's AI access mode. */
-  onSetAttachmentMode?: (laneId: string, attName: string, mode: "read" | "write") => Promise<void>;
+  onSetAttachmentMode?: (contextId: string, attName: string, mode: "read" | "write") => Promise<void>;
 }
 
 interface UseAppShellPropsArgs {
@@ -120,18 +120,18 @@ export function useAppShellProps({
     const parsed = parseChatSessionId(id);
     if (!parsed) return;
     if (parsed.kind === "compare") actions.onSelectComparisonSession(parsed.id);
-    else void actions.onSwitchLane(parsed.id);
+    else void actions.onSwitchContext(parsed.id);
   };
 
-  // Build a structural TerminalLaneContext rather than casting the
-  // full Lane shape. If `Lane` ever drops one of these fields we'll
+  // Build a structural TerminalContext rather than casting the
+  // full Context shape. If `Context` ever drops one of these fields we'll
   // get a real type error instead of a silent runtime undefined.
   // (Review item #30.)
-  const terminalLane: TerminalLaneContext | null = state.activeLane
+  const terminalContext: TerminalContext | null = state.activeContext
     ? {
-        id: state.activeLane.id,
-        name: state.activeLane.name,
-        root: state.activeLane.root,
+        id: state.activeContext.id,
+        name: state.activeContext.name,
+        root: state.activeContext.root,
       }
     : null;
   const activeModel =
@@ -143,11 +143,11 @@ export function useAppShellProps({
       casefile: state.casefile,
       recentContexts: state.recentContexts,
       onOpenRecentContext: actions.onOpenRecentContext,
-      onSwitchLane: actions.onSwitchLane,
+      onSwitchContext: actions.onSwitchContext,
       onQuickCapture: state.casefile ? actions.onQuickCapture : undefined,
-      onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
-      onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,
-      onSetLaneWritable: state.casefile ? actions.onSetLaneWritable : undefined,
+      onUpdateContextName: state.casefile ? actions.onUpdateContextName : undefined,
+      onRemoveContext: state.casefile ? actions.onRemoveContext : undefined,
+      onSetContextWritable: state.casefile ? actions.onSetContextWritable : undefined,
       onSoftResetCasefile: state.casefile ? actions.onSoftResetCasefile : undefined,
       onHardResetCasefile: state.casefile ? actions.onHardResetCasefile : undefined,
     },
@@ -158,65 +158,65 @@ export function useAppShellProps({
         onOpenRecentContext: actions.onOpenRecentContext,
         onSetRecentPinned: actions.onSetRecentPinned,
       },
-      workspaceTitle: state.activeLane ? state.activeLane.name : "Workspace",
+      workspaceTitle: state.activeContext ? state.activeContext.name : "Workspace",
       fileTree: {
         root: state.tree,
         activePath: state.activeFilePath,
         onOpenFile: actions.onOpenFile,
         error: state.treeError,
         onDismissError: actions.onDismissTreeError,
-        // The file tree is the user's view of the casefile. Lanes
+        // The file tree is the user's view of the casefile. Contexts
         // exist to scope what the chat agent sees — they are NOT a
         // gate on the user's ability to browse, open, or edit files.
         // (Cursor-style file tree behaviour: any file in the casefile
-        // is fair game; the active lane only changes highlighting.)
+        // is fair game; the active context only changes highlighting.)
         // So everything here keys off `state.casefile`. The one
-        // exception is `onAttachToActiveLane`, which by definition
-        // requires an active lane.
+        // exception is `onAttachToActiveContext`, which by definition
+        // requires an active context.
         hasWorkspace: Boolean(state.casefile),
         casefileRoot: state.casefile?.root ?? null,
         onRename: state.casefile ? actions.onRename : undefined,
         onRefresh: state.casefile ? actions.onRefreshTree : undefined,
-        // Active lane drives highlighting / lane-scoped menu items
+        // Active context drives highlighting / context-scoped menu items
         // only — file ops below are casefile-wide.
-        activeLaneRoot: state.activeLane?.root ?? null,
-        // Roots beyond the lane's own write root that should still be
-        // tinted as "in the active lane" — currently the lane's
-        // read-only attachment roots. Empty when the lane has no
-        // attachments or there's no active lane. The FileTree treats
-        // this list together with `activeLaneRoot` for its colour cue.
-        activeLaneScopeRoots: state.activeLane?.attachments
-          ? state.activeLane.attachments
+        activeContextRoot: state.activeContext?.root ?? null,
+        // Roots beyond the context's own write root that should still be
+        // tinted as "in the active context" — currently the context's
+        // read-only related directory roots. Empty when the context has no
+        // attachments or there's no active context. The FileTree treats
+        // this list together with `activeContextRoot` for its colour cue.
+        activeContextScopeRoots: state.activeContext?.attachments
+          ? state.activeContext.attachments
               .map((att) => att.root)
               .filter((root): root is string => Boolean(root))
           : undefined,
-        activeLaneId: state.activeLaneId,
-        lanes: state.casefile
-          ? state.casefile.lanes.map((lane) => ({
-              id: lane.id,
-              name: lane.name,
-              root: lane.root,
-              writable: lane.writable,
+        activeContextId: state.activeContextId,
+        contexts: state.casefile
+          ? state.casefile.contexts.map((context) => ({
+              id: context.id,
+              name: context.name,
+              root: context.root,
+              writable: context.writable,
             }))
           : undefined,
         onCreateFile: state.casefile ? actions.onCreateFile : undefined,
         onCreateFolder: state.casefile ? actions.onCreateFolder : undefined,
         onMoveEntry: state.casefile ? actions.onMoveEntry : undefined,
         onTrashEntry: state.casefile ? actions.onTrashEntry : undefined,
-        onCreateLaneFromPath: state.casefile
-          ? actions.onCreateLaneFromPath
+        onCreateContextFromPath: state.casefile
+          ? actions.onCreateContextFromPath
           : undefined,
-        onAttachToLane: state.casefile && (state.casefile.lanes.length > 0)
-          ? actions.onAttachToLane
+        onAttachToContext: state.casefile && (state.casefile.contexts.length > 0)
+          ? actions.onAttachToContext
           : undefined,
         onOpenComparisonChat:
-          state.casefile && state.casefile.lanes.length >= 2
+          state.casefile && state.casefile.contexts.length >= 2
             ? actions.onOpenComparisonChat
             : undefined,
-        onSwitchLane: state.casefile ? actions.onSwitchLane : undefined,
-        onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
-        onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,
-        onSetLaneWritable: state.casefile ? actions.onSetLaneWritable : undefined,
+        onSwitchContext: state.casefile ? actions.onSwitchContext : undefined,
+        onUpdateContextName: state.casefile ? actions.onUpdateContextName : undefined,
+        onRemoveContext: state.casefile ? actions.onRemoveContext : undefined,
+        onSetContextWritable: state.casefile ? actions.onSetContextWritable : undefined,
         onSoftResetCasefile: state.casefile ? actions.onSoftResetCasefile : undefined,
         onHardResetCasefile: state.casefile ? actions.onHardResetCasefile : undefined,
       },
@@ -235,12 +235,12 @@ export function useAppShellProps({
           comparisonSessions: state.comparisonSessions,
           activeSessionId: state.focusedComparisonSession
             ? compareSessionId(state.focusedComparisonSession.id)
-            : state.activeLaneId
-              ? laneSessionId(state.activeLaneId)
+            : state.activeContextId
+              ? contextSessionId(state.activeContextId)
               : null,
           onSelectSession,
           onCloseCompareSession: actions.onCloseComparisonChat,
-          laneChat: {
+          contextChat: {
             provider: state.provider,
             keyStatus: state.keyStatus,
             activeModel,
@@ -248,29 +248,29 @@ export function useAppShellProps({
             messages: state.sessionMessages,
             pendingApprovals: state.sessionPendingApprovals,
             busy: state.chatBusy,
-            hasActiveLane: Boolean(state.activeLane),
-            activeLane: state.activeLane,
+            hasActiveContext: Boolean(state.activeContext),
+            activeContext: state.activeContext,
             onSend: actions.onSendMessage,
             onApproveTools: actions.onApproveTools,
             onDenyTools: actions.onDenyTools,
-            onSetLaneWritable: state.activeLane && actions.onSetLaneWritable
+            onSetContextWritable: state.activeContext && actions.onSetContextWritable
               ? (writable: boolean) => {
-                  void actions.onSetLaneWritable!(state.activeLane!.id, writable);
+                  void actions.onSetContextWritable!(state.activeContext!.id, writable);
                 }
               : undefined,
-            onAddAttachment: state.activeLane && actions.onAddAttachment
+            onAddAttachment: state.activeContext && actions.onAddAttachment
               ? (root: string, name: string) => {
-                  return actions.onAddAttachment!(root, state.activeLane!.id, name);
+                  return actions.onAddAttachment!(root, state.activeContext!.id, name);
                 }
               : undefined,
-            onRemoveAttachment: state.activeLane && actions.onRemoveAttachment
+            onRemoveAttachment: state.activeContext && actions.onRemoveAttachment
               ? (attName: string) => {
-                  void actions.onRemoveAttachment!(state.activeLane!.id, attName);
+                  void actions.onRemoveAttachment!(state.activeContext!.id, attName);
                 }
               : undefined,
-            onSetAttachmentMode: state.activeLane && actions.onSetAttachmentMode
+            onSetAttachmentMode: state.activeContext && actions.onSetAttachmentMode
               ? (attName: string, mode: "read" | "write") => {
-                  void actions.onSetAttachmentMode!(state.activeLane!.id, attName, mode);
+                  void actions.onSetAttachmentMode!(state.activeContext!.id, attName, mode);
                 }
               : undefined,
           },
@@ -284,11 +284,11 @@ export function useAppShellProps({
             onSend: actions.onSendComparisonChat,
             onApproveTools: actions.onApproveComparisonTools,
             onDenyTools: actions.onDenyComparisonTools,
-            onSetLaneWritable: actions.onSetLaneWritable,
+            onSetContextWritable: actions.onSetContextWritable,
             onSetAttachmentMode: actions.onSetAttachmentMode,
             onUpdateAttachments: actions.onUpdateComparisonAttachments,
           },
-          // SaveOutputPicker writes the chat message into a lane
+          // SaveOutputPicker writes the chat message into a context
           // attachment / arbitrary directory, but the bridge call
           // bypasses our normal save-tab flow so the file tree
           // wouldn't otherwise re-list. Fire a refresh so the new
@@ -303,7 +303,7 @@ export function useAppShellProps({
       models: state.providerModels,
       onModelsChange: actions.onModelsChange,
     },
-    activeLane: terminalLane,
+    activeContext: terminalContext,
     casefileRoot: state.casefile?.root ?? null,
   };
 }

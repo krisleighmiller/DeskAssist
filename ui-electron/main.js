@@ -88,22 +88,19 @@ try {
   console.error("[pty] failed to load node-pty:", ptyLoadError);
 }
 
-// `activeLaneRoot` is the directory that the file-tree IPC and editor IO are
-// currently scoped to. Before M2 it was set by "Choose Workspace" and pointed
-// at a bare directory. After M2 it is set by `casefile:open`/`casefile:switchLane`
-// and points at the active lane's root (which may be the casefile root itself
-// if no extra lane has been registered, or any sibling directory the user
-// has registered as a lane). The file-tree IPC handlers below treat this as
-// the "workspace" for path-escape checks.
+// `activeCasefileRoot` is the containment boundary for file-tree IPC and
+// editor IO. `activeContextRoot` remains important for AI scope, terminal cwd,
+// and "active context" guardrails such as refusing to trash the active context
+// root, but ordinary user file operations are casefile-wide.
 let activeCasefileRoot = null;
-let activeLaneId = null;
-let activeLaneRoot = null;
-let registeredLaneRoots = [];
-// SECURITY (H3): writable directories within the active lane scope (lane
+let activeContextId = null;
+let activeContextRoot = null;
+let registeredContextRoots = [];
+// SECURITY (H3): writable directories within the active context scope (context
 // root + any writable attachment root, all realpath-normalised). Used by
 // `chat:saveOutput` to refuse destinations the user did not authorise.
 // Recomputed via `refreshWritableScopeRoots` whenever a casefile is
-// opened, a lane switched, attachments edited, or a lane removed.
+// opened, a context switched, attachments edited, or a context removed.
 let writableScopeRoots = new Set();
 const approvalSecret = crypto.randomBytes(32).toString("hex");
 const pendingApprovalTokens = new Map();
@@ -751,29 +748,29 @@ function createWindow() {
     },
   ];
 
-  const laneSubmenu = [
+  const contextSubmenu = [
     {
-      label: "Create New Lane",
+      label: "Create New Context",
       accelerator: "CmdOrCtrl+Shift+L",
-      click: () => sendToRenderer("app:lane:create"),
+      click: () => sendToRenderer("app:context:create"),
     },
     {
-      label: "Attach to Lane",
+      label: "Attach to Context",
       accelerator: "CmdOrCtrl+Shift+A",
-      click: () => sendToRenderer("app:lane:attach"),
+      click: () => sendToRenderer("app:context:attach"),
     },
     {
       label: "Toggle AI Access",
       accelerator: "CmdOrCtrl+Shift+W",
-      click: () => sendToRenderer("app:lane:toggle-access"),
+      click: () => sendToRenderer("app:context:toggle-access"),
     },
     {
       label: "Rename",
-      click: () => sendToRenderer("app:lane:rename"),
+      click: () => sendToRenderer("app:context:rename"),
     },
     {
       label: "Compare",
-      click: () => sendToRenderer("app:lane:compare"),
+      click: () => sendToRenderer("app:context:compare"),
     },
   ];
   const template = [
@@ -900,7 +897,7 @@ function createWindow() {
     },
     {
       label: "Context",
-      submenu: laneSubmenu,
+      submenu: contextSubmenu,
     },
     {
       label: "Settings",
@@ -984,11 +981,11 @@ function realpathForContainment(targetPath) {
 
 function ensureInWorkspace(targetPath) {
   // Containment is enforced against the *casefile* root, not the active
-  // lane root. The file tree shows the entire casefile (M2.1 — see the
-  // "show full tree, color the active lane" change), so user-driven
+  // context root. The file tree shows the entire casefile (M2.1 — see the
+  // "show full tree, color the active context" change), so user-driven
   // file ops naturally need to act on anything inside the casefile.
-  // Lane-scoped restrictions for AI-initiated ops are still enforced
-  // separately by the Python backend's `WorkspaceFilesystem` (lane-
+  // Context-scoped restrictions for AI-initiated ops are still enforced
+  // separately by the Python backend's `WorkspaceFilesystem` (context-
   // bound), which is what actually limits what tools can touch.
   if (!activeCasefileRoot) {
     throw new Error("No workspace open");
@@ -1016,12 +1013,9 @@ async function buildTree(directoryPath, depth = 0, maxDepth = 4) {
 }
 
 async function buildTreeAt(directory, depth = 0, maxDepth = 4, virtualPath = null) {
-  // Like buildTree, but does NOT enforce activeLaneRoot containment. Used by
-  // overlay-tree listings (ancestor + attachment + casefile-context roots,
-  // which legitimately live outside the active lane). Each node's `path` is
-  // either its real absolute path (default) or a caller-supplied virtual
-  // path (e.g. `_ancestors/<lane>/foo.md`) so the renderer can route opens
-  // back through the scoped overlay reader.
+  // Like buildTree, but rooted by the caller. Current workspace listings call
+  // this with `activeCasefileRoot`; historical overlay-tree callers could pass
+  // a virtual path, but the renderer no longer shows separate overlay trees.
   const nodePath = virtualPath ?? directory;
   const node = {
     name: path.basename(virtualPath ?? directory),
@@ -1384,7 +1378,7 @@ async function readFileBounded(filePath, maxBytes) {
 
 function adoptCasefileSnapshot(snapshot) {
   // Apply a snapshot returned by the Python bridge to the main-process state
-  // so the next file-tree IPC call is rooted at the active lane.
+  // so the next file-tree IPC call is rooted at the active context.
   if (!snapshot || typeof snapshot.root !== "string") {
     throw new Error("Bridge returned an invalid workspace snapshot");
   }
@@ -1397,12 +1391,12 @@ function adoptCasefileSnapshot(snapshot) {
     pendingApprovalTokens.clear();
   }
   activeCasefileRoot = snapshot.root;
-  activeLaneId = snapshot.activeLaneId || null;
-  const lanes = Array.isArray(snapshot.lanes) ? snapshot.lanes : [];
-  const activeLane = lanes.find((lane) => lane && lane.id === activeLaneId);
-  activeLaneRoot = activeLane && typeof activeLane.root === "string" ? activeLane.root : null;
-  registeredLaneRoots = lanes
-    .map((lane) => (lane && typeof lane.root === "string" ? lane.root : null))
+  activeContextId = snapshot.activeContextId || null;
+  const contexts = Array.isArray(snapshot.contexts) ? snapshot.contexts : [];
+  const activeContext = contexts.find((context) => context && context.id === activeContextId);
+  activeContextRoot = activeContext && typeof activeContext.root === "string" ? activeContext.root : null;
+  registeredContextRoots = contexts
+    .map((context) => (context && typeof context.root === "string" ? context.root : null))
     .filter(Boolean);
   // Re-bind the filesystem watchers to the (possibly new) casefile +
   // overlay roots so the renderer's file tree picks up external
@@ -1420,13 +1414,13 @@ function adoptCasefileSnapshot(snapshot) {
 
 function closeActiveCasefile() {
   activeCasefileRoot = null;
-  activeLaneId = null;
-  activeLaneRoot = null;
-  registeredLaneRoots = [];
+  activeContextId = null;
+  activeContextRoot = null;
+  registeredContextRoots = [];
   extraWatchRoots = [];
   pendingApprovalTokens.clear();
-  // SECURITY (H3): no active lane => no writable scope at all.
-  // `chat:saveOutput` will refuse every destination until a lane is
+  // SECURITY (H3): no active context => no writable scope at all.
+  // `chat:saveOutput` will refuse every destination until a context is
   // re-opened.
   writableScopeRoots = new Set();
   clearTrashUndoStack();
@@ -1507,11 +1501,11 @@ ipcMain.handle("casefile:close", async () => {
   return true;
 });
 
-ipcMain.handle("casefile:chooseLaneRoot", async () => {
-  // Lane / attachment / context pickers all default to the casefile root
+ipcMain.handle("casefile:chooseContextRoot", async () => {
+  // Context / attachment / context pickers all default to the casefile root
   // when one is open. This is the right behaviour for the common case
-  // (lanes live next to or under the casefile) and falls back to documents
-  // only when no casefile is open yet (in which case there's no lane to
+  // (contexts live next to or under the casefile) and falls back to documents
+  // only when no casefile is open yet (in which case there's no context to
   // register anyway, but we still want a sane default).
   const defaultPath = activeCasefileRoot || app.getPath("documents");
   // Parent-window so the dialog is properly modal and dismisses on
@@ -1527,34 +1521,34 @@ ipcMain.handle("casefile:chooseLaneRoot", async () => {
   return result.filePaths[0];
 });
 
-ipcMain.handle("casefile:registerLane", async (_, args = {}) => {
+ipcMain.handle("casefile:registerContext", async (_, args = {}) => {
   if (!activeCasefileRoot) {
     throw new Error("No workspace is open");
   }
-  const lane = args.lane && typeof args.lane === "object" ? args.lane : null;
-  if (!lane) {
-    throw new Error("lane is required");
+  const context = args.context && typeof args.context === "object" ? args.context : null;
+  if (!context) {
+    throw new Error("context is required");
   }
   const response = await runPythonBridgeMeta({
-    command: "casefile:registerLane",
+    command: "casefile:registerContext",
     casefileRoot: activeCasefileRoot,
-    lane,
+    context,
   });
   return adoptCasefileSnapshot(response.casefile);
 });
 
-ipcMain.handle("casefile:switchLane", async (_, args = {}) => {
+ipcMain.handle("casefile:switchContext", async (_, args = {}) => {
   if (!activeCasefileRoot) {
     throw new Error("No workspace is open");
   }
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  if (!laneId) {
-    throw new Error("laneId is required");
+  const contextId = typeof args.contextId === "string" ? args.contextId : "";
+  if (!contextId) {
+    throw new Error("contextId is required");
   }
   const response = await runPythonBridgeMeta({
-    command: "casefile:switchLane",
+    command: "casefile:switchContext",
     casefileRoot: activeCasefileRoot,
-    laneId,
+    contextId,
   });
   return adoptCasefileSnapshot(response.casefile);
 });
@@ -1563,15 +1557,15 @@ ipcMain.handle("casefile:listChat", async (_, args = {}) => {
   if (!activeCasefileRoot) {
     throw new Error("No workspace is open");
   }
-  const laneId = typeof args.laneId === "string" ? args.laneId : activeLaneId;
-  if (!laneId) {
-    throw new Error("laneId is required");
+  const contextId = typeof args.contextId === "string" ? args.contextId : activeContextId;
+  if (!contextId) {
+    throw new Error("contextId is required");
   }
   const response = await runPythonBridge(
     {
       command: "casefile:listChat",
       casefileRoot: activeCasefileRoot,
-      laneId,
+      contextId,
     },
     { timeoutMs: BRIDGE_METADATA_TIMEOUT_MS }
   );
@@ -1592,12 +1586,12 @@ function requireCasefile() {
   return activeCasefileRoot;
 }
 
-function laneApprovalKey(casefileRoot, laneId) {
-  return `lane:${casefileRoot}:${laneId}`;
+function contextApprovalKey(casefileRoot, contextId) {
+  return `context:${casefileRoot}:${contextId}`;
 }
 
-function comparisonApprovalKey(casefileRoot, laneIds) {
-  return `comparison:${casefileRoot}:${laneIds.slice().sort().join("\0")}`;
+function comparisonApprovalKey(casefileRoot, contextIds) {
+  return `comparison:${casefileRoot}:${contextIds.slice().sort().join("\0")}`;
 }
 
 // SECURITY (H1): how long a freshly minted write-approval token stays
@@ -1652,14 +1646,14 @@ ipcMain.handle("chat:saveOutput", async (_, args = {}) => {
   // `_validate_path_depth` allows any path under e.g. `/home/<user>`.
   //
   // Now we require the destination to land inside one of the active
-  // lane's WRITABLE scope directories (lane write_root + writable
-  // attachments). The set is recomputed on every casefile / lane /
+  // context's WRITABLE scope directories (context write_root + writable
+  // attachments). The set is recomputed on every casefile / context /
   // attachment change via `refreshWritableScopeRoots`. We do not let
-  // the renderer write to read-only attachments because "Save chat
+  // the renderer write to read-only related directories because "Save chat
   // here" is a mutating action — exposing it for read-only mounts
   // would surface a false affordance.
-  if (!activeCasefileRoot || !activeLaneId) {
-    throw new Error("No active lane — cannot save chat output");
+  if (!activeCasefileRoot || !activeContextId) {
+    throw new Error("No active context — cannot save chat output");
   }
   const destinationDir = typeof args.destinationDir === "string" ? args.destinationDir : "";
   const filename = typeof args.filename === "string" ? args.filename : "";
@@ -1669,12 +1663,12 @@ ipcMain.handle("chat:saveOutput", async (_, args = {}) => {
   if (!isInsideWritableScope(destinationDir)) {
     // Refresh once in case the renderer raced ahead of the snapshot
     // adoption (e.g. user clicked "Save" while we were still
-    // resolving the new lane's scope). One retry only: a steady-state
+    // resolving the new context's scope). One retry only: a steady-state
     // miss is a real authorisation failure that must surface.
     await refreshWritableScopeRoots();
     if (!isInsideWritableScope(destinationDir)) {
       throw new Error(
-        "destinationDir is outside the active lane's writable scope"
+        "destinationDir is outside the active context's writable scope"
       );
     }
   }
@@ -1689,34 +1683,34 @@ ipcMain.handle("chat:saveOutput", async (_, args = {}) => {
 
 // ----- Context attachments -----
 
-ipcMain.handle("casefile:updateLaneAttachments", async (_, args = {}) => {
+ipcMain.handle("casefile:updateContextAttachments", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  if (!laneId) throw new Error("laneId is required");
+  const contextId = typeof args.contextId === "string" ? args.contextId : "";
+  if (!contextId) throw new Error("contextId is required");
   const attachments = Array.isArray(args.attachments) ? args.attachments : [];
   const response = await runPythonBridgeMeta({
-    command: "casefile:updateLaneAttachments",
+    command: "casefile:updateContextAttachments",
     casefileRoot,
-    laneId,
+    contextId,
     attachments,
   });
   return adoptCasefileSnapshot(response.casefile);
 });
 
-// ----- M4.6: lane CRUD + casefile reset -----
+// ----- M4.6: context CRUD + casefile reset -----
 
-ipcMain.handle("casefile:updateLane", async (_, args = {}) => {
+ipcMain.handle("casefile:updateContext", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  if (!laneId) throw new Error("laneId is required");
+  const contextId = typeof args.contextId === "string" ? args.contextId : "";
+  if (!contextId) throw new Error("contextId is required");
   // Pass through only the fields that were actually supplied; the bridge
   // distinguishes "omitted" (leave alone) from "null"/"empty" via key
   // presence + type checks, so spreading the args object would hand it
   // bogus keys.
   const payload = {
-    command: "casefile:updateLane",
+    command: "casefile:updateContext",
     casefileRoot,
-    laneId,
+    contextId,
   };
   if (Object.prototype.hasOwnProperty.call(args, "name")) payload.name = args.name;
   if (Object.prototype.hasOwnProperty.call(args, "kind")) payload.kind = args.kind;
@@ -1732,14 +1726,14 @@ ipcMain.handle("casefile:updateLane", async (_, args = {}) => {
   };
 });
 
-ipcMain.handle("casefile:removeLane", async (_, args = {}) => {
+ipcMain.handle("casefile:removeContext", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
-  const laneId = typeof args.laneId === "string" ? args.laneId : "";
-  if (!laneId) throw new Error("laneId is required");
+  const contextId = typeof args.contextId === "string" ? args.contextId : "";
+  if (!contextId) throw new Error("contextId is required");
   const response = await runPythonBridgeMeta({
-    command: "casefile:removeLane",
+    command: "casefile:removeContext",
     casefileRoot,
-    laneId,
+    contextId,
   });
   return adoptCasefileSnapshot(response.casefile);
 });
@@ -1779,11 +1773,11 @@ async function allowedWatchRootsForActiveScope() {
   if (!activeCasefileRoot) return allowed;
   const casefileReal = realpathIfDirectory(activeCasefileRoot);
   if (casefileReal) allowed.add(casefileReal);
-  if (!activeLaneId) return allowed;
+  if (!activeContextId) return allowed;
   const response = await runPythonBridgeMeta({
     command: "casefile:resolveScope",
     casefileRoot: activeCasefileRoot,
-    laneId: activeLaneId,
+    contextId: activeContextId,
   });
   const scope = response.scope || {};
   const directories = Array.isArray(scope.directories) ? scope.directories : [];
@@ -1797,17 +1791,17 @@ async function allowedWatchRootsForActiveScope() {
 
 // SECURITY (H3): recompute the set of directories the renderer is
 // allowed to nominate as a `chat:saveOutput` destination. The set
-// covers every WRITABLE directory in the active lane's resolved scope
-// — i.e. the lane's own write_root plus any attachment whose mode is
+// covers every WRITABLE directory in the active context's resolved scope
+// — i.e. the context's own write_root plus any attachment whose mode is
 // "rw". Read-only attachments are intentionally excluded: a "Save chat
 // here" UI action implies the user wants to mutate the target.
 //
 // Failures are swallowed and the set cleared, which is the strict /
 // fail-closed posture: a stale set could let a saved file land
-// outside the current lane after a switch.
+// outside the current context after a switch.
 async function refreshWritableScopeRoots() {
   const next = new Set();
-  if (!activeCasefileRoot || !activeLaneId) {
+  if (!activeCasefileRoot || !activeContextId) {
     writableScopeRoots = next;
     return;
   }
@@ -1815,7 +1809,7 @@ async function refreshWritableScopeRoots() {
     const response = await runPythonBridgeMeta({
       command: "casefile:resolveScope",
       casefileRoot: activeCasefileRoot,
-      laneId: activeLaneId,
+      contextId: activeContextId,
     });
     const scope = response.scope || {};
     const directories = Array.isArray(scope.directories) ? scope.directories : [];
@@ -1867,8 +1861,8 @@ ipcMain.handle("workspace:registerWatchRoots", async (_, args = {}) => {
 ipcMain.handle("workspace:list", async (_, args = {}) => {
   const maxDepth = Number.isInteger(args.maxDepth) ? args.maxDepth : 6;
   // M2.1: list from the casefile root so the user always sees the full
-  // tree. The renderer marks subtree(s) belonging to the active lane
-  // with a "in-active-lane" CSS class for the colour cue. Going through
+  // tree. The renderer marks subtree(s) belonging to the active context
+  // with a "in-active-context" CSS class for the colour cue. Going through
   // `buildTreeAt` (no containment check) is fine here: we're explicitly
   // rooting at the casefile, not honouring a caller-supplied path.
   if (!activeCasefileRoot) {
@@ -1922,7 +1916,7 @@ ipcMain.handle("file:save", async (_, args = {}) => {
   // Create intermediate directories so a future "new file" workflow can
   // save into a path whose parent doesn't exist yet without hitting an
   // ENOENT from writeFile. The path-escape check above already runs
-  // through `ensureInWorkspace`, so mkdir is bounded to the lane.
+  // through `ensureInWorkspace`, so mkdir is bounded to the casefile.
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   // Atomic write: stage to a sibling temp file, then rename onto the
   // target. This mirrors the temp-file-then-rename pattern every
@@ -1943,12 +1937,12 @@ ipcMain.handle("file:save", async (_, args = {}) => {
   return { path: filePath, saved: true };
 });
 
-// Rename a file or directory inside the active lane. The renderer
-// supplies the source absolute path (already inside the lane root,
+// Rename a file or directory inside the active casefile. The renderer
+// supplies the source absolute path (already inside the casefile root,
 // validated via ensureInWorkspace) and a *new basename* — we
 // intentionally don't accept an arbitrary destination path so this
-// can't be used to move files into a different overlay or escape the
-// lane. Refuses to clobber an existing entry; the caller should
+// can't be used to move files elsewhere or escape the casefile.
+// Refuses to clobber an existing entry; the caller should
 // prompt the user if they really want that.
 ipcMain.handle("file:rename", async (_, args = {}) => {
   const sourcePath = ensureInWorkspace(args.path || "");
@@ -1973,7 +1967,7 @@ ipcMain.handle("file:rename", async (_, args = {}) => {
     return { oldPath: sourcePath, newPath: destinationPath, renamed: false };
   }
   // Race-y but good enough: check then rename. An attacker who can
-  // write to the lane already has full control, so TOCTOU here is
+  // write to the casefile already has full control, so TOCTOU here is
   // not a security issue, only a UX guard against accidental
   // overwrite.
   try {
@@ -2005,8 +1999,8 @@ function validateBasename(name) {
   return trimmed;
 }
 
-// Create a new (empty) file inside the active lane.  The caller supplies
-// a parent directory (absolute, must already be inside the lane root)
+// Create a new (empty) file inside the active casefile.  The caller supplies
+// a parent directory (absolute, must already be inside the casefile root)
 // and a basename (single segment, no separators).  We refuse to clobber
 // an existing entry; if you need to overwrite, save through the editor.
 ipcMain.handle("file:createFile", async (_, args = {}) => {
@@ -2043,7 +2037,7 @@ ipcMain.handle("file:createFile", async (_, args = {}) => {
   return { path: destinationPath, created: true };
 });
 
-// Create a new directory inside the active lane.  Like `file:createFile`
+// Create a new directory inside the active casefile.  Like `file:createFile`
 // we require the parent to exist and refuse to clobber an existing
 // entry of any kind.
 ipcMain.handle("file:createFolder", async (_, args = {}) => {
@@ -2073,9 +2067,8 @@ ipcMain.handle("file:createFolder", async (_, args = {}) => {
   return { path: destinationPath, created: true };
 });
 
-// Move (or rename) a file/directory inside the active lane.  Both the
-// source and destination must resolve inside the current lane root —
-// this handler is intentionally NOT a generic mv across lanes/overlays.
+// Move (or rename) a file/directory inside the active casefile.  Both the
+// source and destination must resolve inside the current casefile root.
 // We refuse to overwrite an existing destination so a stray drag in the
 // tree can't silently destroy data; the caller can issue a follow-up
 // trash + retry if they want overwrite semantics.
@@ -2108,7 +2101,7 @@ ipcMain.handle("file:move", async (_, args = {}) => {
     throw new Error("Cannot move a directory into itself");
   }
   // Same overwrite guard as `file:rename`. Race-y but acceptable: an
-  // attacker who can write to the lane already has full control; this
+  // attacker who can write to the context already has full control; this
   // is a UX guard against the common "drop on the wrong row" mistake.
   try {
     await fs.access(destinationPath);
@@ -2287,10 +2280,10 @@ async function measureTrashUndoBytes(targetPath, initialStat) {
 // is recoverable.
 ipcMain.handle("file:trash", async (_, args = {}) => {
   const targetPath = ensureInWorkspace(args.path || "");
-  // Refuse to trash the lane root itself — that would leave the
-  // active lane pointing at a hole. Lane removal is a separate flow
-  // (`casefile:removeLane`) which preserves on-disk content.
-  if (activeLaneRoot && path.resolve(targetPath) === path.resolve(activeLaneRoot)) {
+  // Refuse to trash the context root itself — that would leave the
+  // active context pointing at a hole. Context removal is a separate flow
+  // (`casefile:removeContext`) which preserves on-disk content.
+  if (activeContextRoot && path.resolve(targetPath) === path.resolve(activeContextRoot)) {
     throw new Error("Cannot trash the active context's root directory");
   }
   let stat;
@@ -2445,7 +2438,7 @@ ipcMain.handle("file:undoStatus", async () => {
 });
 
 ipcMain.handle("chat:send", async (_, payload = {}) => {
-  if (!activeCasefileRoot || !activeLaneId) {
+  if (!activeCasefileRoot || !activeContextId) {
     throw new Error("Open a workspace before sending a chat");
   }
   const provider = payload.provider || "openai";
@@ -2454,7 +2447,7 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
   // the backend default", which we send as null so the Python side picks
   // its own default.
   const savedModel = providerModelsCache[provider] || null;
-  const approvalKey = laneApprovalKey(activeCasefileRoot, activeLaneId);
+  const approvalKey = contextApprovalKey(activeCasefileRoot, activeContextId);
   // SECURITY (H1): a fresh chat turn always invalidates any prior
   // approval. Approving means "let *this* batch of pending writes
   // through"; once the user types a new message, prior approvals must
@@ -2472,7 +2465,7 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
   const bridgePayload = {
     command: "chat:send",
     casefileRoot: activeCasefileRoot,
-    laneId: activeLaneId,
+    contextId: activeContextId,
     provider,
     model: payload.model || savedModel,
     messages: Array.isArray(payload.messages) ? payload.messages : [],
@@ -2493,7 +2486,7 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
 // Distinct from `chat:send` so the renderer can never set
 // `allowWriteTools=true` directly; the only way write tools execute is:
 //   1. A regular `chat:send` turn returns `pendingApprovals` and a
-//      bridge-issued HMAC token, which main stores keyed by lane.
+//      bridge-issued HMAC token, which main stores keyed by context.
 //   2. The user clicks Approve in the UI, which calls THIS handler.
 //   3. Main verifies a fresh stored token exists, then forwards the
 //      resume to the bridge with `allowWriteTools=true` server-side.
@@ -2501,12 +2494,12 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
 // bridge, so a renderer attacker who calls this handler at random
 // times sees PermissionError, not silent execution.
 ipcMain.handle("chat:approveAndResume", async (_, payload = {}) => {
-  if (!activeCasefileRoot || !activeLaneId) {
+  if (!activeCasefileRoot || !activeContextId) {
     throw new Error("Open a workspace before approving tools");
   }
   const provider = payload.provider || "openai";
   const savedModel = providerModelsCache[provider] || null;
-  const approvalKey = laneApprovalKey(activeCasefileRoot, activeLaneId);
+  const approvalKey = contextApprovalKey(activeCasefileRoot, activeContextId);
   const token = consumePendingApproval(approvalKey);
   if (!token) {
     throw new Error(
@@ -2518,7 +2511,7 @@ ipcMain.handle("chat:approveAndResume", async (_, payload = {}) => {
   const bridgePayload = {
     command: "chat:send",
     casefileRoot: activeCasefileRoot,
-    laneId: activeLaneId,
+    contextId: activeContextId,
     provider,
     model: payload.model || savedModel,
     messages: Array.isArray(payload.messages) ? payload.messages : [],
@@ -2537,7 +2530,7 @@ ipcMain.handle("chat:approveAndResume", async (_, payload = {}) => {
 
 // ----- M3.5c: comparison-chat sessions -----
 
-function normalizeLaneIds(raw) {
+function normalizeContextIds(raw) {
   if (!Array.isArray(raw)) {
     throw new Error("At least two context ids are required");
   }
@@ -2552,23 +2545,23 @@ function normalizeLaneIds(raw) {
 
 ipcMain.handle("casefile:openComparison", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
-  const laneIds = normalizeLaneIds(args.laneIds);
+  const contextIds = normalizeContextIds(args.contextIds);
   const response = await runPythonBridgeMeta({
     command: "casefile:openComparison",
     casefileRoot,
-    laneIds,
+    contextIds,
   });
   return response.comparison;
 });
 
 ipcMain.handle("casefile:updateComparisonAttachments", async (_, args = {}) => {
   const casefileRoot = requireCasefile();
-  const laneIds = normalizeLaneIds(args.laneIds);
+  const contextIds = normalizeContextIds(args.contextIds);
   const attachments = Array.isArray(args.attachments) ? args.attachments : [];
   const response = await runPythonBridgeMeta({
     command: "casefile:updateComparisonAttachments",
     casefileRoot,
-    laneIds,
+    contextIds,
     attachments,
   });
   return response.comparison;
@@ -2576,10 +2569,10 @@ ipcMain.handle("casefile:updateComparisonAttachments", async (_, args = {}) => {
 
 ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
   const casefileRoot = requireCasefile();
-  const laneIds = normalizeLaneIds(payload.laneIds);
+  const contextIds = normalizeContextIds(payload.contextIds);
   const provider = payload.provider || "openai";
   const savedModel = providerModelsCache[provider] || null;
-  const approvalKey = comparisonApprovalKey(casefileRoot, laneIds);
+  const approvalKey = comparisonApprovalKey(casefileRoot, contextIds);
   // SECURITY (H1): identical contract to `chat:send` — the renderer is
   // never trusted to enable write tools. See the comment in `chat:send`
   // for the full rationale; resuming with writes goes through
@@ -2589,7 +2582,7 @@ ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
     {
       command: "casefile:sendComparisonChat",
       casefileRoot,
-      laneIds,
+      contextIds,
       provider,
       model: payload.model || savedModel,
       messages: Array.isArray(payload.messages) ? payload.messages : [],
@@ -2607,10 +2600,10 @@ ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
 // SECURITY (H1): comparison-chat counterpart of `chat:approveAndResume`.
 ipcMain.handle("casefile:approveAndResumeComparison", async (_, payload = {}) => {
   const casefileRoot = requireCasefile();
-  const laneIds = normalizeLaneIds(payload.laneIds);
+  const contextIds = normalizeContextIds(payload.contextIds);
   const provider = payload.provider || "openai";
   const savedModel = providerModelsCache[provider] || null;
-  const approvalKey = comparisonApprovalKey(casefileRoot, laneIds);
+  const approvalKey = comparisonApprovalKey(casefileRoot, contextIds);
   const token = consumePendingApproval(approvalKey);
   if (!token) {
     throw new Error(
@@ -2623,7 +2616,7 @@ ipcMain.handle("casefile:approveAndResumeComparison", async (_, payload = {}) =>
     {
       command: "casefile:sendComparisonChat",
       casefileRoot,
-      laneIds,
+      contextIds,
       provider,
       model: payload.model || savedModel,
       messages: Array.isArray(payload.messages) ? payload.messages : [],
@@ -2739,7 +2732,7 @@ ipcMain.handle("keys:clear", async (_, payload = {}) => {
 // Terminal (PTY) sessions
 // ---------------------------------------------------------------------------
 //
-// One renderer can host multiple terminals (one per lane, plus optional
+// One renderer can host multiple terminals (one per context, plus optional
 // extras). Each terminal corresponds to a long-lived shell process owned
 // by the main process. The renderer addresses sessions by an opaque
 // string id it chose when it called `terminal:spawn`. The main process
@@ -2747,11 +2740,11 @@ ipcMain.handle("keys:clear", async (_, payload = {}) => {
 // forwards keyboard input + resize events via the corresponding
 // invoke channels.
 //
-// Sessions outlive lane / tab switches: closing a tab in the UI does
+// Sessions outlive context / tab switches: closing a tab in the UI does
 // NOT kill the shell. The shell is killed when the renderer explicitly
 // calls `terminal:kill` or when it disappears (window close).
 
-const ptySessions = new Map(); // id -> { pty, cwd, shell, laneId }
+const ptySessions = new Map(); // id -> { pty, cwd, shell, contextId }
 
 function pickShell() {
   if (process.platform === "win32") {
@@ -2842,8 +2835,8 @@ function resolveAllowedTerminalCwd(requestedCwd) {
   return resolveTerminalCwdPolicy({
     requestedCwd,
     activeCasefileRoot,
-    activeLaneRoot,
-    registeredLaneRoots,
+    activeContextRoot,
+    registeredContextRoots,
     realpathIfDirectory,
     homeDir: os.homedir(),
   });
@@ -2863,7 +2856,7 @@ ipcMain.handle("terminal:spawn", async (_event, args = {}) => {
   }
   const requestedCwd = typeof args.cwd === "string" && args.cwd ? args.cwd : null;
   // Don't trust the renderer: when a casefile is open, terminals may start
-  // only inside the casefile or registered lane roots. User file operations
+  // only inside the casefile or registered context roots. User file operations
   // remain casefile-wide elsewhere; this only constrains shell authority.
   const cwd = resolveAllowedTerminalCwd(requestedCwd);
   const cols = Number.isInteger(args.cols) && args.cols > 0 ? args.cols : 80;
@@ -2910,7 +2903,7 @@ ipcMain.handle("terminal:spawn", async (_event, args = {}) => {
     );
   }
 
-  const session = { pty: ptyProc, cwd, shell, laneId: args.laneId || null };
+  const session = { pty: ptyProc, cwd, shell, contextId: args.contextId || null };
   ptySessions.set(id, session);
 
   ptyProc.onData((data) => {
@@ -2967,7 +2960,7 @@ ipcMain.handle("terminal:list", async () => {
     id,
     cwd: s.cwd,
     shell: s.shell,
-    laneId: s.laneId,
+    contextId: s.contextId,
     pid: s.pty.pid,
   }));
 });

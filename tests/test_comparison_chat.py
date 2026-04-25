@@ -1,9 +1,9 @@
 """M3.5c — comparison chat backend coverage.
 
-These tests exercise the multi-lane comparison-chat surface area:
+These tests exercise the multi-context comparison-chat surface area:
 
 * ``CasefileService.resolve_comparison_scope`` produces the union scoped view
-  with lane-local writable/read-only access preserved.
+  with context-local writable/read-only access preserved.
 * ``casefile:openComparison`` is order-independent and round-trips persisted
   history.
 * ``casefile:sendComparisonChat`` uses the normal scoped tool path and
@@ -21,8 +21,8 @@ import pytest
 from assistant_app import electron_bridge as bridge
 from assistant_app.casefile import (
     CasefileService,
-    LaneAttachment,
-    comparison_id_for_lanes,
+    ContextAttachment,
+    comparison_id_for_contexts,
     resolve_comparison_scope,
 )
 from assistant_app.tools import build_default_tool_registry
@@ -36,23 +36,23 @@ from assistant_app.tools import build_default_tool_registry
 def _bootstrap(tmp_path: Path) -> Path:
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane_a = tmp_path / "lane_a"
-    lane_a.mkdir()
-    lane_b = tmp_path / "lane_b"
-    lane_b.mkdir()
+    context_a = tmp_path / "context_a"
+    context_a.mkdir()
+    context_b = tmp_path / "context_b"
+    context_b.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+            "context": {"name": "A", "kind": "repo", "root": str(context_a), "id": "a"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "B", "kind": "repo", "root": str(lane_b), "id": "b"},
+            "context": {"name": "B", "kind": "repo", "root": str(context_b), "id": "b"},
         }
     )
     return casefile_root
@@ -65,15 +65,15 @@ def _bootstrap(tmp_path: Path) -> Path:
 
 def test_comparison_id_is_order_independent(tmp_path: Path) -> None:
     _bootstrap(tmp_path)
-    assert comparison_id_for_lanes(["a", "b"]) == comparison_id_for_lanes(["b", "a"])
-    assert comparison_id_for_lanes(["a", "b"]) == "_compare__a__b"
+    assert comparison_id_for_contexts(["a", "b"]) == comparison_id_for_contexts(["b", "a"])
+    assert comparison_id_for_contexts(["a", "b"]) == "_compare__a__b"
 
 
 def test_comparison_id_requires_two_distinct_ids() -> None:
     with pytest.raises(ValueError):
-        comparison_id_for_lanes(["a"])
+        comparison_id_for_contexts(["a"])
     with pytest.raises(ValueError):
-        comparison_id_for_lanes(["a", "a"])
+        comparison_id_for_contexts(["a", "a"])
 
 
 def test_resolve_comparison_scope_unions_overlays(tmp_path: Path) -> None:
@@ -81,27 +81,27 @@ def test_resolve_comparison_scope_unions_overlays(tmp_path: Path) -> None:
     service = CasefileService(casefile_root)
     scope = service.resolve_comparison_scope(["a", "b"])
     overlay_map = scope.overlay_map()
-    # Each selected lane keeps its own access mode (writable by default).
+    # Each selected context keeps its own access mode (writable by default).
     labels = [d.label for d in scope.directories]
     assert "a" in labels
     assert "b" in labels
     assert all(d.writable for d in scope.directories)
     # No read-only overlays are needed when every compared directory is writable.
     assert overlay_map == {}
-    assert scope.write_root == (tmp_path / "lane_a").resolve()
-    assert scope.lane_id == "_compare__a__b"
+    assert scope.write_root == (tmp_path / "context_a").resolve()
+    assert scope.context_id == "_compare__a__b"
     assert not (casefile_root / ".casefile" / "comparisons.json").exists()
 
 
-def test_resolve_comparison_scope_includes_declared_lanes_and_attachments(
+def test_resolve_comparison_scope_includes_declared_scope_and_attachments(
     tmp_path: Path,
 ) -> None:
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
     parent_dir = tmp_path / "parent"
     parent_dir.mkdir()
-    notes_dir = tmp_path / "notes"
-    notes_dir.mkdir()
+    reference_dir = tmp_path / "reference"
+    reference_dir.mkdir()
     child_a = tmp_path / "child_a"
     child_a.mkdir()
     child_b = tmp_path / "child_b"
@@ -109,30 +109,30 @@ def test_resolve_comparison_scope_includes_declared_lanes_and_attachments(
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "P", "kind": "other", "root": str(parent_dir), "id": "p"},
+            "context": {"name": "P", "kind": "other", "root": str(parent_dir), "id": "p"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {
+            "context": {
                 "name": "A",
                 "kind": "repo",
                 "root": str(child_a),
                 "id": "a",
                 "parentId": "p",
-                "attachments": [{"name": "notes", "root": str(notes_dir)}],
+                "attachments": [{"name": "reference", "root": str(reference_dir)}],
             },
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {
+            "context": {
                 "name": "B",
                 "kind": "repo",
                 "root": str(child_b),
@@ -146,10 +146,10 @@ def test_resolve_comparison_scope_includes_declared_lanes_and_attachments(
     labels = {d.label for d in scope.directories}
     write_labels = {d.label for d in scope.directories if d.writable}
     read_labels = {d.label for d in scope.directories if not d.writable}
-    # Both selected lanes and their direct attachments keep live access modes.
+    # Both selected contexts and their direct attachments keep live access modes.
     assert "a" in labels
     assert "b" in labels
-    assert {"a", "b", "notes"} <= write_labels
+    assert {"a", "b", "reference"} <= write_labels
     # Shared parent is UI structure only; it is not inherited into AI scope.
     assert "p" not in labels
     assert "p" not in read_labels
@@ -187,17 +187,17 @@ def test_comparison_registry_omits_write_tools_when_every_scope_is_read_only(
     casefile_root = _bootstrap(tmp_path)
     bridge.dispatch(
         {
-            "command": "casefile:updateLane",
+            "command": "casefile:updateContext",
             "casefileRoot": str(casefile_root),
-            "laneId": "a",
+            "contextId": "a",
             "writable": False,
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:updateLane",
+            "command": "casefile:updateContext",
             "casefileRoot": str(casefile_root),
-            "laneId": "b",
+            "contextId": "b",
             "writable": False,
         }
     )
@@ -228,33 +228,33 @@ def test_open_comparison_returns_canonical_session(tmp_path: Path) -> None:
         {
             "command": "casefile:openComparison",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["b", "a"],
+            "contextIds": ["b", "a"],
         }
     )
     reverse = bridge.dispatch(
         {
             "command": "casefile:openComparison",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["a", "b"],
+            "contextIds": ["a", "b"],
         }
     )
     assert forward["comparison"]["id"] == "_compare__a__b"
     UUID(forward["comparison"]["sessionId"])
     assert forward["comparison"]["sessionId"] == reverse["comparison"]["sessionId"]
     assert forward["comparison"]["id"] == reverse["comparison"]["id"]
-    assert forward["comparison"]["laneIds"] == ["a", "b"]
-    assert [lane["id"] for lane in forward["comparison"]["lanes"]] == ["a", "b"]
+    assert forward["comparison"]["contextIds"] == ["a", "b"]
+    assert [context["id"] for context in forward["comparison"]["contexts"]] == ["a", "b"]
     assert forward["comparison"]["messages"] == []
 
 
-def test_open_comparison_rejects_single_lane(tmp_path: Path) -> None:
+def test_open_comparison_rejects_single_context(tmp_path: Path) -> None:
     casefile_root = _bootstrap(tmp_path)
     with pytest.raises(ValueError):
         bridge.dispatch(
             {
                 "command": "casefile:openComparison",
                 "casefileRoot": str(casefile_root),
-                "laneIds": ["a"],
+                "contextIds": ["a"],
             }
         )
 
@@ -310,7 +310,7 @@ def test_send_comparison_chat_persists_to_session_uuid_log(
         {
             "command": "casefile:sendComparisonChat",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["b", "a"],
+            "contextIds": ["b", "a"],
             "provider": "openai",
             "userMessage": "compare them",
             "messages": [],
@@ -330,7 +330,7 @@ def test_send_comparison_chat_persists_to_session_uuid_log(
         {
             "command": "casefile:openComparison",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["a", "b"],
+            "contextIds": ["a", "b"],
         }
     )
     persisted = reopen["comparison"]["messages"]
@@ -353,7 +353,7 @@ def test_open_comparison_reads_legacy_synthetic_log(tmp_path: Path) -> None:
         {
             "command": "casefile:openComparison",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["a", "b"],
+            "contextIds": ["a", "b"],
         }
     )
 
@@ -369,7 +369,7 @@ def test_send_comparison_chat_requires_user_message(
             {
                 "command": "casefile:sendComparisonChat",
                 "casefileRoot": str(casefile_root),
-                "laneIds": ["a", "b"],
+                "contextIds": ["a", "b"],
                 "provider": "openai",
                 "messages": [],
             }
@@ -378,30 +378,30 @@ def test_send_comparison_chat_requires_user_message(
 
 def test_update_comparison_attachments_persists_across_reopen(tmp_path: Path) -> None:
     casefile_root = _bootstrap(tmp_path)
-    compare_notes = tmp_path / "compare_notes"
-    compare_notes.mkdir()
+    compare_reference = tmp_path / "compare_reference"
+    compare_reference.mkdir()
 
     updated = bridge.dispatch(
         {
             "command": "casefile:updateComparisonAttachments",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["b", "a"],
-            "attachments": [{"name": "shared", "root": str(compare_notes), "mode": "write"}],
+            "contextIds": ["b", "a"],
+            "attachments": [{"name": "shared", "root": str(compare_reference), "mode": "write"}],
         }
     )
     assert updated["comparison"]["attachments"] == [
-        {"name": "shared", "root": str(compare_notes.resolve()), "mode": "write"}
+        {"name": "shared", "root": str(compare_reference.resolve()), "mode": "write"}
     ]
 
     reopened = bridge.dispatch(
         {
             "command": "casefile:openComparison",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["a", "b"],
+            "contextIds": ["a", "b"],
         }
     )
     assert reopened["comparison"]["attachments"] == [
-        {"name": "shared", "root": str(compare_notes.resolve()), "mode": "write"}
+        {"name": "shared", "root": str(compare_reference.resolve()), "mode": "write"}
     ]
     assert (casefile_root / ".casefile" / "comparisons.json").is_file()
 
@@ -415,7 +415,7 @@ def test_resolve_comparison_scope_includes_comparison_level_attachments(
     shared_dir.mkdir()
     service.update_comparison_attachments(
         ["a", "b"],
-        [LaneAttachment(name="shared", root=shared_dir, mode="read")],
+        [ContextAttachment(name="shared", root=shared_dir, mode="read")],
     )
 
     scope = service.resolve_comparison_scope(["a", "b"])
@@ -464,7 +464,7 @@ def test_send_comparison_chat_surfaces_pending_write_approvals(
         {
             "command": "casefile:sendComparisonChat",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["a", "b"],
+            "contextIds": ["a", "b"],
             "provider": "openai",
             "userMessage": "save it",
             "messages": [],
@@ -485,5 +485,5 @@ def test_resolve_comparison_scope_directly(tmp_path: Path) -> None:
     service = CasefileService(casefile_root)
     snapshot = service.snapshot()
     scope = resolve_comparison_scope(snapshot, ["a", "b"])
-    assert scope.lane_id == "_compare__a__b"
-    assert scope.write_root == (tmp_path / "lane_a").resolve()
+    assert scope.context_id == "_compare__a__b"
+    assert scope.write_root == (tmp_path / "context_a").resolve()

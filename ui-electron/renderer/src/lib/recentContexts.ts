@@ -26,8 +26,8 @@ export function loadRecentContexts(): RecentContext[] {
         item &&
         typeof item === "object" &&
         typeof item.root === "string" &&
-        (typeof item.activeLaneId === "string" || item.activeLaneId === null) &&
-        (typeof item.activeLaneName === "string" || item.activeLaneName === null) &&
+        (typeof item.activeContextId === "string" || item.activeContextId === null) &&
+        (typeof item.activeContextName === "string" || item.activeContextName === null) &&
         typeof item.updatedAt === "string" &&
         (typeof item.pinned === "boolean" || typeof item.pinned === "undefined")
       ))
@@ -54,14 +54,14 @@ export function upsertRecentContext(
   snapshot: CasefileSnapshot,
   now: Date = new Date()
 ): RecentContext[] {
-  const activeLane = snapshot.activeLaneId
-    ? snapshot.lanes.find((lane) => lane.id === snapshot.activeLaneId) ?? null
+  const activeContext = snapshot.activeContextId
+    ? snapshot.contexts.find((context) => context.id === snapshot.activeContextId) ?? null
     : null;
   const previous = prev.find((entry) => entry.root === snapshot.root);
   const nextEntry: RecentContext = {
     root: snapshot.root,
-    activeLaneId: activeLane?.id ?? snapshot.activeLaneId ?? null,
-    activeLaneName: activeLane?.name ?? null,
+    activeContextId: activeContext?.id ?? snapshot.activeContextId ?? null,
+    activeContextName: activeContext?.name ?? null,
     updatedAt: now.toISOString(),
     pinned: previous?.pinned,
   };

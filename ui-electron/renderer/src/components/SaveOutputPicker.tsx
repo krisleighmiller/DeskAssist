@@ -1,20 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Lane } from "../types";
+import type { Context } from "../types";
 import { api } from "../lib/api";
 
-/** Per-lane group of save destinations. The lane root itself is always
+/** Per-context group of save destinations. The context root itself is always
  * offered as the first row; each attachment is offered after that. The
- * caller may pass a single lane (single-lane chat) or multiple lanes
- * (comparison chat) — the picker renders a separate section per lane. */
-interface LaneDestination {
-  lane: Lane;
+ * caller may pass a single context (single-context chat) or multiple contexts
+ * (comparison chat) — the picker renders a separate section per context. */
+interface ContextDestination {
+  context: Context;
 }
 
 interface SaveOutputPickerProps {
-  /** The lanes whose attachments + roots should be offered as save
-   * destinations. Single-lane chats pass `[activeLane]`; comparison chats
-   * pass every lane in the session. */
-  lanes: Lane[];
+  /** The contexts whose attachments + roots should be offered as save
+   * destinations. Single-context chats pass `[activeContext]`; comparison chats
+   * pass every context in the session. */
+  contexts: Context[];
   /** Default filename suggestion (already slugified, including the
    * extension). The picker still lets the user edit it before saving. */
   defaultFilename: string;
@@ -31,14 +31,14 @@ interface PendingDestination {
   /** Absolute directory the file will be written to. */
   destinationDir: string;
   /** Human-friendly label shown above the filename prompt
-   * (e.g. ``"Lane A · ash_notes"``). */
+   * (e.g. ``"Context A · ash_reference"``). */
   label: string;
 }
 
 /** Inline picker rendered next to a chat message. Two-step UX:
  *
- * 1. Pick a destination directory: a row per attachment (or lane root)
- *    of every lane in `lanes`, plus a final ``Other...`` that opens the
+ * 1. Pick a destination directory: a row per attachment (or context root)
+ *    of every context in `contexts`, plus a final ``Other...`` that opens the
  *    system folder dialog.
  * 2. Confirm the filename. The default is the slugified first line of
  *    the message; the user can change it.
@@ -46,19 +46,19 @@ interface PendingDestination {
  * The actual write is performed by `chat:saveOutput` on the bridge,
  * which validates the destination + filename and refuses to overwrite. */
 export function SaveOutputPicker({
-  lanes,
+  contexts,
   defaultFilename,
   body,
   onSaved,
   onCancel,
 }: SaveOutputPickerProps): JSX.Element {
   // The picker is always rendered as an inline popover; group the
-  // destinations by lane so a comparison chat shows one section per
-  // lane. The lane root itself is always offered alongside attachments
-  // because a lane may have no attachments at all.
-  const groups: LaneDestination[] = useMemo(
-    () => lanes.map((lane) => ({ lane })),
-    [lanes]
+  // destinations by context so a comparison chat shows one section per
+  // context. The context root itself is always offered alongside attachments
+  // because a context may have no attachments at all.
+  const groups: ContextDestination[] = useMemo(
+    () => contexts.map((context) => ({ context })),
+    [contexts]
   );
 
   const [pending, setPending] = useState<PendingDestination | null>(null);
@@ -85,7 +85,7 @@ export function SaveOutputPicker({
   const chooseOther = async () => {
     setError(null);
     try {
-      const dir = await api().chooseLaneRoot();
+      const dir = await api().chooseContextRoot();
       if (!dir) return;
       choose(dir, dir);
     } catch (err) {
@@ -131,26 +131,26 @@ export function SaveOutputPicker({
       </div>
       {!pending && (
         <div className="chat-save-output-destinations">
-          {groups.map(({ lane }) => {
-            const attachments = lane.attachments ?? [];
+          {groups.map(({ context }) => {
+            const attachments = context.attachments ?? [];
             return (
-              <div key={lane.id} className="chat-save-output-lane">
-                <div className="chat-save-output-lane-header">{lane.name}</div>
+              <div key={context.id} className="chat-save-output-context">
+                <div className="chat-save-output-context-header">{context.name}</div>
                 <button
                   type="button"
                   className="chat-save-output-row"
-                  onClick={() => choose(lane.root, `${lane.name} · root`)}
-                  title={lane.root}
+                  onClick={() => choose(context.root, `${context.name} · root`)}
+                  title={context.root}
                 >
                   <span className="chat-save-output-row-name">context root</span>
-                  <span className="chat-save-output-row-path">{lane.root}</span>
+                  <span className="chat-save-output-row-path">{context.root}</span>
                 </button>
                 {attachments.map((att) => (
                   <button
-                    key={`${lane.id}::${att.name}`}
+                    key={`${context.id}::${att.name}`}
                     type="button"
                     className="chat-save-output-row"
-                    onClick={() => choose(att.root, `${lane.name} · ${att.name}`)}
+                    onClick={() => choose(att.root, `${context.name} · ${att.name}`)}
                     title={att.root}
                   >
                     <span className="chat-save-output-row-name">{att.name}</span>

@@ -64,7 +64,7 @@ didn't specify, around the dimensions implied by the rubrics in `_context/`).
 Substantive analysis belongs on disk in a place the user can find later,
 not buried in chat scrollback. Two main places:
 
-- Free-form notes → any file in your write root, using the file tools.
+- Working files -> any file in your write root, using the file tools.
   Create a file at a meaningful path (e.g. `analysis/findings.md`).
 - Saved chat output → each chat message has a **Save...** button in the
   UI that writes the message body to a directory the user picks.

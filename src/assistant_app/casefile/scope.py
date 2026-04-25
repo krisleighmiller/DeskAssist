@@ -10,14 +10,13 @@ from assistant_app.casefile.context import (
     ContextManifestStore,
     ResolvedContextFile,
 )
-from assistant_app.casefile.models import CasefileSnapshot, LaneAttachment, ScopedDirectory
+from assistant_app.casefile.models import CasefileSnapshot, ContextAttachment, ScopedDirectory
 
 # All in-scope directories (excluding the write root) are surfaced to the
 # model under this flat prefix: `_scope/<label>/`.  The label is the
 # human-readable name of the directory, slugified and de-duplicated.
-# This replaces the old hierarchical `_ancestors/<id>/`, `_attachments/<name>/`,
-# and `_lanes/<id>/` prefixes — the model now sees a flat list of named roots
-# with no structural hierarchy encoded in the path.
+# The model sees a flat list of named roots with no structural hierarchy
+# encoded in the path.
 SCOPE_PREFIX = "_scope"
 
 # Context files stay under their own prefix so the model can distinguish
@@ -53,16 +52,16 @@ class ScopeContext:
     paths; write operations are restricted to directories where
     ``writable=True``.
 
-    The ``lane_id`` field keeps the session anchored to a persistence key
-    (used for chat log filenames).  For single-lane sessions this is the
-    lane's own id; for multi-lane (comparison) sessions it is the synthetic
+    The ``context_id`` field keeps the session anchored to a persistence key
+    (used for chat log filenames).  For single-context sessions this is the
+    context's own id; for multi-context (comparison) sessions it is the synthetic
     comparison id.
 
     ``casefile_root`` anchors the ``_context/`` overlay for casefile-wide
     context files.
     """
 
-    lane_id: str
+    context_id: str
     directories: tuple[ScopedDirectory, ...]
     casefile_root: Path
     context_files: tuple[ResolvedContextFile, ...] = field(default_factory=tuple)
@@ -110,21 +109,21 @@ class ScopeContext:
 
 def resolve_scope(
     snapshot: CasefileSnapshot,
-    lane_id: str,
+    context_id: str,
     *,
     manifest: ContextManifest | None = None,
     context_files: tuple[ResolvedContextFile, ...] | None = None,
 ) -> ScopeContext:
-    """Compute the ``ScopeContext`` for the given lane.
+    """Compute the ``ScopeContext`` for the given context.
 
-    The session contains the lane root plus the directories explicitly
-    attached to that lane. Structural parents are UI organization only; they
+    The session contains the context root plus the directories explicitly
+    attached to that context. Structural parents are UI organization only; they
     are not added to AI scope implicitly.
 
     Labels are guaranteed unique within the session; a ``_2`` / ``_3``
     suffix is appended when two directories would otherwise share a label.
     """
-    lane = snapshot.lane_by_id(lane_id)
+    context = snapshot.context_by_id(context_id)
 
     if manifest is None or context_files is None:
         store = ContextManifestStore(snapshot.casefile.root)
@@ -141,17 +140,17 @@ def resolve_scope(
     seen_labels: set[str] = set()
     dirs: list[ScopedDirectory] = []
 
-    # Lane root: writability is now user-configured via lane.writable.
-    write_label = _unique_label(_slug(lane.name), seen_labels)
-    dirs.append(ScopedDirectory(path=lane.root, label=write_label, writable=lane.writable))
+    # Context root: writability is now user-configured via context.writable.
+    write_label = _unique_label(_slug(context.name), seen_labels)
+    dirs.append(ScopedDirectory(path=context.root, label=write_label, writable=context.writable))
 
     # Attachments: use the attachment's own mode field.
-    for attachment in lane.attachments:
+    for attachment in context.attachments:
         label = _unique_label(_slug(attachment.name), seen_labels)
         dirs.append(ScopedDirectory(path=attachment.root, label=label, writable=(attachment.mode == "write")))
 
     return ScopeContext(
-        lane_id=lane.id,
+        context_id=context.id,
         directories=tuple(dirs),
         casefile_root=snapshot.casefile.root,
         context_files=loaded_files,
@@ -159,31 +158,31 @@ def resolve_scope(
     )
 
 
-def comparison_id_for_lanes(lane_ids: Iterable[str]) -> str:
-    """Stable synthetic id for a comparison session over the given lanes.
+def comparison_id_for_contexts(context_ids: Iterable[str]) -> str:
+    """Stable synthetic id for a comparison session over the given contexts.
 
     Sorted so order of selection is irrelevant; selecting (a, b) and then
     (b, a) later reuses the same history file.
     """
-    from assistant_app.casefile.store import normalize_lane_id  # avoid cycle
+    from assistant_app.casefile.store import normalize_context_id  # avoid cycle
 
-    ids = sorted({normalize_lane_id(raw) for raw in lane_ids})
+    ids = sorted({normalize_context_id(raw) for raw in context_ids})
     if len(ids) < 2:
-        raise ValueError("Comparison requires at least two distinct lane ids")
+        raise ValueError("Comparison requires at least two distinct context ids")
     return "_compare__" + "__".join(ids)
 
 
 def resolve_comparison_scope(
     snapshot: CasefileSnapshot,
-    lane_ids: Iterable[str],
+    context_ids: Iterable[str],
     *,
     manifest: ContextManifest | None = None,
     context_files: tuple[ResolvedContextFile, ...] | None = None,
-    comparison_attachments: Iterable[LaneAttachment] | None = None,
+    comparison_attachments: Iterable[ContextAttachment] | None = None,
 ) -> ScopeContext:
-    """Compute the ``ScopeContext`` for a multi-lane session.
+    """Compute the ``ScopeContext`` for a multi-context session.
 
-    Each selected lane contributes its own root and direct attachments with
+    Each selected context contributes its own root and direct attachments with
     their current access mode. Comparison-session-specific attachments are
     appended as first-class scope entries. Structural parents are not inherited
     into AI scope. Labels are de-duplicated so two directories that would
@@ -191,10 +190,10 @@ def resolve_comparison_scope(
     """
     from assistant_app.casefile.context import ContextManifestStore  # avoid cycle
 
-    ids = sorted({raw for raw in lane_ids if raw})
+    ids = sorted({raw for raw in context_ids if raw})
     if len(ids) < 2:
-        raise ValueError("Comparison requires at least two distinct lane ids")
-    lanes = [snapshot.lane_by_id(lid) for lid in ids]
+        raise ValueError("Comparison requires at least two distinct context ids")
+    contexts = [snapshot.context_by_id(lid) for lid in ids]
 
     if manifest is None or context_files is None:
         store = ContextManifestStore(snapshot.casefile.root)
@@ -219,14 +218,14 @@ def resolve_comparison_scope(
         label = _unique_label(_slug(name), seen_labels)
         dirs.append(ScopedDirectory(path=path, label=label, writable=writable))
 
-    for lane in lanes:
-        _add(lane.root, lane.name, writable=lane.writable)
-        for att in lane.attachments:
+    for context in contexts:
+        _add(context.root, context.name, writable=context.writable)
+        for att in context.attachments:
             _add(att.root, att.name, writable=(att.mode == "write"))
     for att in comparison_attachments or ():
         _add(att.root, att.name, writable=(att.mode == "write"))
     return ScopeContext(
-        lane_id=comparison_id_for_lanes(ids),
+        context_id=comparison_id_for_contexts(ids),
         directories=tuple(dirs),
         casefile_root=snapshot.casefile.root,
         context_files=loaded_files,

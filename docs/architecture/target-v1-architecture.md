@@ -65,16 +65,16 @@ What already aligns:
 
 Where the current system leaks:
 
-- there is no strong home or landing experience
+- the home/landing experience exists, but is still lightweight and renderer-local
 - too much shell state and workflow state are mixed together in `App.tsx`
-- the right panel is still organized as subsystem tabs rather than user outcomes
+- the right panel has been reduced to chat/conversation sessions, but broader artifact and context presentation is still incomplete
 
 V1 target:
 
 - a shell state model distinct from domain and session state
 - a meaningful workspace home or resume surface
 - predictable pane and panel behavior
-- first-class context switching rather than indirect lane switching only
+- first-class context switching rather than indirect context switching only
 
 Recommended technical boundary:
 
@@ -88,25 +88,26 @@ Split renderer state into at least three concerns:
 
 Product meaning:
 
-Contexts are the units the user switches between: active work areas, scoped conversations, comparisons, note areas, and later non-code spaces such as a journal.
+Contexts are the units the user switches between: active work areas, scoped conversations, comparisons, capture spaces, and later non-code spaces such as a journal.
 
 Current implementation:
 
-- lanes inside a casefile
-- comparison sessions across multiple lanes
-- active lane plus associated notes, tabs, chat, and overlays
+- contexts inside a casefile
+- comparison sessions across multiple contexts
+- active context plus associated tabs, chat, attachments, scope header, and comparison sessions
+- renderer-local recent context records shown in the home view and toolbar
 
 What already aligns:
 
-- lanes are durable scoped work units
+- contexts are durable scoped work units
 - comparison sessions already behave like multi-context scoped sessions
-- the active lane already rebinds the workspace tree, notes, and write scope
+- the active context already rebinds chat, terminal context, AI scope, and file-tree highlighting
 
 Where the current system leaks:
 
-- `lane` is a useful implementation term, but not a broad user-facing term
-- contexts are not yet surfaced as a first-class navigable concept
-- the home and recency model for contexts does not exist yet
+- `context` is a useful implementation term, but not a broad user-facing term
+- contexts are surfaced through recent casefile/active-context records rather than a complete first-class context registry
+- home and recency exist, but persistence is still renderer `localStorage`, not the durable user-level index implied by the V1 target
 
 V1 target:
 
@@ -120,7 +121,7 @@ V1 target:
 
 Recommended technical boundary:
 
-Introduce a renderer-side context session model that is broader than raw lane selection. The current lane model can remain the storage and scoping implementation for many contexts, but the UI should operate on context sessions.
+Introduce a renderer-side context session model that is broader than raw context selection. The current context model can remain the storage and scoping implementation for many contexts, but the UI should operate on context sessions.
 
 ## Layer 3: Artifacts
 
@@ -130,9 +131,10 @@ Artifacts are the things users actually work with: files, chat transcripts, comp
 
 Current implementation:
 
-- files through lane-root file IO
+- files through casefile-contained Electron file IO
 - chat logs through casefile chat persistence
 - comparison sessions through comparison chat logs
+- saved assistant responses through the `Save...` flow into user-selected allowed destinations
 
 What already aligns:
 
@@ -150,9 +152,9 @@ V1 target:
 - a coherent artifact model, even if it is still backed by multiple stores
 - easier insertion of captured material into chat and workflows
 - a clearer difference between:
-  - lane-owned artifacts
-  - casefile-scoped artifacts
-  - external reference artifacts
+  - context-owned files
+  - casefile-scoped files
+  - external reference directories
 
 Recommended technical boundary:
 
@@ -188,20 +190,23 @@ Current implementation:
 - browsing and editing through Electron main and the renderer workbench
 - compare through scoped comparison chat
 - chat through the Python bridge and `ChatService`
-- scoped context through lane and comparison scope resolution
-- capture is not yet a first-class workflow
+- scoped context through context and comparison scope resolution
+- quick capture opens or creates `quick-capture.md` inside the active workspace
 
 What already aligns:
 
 - scoped chat is real
 - comparison is real
 - browsing and editing are real
+- browser-driven create, move, trash, rename, context creation, attachment, and comparison entry points are real
+- current-scope framing is visible in the chat header
+- quick capture exists as a lightweight file workflow
 - bounded write approval is real
 
 Where the current system leaks:
 
-- capture does not yet have one obvious workflow
-- scope adjustment is technically strong but not yet obvious in the UI
+- quick capture is tied to an active workspace rather than being a standalone non-code context
+- scope adjustment exists, but still depends on context/attachment mechanics that are more implementation-shaped than product-shaped
 
 V1 target:
 
@@ -248,7 +253,7 @@ V1 target:
 
 Recommended technical boundary:
 
-Do not build extension-specific logic directly into lane, prompt, or file-browser code. Add an adapter layer once the core shell, context, and artifact model are stable.
+Do not build extension-specific logic directly into context or file-browser code. Add an adapter layer once the core shell, context, and file/artifact model are stable.
 
 ## Current-To-Target Mapping
 
@@ -257,7 +262,7 @@ What should stay:
 - Electron main as the desktop capability boundary
 - Python bridge and service layer
 - casefile storage model
-- lane-based scope resolution
+- context-based scope resolution
 - comparison session model
 - write approval guardrails
 
@@ -265,15 +270,15 @@ What should evolve:
 
 - renderer state ownership
 - visible navigation and panel structure
-- language from `lane-centric` to `context-centric`
+- user-facing language around context, scope, comparison, and files
 - artifact presentation from tab silos to unified access patterns
 
 What should be introduced:
 
-- workspace home and resume state
-- context session framing above raw lanes
+- durable user-level home and resume state beyond renderer `localStorage`
+- fuller context session framing above raw contexts
 - artifact descriptors and artifact-oriented entry points
-- clearer current-scope UI
+- clearer artifact discovery and non-code context support
 - extension contracts after core loops are strong
 
 ## Most Important Separation To Add
@@ -288,13 +293,13 @@ Today those layers overlap too much.
 
 Examples:
 
-- lanes are both a storage record and a user-facing concept
-- the right panel mixes artifact surfaces and workflow control surfaces
+- contexts are both a storage record and a user-facing concept
+- chat sessions are now the right-panel focus, but artifact and context discovery still lack a unified presentation layer
 - `App.tsx` mixes shell coordination with domain session logic
 
 V1 should aim for:
 
-- storage modeled by casefile and lane persistence
+- storage modeled by casefile and context persistence
 - scope modeled by dedicated scope services and visible scope UI
 - presentation modeled by workspace, context, and artifact surfaces
 
@@ -305,7 +310,7 @@ The current code suggests several safe seams for incremental improvement:
 1. Extract renderer state from [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx) into smaller stores or hooks grouped by concern.
 2. Keep [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py) as the scope engine and avoid duplicating scope rules in the renderer.
 3. Treat [`ui-electron/preload.js`](../../ui-electron/preload.js) as the public app API surface and evolve it intentionally.
-4. Keep comparison chat governed by the same per-directory read/write scope model as lane chat.
+4. Keep comparison chat governed by the same per-directory read/write scope model as context chat.
 5. Let new artifact-oriented surfaces call existing stores first before introducing a new persistence abstraction.
 
 ## Non-Goals For V1
@@ -319,13 +324,13 @@ V1 architecture should explicitly avoid:
 
 ## V1 Architecture Summary
 
-The target V1 architecture is not "replace casefiles and lanes."
+The target V1 architecture is not "replace casefiles and contexts."
 
 It is:
 
 - keep the current runtime split
 - keep the current scope engine
-- raise the product framing from lanes to contexts
+- keep context language consistent across product and implementation docs
 - raise the information model from tabs to artifacts
 - strengthen the shell so DeskAssist feels like one reliable daily workspace
 

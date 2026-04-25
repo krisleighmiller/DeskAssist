@@ -4,8 +4,8 @@ import type {
   CasefileSnapshot,
   ChatMessage,
   ComparisonSession,
-  LaneAttachmentInput,
-  Lane,
+  ContextAttachmentInput,
+  Context,
   Provider,
   ToolCall,
 } from "../types";
@@ -15,16 +15,16 @@ import { ContextMenu } from "./ContextMenu";
 import { InputDialog } from "./InputDialog";
 import { SaveOutputPicker, suggestSaveFilename } from "./SaveOutputPicker";
 
-/** Identifier for a single chat session entry in the session list. Lane
- * sessions are scoped by lane id; comparison sessions get a stable
+/** Identifier for a single chat session entry in the session list. Context
+ * sessions are scoped by context id; comparison sessions get a stable
  * `compare:<id>` prefix so the two namespaces never collide. */
-export type ChatSessionId = `lane:${string}` | `compare:${string}`;
+export type ChatSessionId = `context:${string}` | `compare:${string}`;
 
-const LANE_PREFIX = "lane:";
+const CONTEXT_PREFIX = "context:";
 const COMPARE_PREFIX = "compare:";
 
-export function laneSessionId(laneId: string): ChatSessionId {
-  return `${LANE_PREFIX}${laneId}`;
+export function contextSessionId(contextId: string): ChatSessionId {
+  return `${CONTEXT_PREFIX}${contextId}`;
 }
 
 export function compareSessionId(comparisonId: string): ChatSessionId {
@@ -33,16 +33,16 @@ export function compareSessionId(comparisonId: string): ChatSessionId {
 
 /**
  * Parse a chat session id into its kind + raw id. Centralized here
- * with `laneSessionId` / `compareSessionId` so the encoding scheme
+ * with `contextSessionId` / `compareSessionId` so the encoding scheme
  * lives in exactly one place. (Review item #15.)
  */
 type ParsedChatSessionId =
-  | { kind: "lane"; id: string }
+  | { kind: "context"; id: string }
   | { kind: "compare"; id: string };
 
 export function parseChatSessionId(id: ChatSessionId): ParsedChatSessionId | null {
-  if (id.startsWith(LANE_PREFIX)) {
-    return { kind: "lane", id: id.slice(LANE_PREFIX.length) };
+  if (id.startsWith(CONTEXT_PREFIX)) {
+    return { kind: "context", id: id.slice(CONTEXT_PREFIX.length) };
   }
   if (id.startsWith(COMPARE_PREFIX)) {
     return { kind: "compare", id: id.slice(COMPARE_PREFIX.length) };
@@ -82,7 +82,7 @@ function formatElapsed(ms: number): string {
   return `${seconds}s`;
 }
 
-interface LaneChatProps {
+interface ContextChatProps {
   provider: Provider;
   keyStatus: ApiKeyStatus;
   activeModel: string;
@@ -90,18 +90,18 @@ interface LaneChatProps {
   messages: ChatMessage[];
   pendingApprovals: ToolCall[];
   busy: boolean;
-  hasActiveLane: boolean;
-  /** Lane currently driving this chat (used for the Save... picker
+  hasActiveContext: boolean;
+  /** Context currently driving this chat (used for the Save... picker
    * destinations and as the Send target). */
-  activeLane: Lane | null;
+  activeContext: Context | null;
   onSend: (text: string) => void;
   onApproveTools: () => void;
   onDenyTools: () => void;
-  /** M2.5: Toggle AI write access for the active lane (true = writable). */
-  onSetLaneWritable?: (writable: boolean) => void;
+  /** M2.5: Toggle AI write access for the active context (true = writable). */
+  onSetContextWritable?: (writable: boolean) => void;
   /** M3: Widen the active single-context chat with another scoped directory. */
   onAddAttachment?: (root: string, name: string) => Promise<void> | void;
-  /** M2.5: Remove an attachment from the active lane by its label name. */
+  /** M2.5: Remove an attachment from the active context by its label name. */
   onRemoveAttachment?: (attName: string) => void;
   /** M2.5: Change an attachment's AI access mode. */
   onSetAttachmentMode?: (attName: string, mode: "read" | "write") => void;
@@ -114,36 +114,36 @@ interface CompareChatProps {
   modelIsDefault: boolean;
   session: ComparisonSession;
   busy: boolean;
-  /** Resolved lanes participating in this comparison (used by the Save...
-   * picker so each lane's attachments + root are offered). May be a
-   * subset of `session.laneIds` if a lane was renamed/removed since the
+  /** Resolved contexts participating in this comparison (used by the Save...
+   * picker so each context's attachments + root are offered). May be a
+   * subset of `session.contextIds` if a context was renamed/removed since the
    * comparison opened — we still surface what we know. */
-  lanes: Lane[];
+  contexts: Context[];
   onSend: (text: string) => void;
   onApproveTools: () => void;
   onDenyTools: () => void;
-  onSetLaneWritable?: (laneId: string, writable: boolean) => void;
-  onSetAttachmentMode?: (laneId: string, attName: string, mode: "read" | "write") => void;
+  onSetContextWritable?: (contextId: string, writable: boolean) => void;
+  onSetAttachmentMode?: (contextId: string, attName: string, mode: "read" | "write") => void;
   onUpdateAttachments?: (
-    laneIds: string[],
-    attachments: LaneAttachmentInput[]
+    contextIds: string[],
+    attachments: ContextAttachmentInput[]
   ) => Promise<void>;
   onClose: () => void;
 }
 
 interface ChatTabProps {
-  /** Active casefile (used to resolve lane lookups for the session list).
+  /** Active casefile (used to resolve context lookups for the session list).
    * `null` when no casefile is open — in that case the tab just shows a
    * placeholder asking the user to open one. */
   casefile: CasefileSnapshot | null;
   /** All currently-open comparison sessions. The session list shows one
-   * row per lane in the casefile plus one row per comparison. */
+   * row per context in the casefile plus one row per comparison. */
   comparisonSessions: ComparisonSession[];
   /** Identifier of the session currently being viewed/edited. Driven by
-   * `App` so a lane switch from the toolbar updates the chat tab too. */
+   * `App` so a context switch from the toolbar updates the chat tab too. */
   activeSessionId: ChatSessionId | null;
   /** User picked a different session in the list. The parent decides
-   * what that means (lane switch, comparison focus, etc.). */
+   * what that means (context switch, comparison focus, etc.). */
   onSelectSession: (id: ChatSessionId) => void;
   /** User dismissed a comparison from the session list. */
   onCloseCompareSession: (comparisonId: string) => void;
@@ -151,17 +151,17 @@ interface ChatTabProps {
    * `activeSessionId`. Both are always passed in so the top tab strip
    * can stay rendered and we don't lose mid-typed input on session
    * switches. */
-  laneChat: LaneChatProps;
+  contextChat: ContextChatProps;
   /** Compare-chat props minus the bits ChatTab itself fills in:
    * `session` is resolved against `comparisonSessions` via
-   * `activeSessionId`, `lanes` are resolved against the live `casefile`
+   * `activeSessionId`, `contexts` are resolved against the live `casefile`
    * snapshot, and `onClose` is wired through `onCloseCompareSession`. */
-  compareChat: Omit<CompareChatProps, "session" | "lanes" | "onClose"> & {
+  compareChat: Omit<CompareChatProps, "session" | "contexts" | "onClose"> & {
     session: ComparisonSession | null;
   };
   /** Fired after `SaveOutputPicker` successfully persists a chat
    * message to disk. The parent uses this to re-list the workspace
-   * tree so the new file shows up in the lane file browser without
+   * tree so the new file shows up in the context file browser without
    * requiring a manual refresh. */
   onAfterSaveOutput?: (path: string) => void;
 }
@@ -223,8 +223,8 @@ function ActiveModelFooter({
 }
 
 /** Tab strip listing every chat session the user can switch between
- * without leaving the Chat tab. Lane sessions are always offered (one
- * per lane in the casefile); comparison sessions are appended after.
+ * without leaving the Chat tab. Context sessions are always offered (one
+ * per context in the casefile); comparison sessions are appended after.
  * Comparison rows get a small × that fires `onCloseCompareSession`. */
 function ChatSessionList({
   casefile,
@@ -239,11 +239,11 @@ function ChatSessionList({
   onSelectSession: (id: ChatSessionId) => void;
   onCloseCompareSession: (comparisonId: string) => void;
 }): JSX.Element | null {
-  if (!casefile || casefile.lanes.length === 0) return null;
+  if (!casefile || casefile.contexts.length === 0) return null;
   return (
     <div className="chat-session-list" role="tablist" aria-label="Chat sessions">
-      {casefile.lanes.map((lane) => {
-        const id = laneSessionId(lane.id);
+      {casefile.contexts.map((context) => {
+        const id = contextSessionId(context.id);
         const active = id === activeSessionId;
         return (
           <button
@@ -253,17 +253,17 @@ function ChatSessionList({
             aria-selected={active}
             className={`chat-session${active ? " active" : ""}`}
             onClick={() => onSelectSession(id)}
-            title={`Single-context chat for ${lane.name}`}
+            title={`Single-context chat for ${context.name}`}
           >
             <span className="chat-session-kind">single</span>
-            <span className="chat-session-label">{lane.name}</span>
+            <span className="chat-session-label">{context.name}</span>
           </button>
         );
       })}
       {comparisonSessions.map((session) => {
         const id = compareSessionId(session.id);
         const active = id === activeSessionId;
-        const label = session.lanes.map((l) => l.name).join(" · ");
+        const label = session.contexts.map((l) => l.name).join(" · ");
         return (
           <span
             key={id}
@@ -305,20 +305,20 @@ function ChatSessionList({
  * focus. */
 function MessageRow({
   message,
-  saveLanes,
+  saveContexts,
   saveable,
   onAfterSave,
 }: {
   message: ChatMessage;
-  /** Lanes whose attachments + roots are offered as save destinations. */
-  saveLanes: Lane[];
-  /** Single-lane chats with no active lane have nowhere to save to;
-   * comparison chats with no resolved lanes likewise lose the action.
+  /** Contexts whose attachments + roots are offered as save destinations. */
+  saveContexts: Context[];
+  /** Single-context chats with no active context have nowhere to save to;
+   * comparison chats with no resolved contexts likewise lose the action.
    * In both cases we just hide the button. */
   saveable: boolean;
   /** Optional callback fired with the saved file's absolute path after a
    * successful write. Parent uses this to refresh the file tree so the
-   * newly-saved file shows up immediately in the lane workspace. */
+   * newly-saved file shows up immediately in the context workspace. */
   onAfterSave?: (path: string) => void;
 }): JSX.Element {
   const [savePickerOpen, setSavePickerOpen] = useState(false);
@@ -326,7 +326,7 @@ function MessageRow({
   const { roleClass, text } = describeMessage(message);
   const canSave =
     saveable &&
-    saveLanes.length > 0 &&
+    saveContexts.length > 0 &&
     (message.role === "assistant" || message.role === "user") &&
     !!message.content;
 
@@ -352,7 +352,7 @@ function MessageRow({
       )}
       {savePickerOpen && (
         <SaveOutputPicker
-          lanes={saveLanes}
+          contexts={saveContexts}
           defaultFilename={suggestSaveFilename(message.content ?? "")}
           body={message.content ?? ""}
           onCancel={() => setSavePickerOpen(false)}
@@ -529,11 +529,11 @@ function ScopeHeader({
   );
 }
 
-function LaneChatBody({
+function ContextChatBody({
   chat,
   onAfterSave,
 }: {
-  chat: LaneChatProps;
+  chat: ContextChatProps;
   onAfterSave?: (path: string) => void;
 }): JSX.Element {
   const [input, setInput] = useState("");
@@ -651,7 +651,7 @@ function LaneChatBody({
   const handleAddRelatedDirectory = async () => {
     if (!chat.onAddAttachment) return;
     try {
-      const root = await api().chooseLaneRoot();
+      const root = await api().chooseContextRoot();
       if (!root) return;
       setAttachmentDraftName(filenameFromPath(root));
       setPendingAttachmentRoot(root);
@@ -661,23 +661,23 @@ function LaneChatBody({
   };
 
   const keyMissing = !providerHasKey(chat.provider, chat.keyStatus);
-  const inputDisabled = chat.busy || !chat.hasActiveLane;
+  const inputDisabled = chat.busy || !chat.hasActiveContext;
   const elapsedMs = busyStart === null ? 0 : Math.max(0, now - busyStart);
   const lastToolNames = chat.busy ? summariseLastToolCalls(chat.messages) : null;
-  const saveLanes = chat.activeLane ? [chat.activeLane] : [];
-  const scopeEntries: ScopeHeaderEntry[] = chat.activeLane
+  const saveContexts = chat.activeContext ? [chat.activeContext] : [];
+  const scopeEntries: ScopeHeaderEntry[] = chat.activeContext
     ? [
         {
-          key: `${chat.activeLane.id}:root`,
-          label: chat.activeLane.name,
-          path: chat.activeLane.root,
-          writable: chat.activeLane.writable !== false,
-          onToggleWritable: chat.onSetLaneWritable
-            ? () => chat.onSetLaneWritable!(chat.activeLane!.writable === false)
+          key: `${chat.activeContext.id}:root`,
+          label: chat.activeContext.name,
+          path: chat.activeContext.root,
+          writable: chat.activeContext.writable !== false,
+          onToggleWritable: chat.onSetContextWritable
+            ? () => chat.onSetContextWritable!(chat.activeContext!.writable === false)
             : undefined,
         },
-        ...(chat.activeLane.attachments ?? []).map((att) => ({
-          key: `${chat.activeLane!.id}:att:${att.name}`,
+        ...(chat.activeContext.attachments ?? []).map((att) => ({
+          key: `${chat.activeContext!.id}:att:${att.name}`,
           label: att.name,
           path: att.root,
           writable: att.mode === "write",
@@ -697,7 +697,7 @@ function LaneChatBody({
   return (
     <div className="chat">
       <div className="chat-controls">
-        {!chat.hasActiveLane ? (
+        {!chat.hasActiveContext ? (
           <span style={{ color: "#fbbf24" }}>
             Open a workspace and select a context to start a chat.
           </span>
@@ -730,7 +730,7 @@ function LaneChatBody({
             ? {
                 label: "Add related directory...",
                 onClick: () => void handleAddRelatedDirectory(),
-                disabled: chat.busy || !chat.hasActiveLane,
+                disabled: chat.busy || !chat.hasActiveContext,
               }
             : undefined
         }
@@ -738,7 +738,7 @@ function LaneChatBody({
       <div className="chat-messages" ref={messagesRef}>
         {chat.messages.length === 0 && (
           <div style={{ color: "#6b7280", fontStyle: "italic" }}>
-            {chat.hasActiveLane
+            {chat.hasActiveContext
               ? "No messages yet. This single-context chat can only use the AI scope listed above; add a related directory if the model needs more context."
               : "No active context."}
           </div>
@@ -747,8 +747,8 @@ function LaneChatBody({
           <MessageRow
             key={idx}
             message={msg}
-            saveLanes={saveLanes}
-            saveable={chat.hasActiveLane}
+            saveContexts={saveContexts}
+            saveable={chat.hasActiveContext}
             onAfterSave={onAfterSave}
           />
         ))}
@@ -839,7 +839,7 @@ function LaneChatBody({
           onDrop={handleDrop}
           className={isDragOver ? "drop-target" : undefined}
           placeholder={
-            chat.hasActiveLane
+            chat.hasActiveContext
               ? "Ask about your workspace… type @ to include a file"
               : "Open a workspace to enable chat..."
           }
@@ -862,9 +862,9 @@ function LaneChatBody({
   );
 }
 
-/** Multi-lane comparison chat body. Comparison sessions share the same
- * scoped-directory access model as lane chat, plus optional comparison-local
- * attachments persisted per canonical lane-set session. */
+/** Multi-context comparison chat body. Comparison sessions share the same
+ * scoped-directory access model as context chat, plus optional comparison-local
+ * attachments persisted per canonical context-set session. */
 function CompareChatBody({
   chat,
   onAfterSave,
@@ -914,30 +914,30 @@ function CompareChatBody({
   };
 
   const keyMissing = !providerHasKey(chat.provider, chat.keyStatus);
-  const laneNames = chat.session.lanes.map((l) => l.name).join(" ↔ ");
+  const contextNames = chat.session.contexts.map((l) => l.name).join(" ↔ ");
   const elapsedMs = busyStart === null ? 0 : Math.max(0, now - busyStart);
   const lastToolNames = chat.busy ? summariseLastToolCalls(chat.session.messages) : null;
   const pendingApprovals = chat.session.pendingApprovals ?? [];
   const scopeEntries: ScopeHeaderEntry[] = [
-    ...chat.lanes.flatMap((lane) => [
+    ...chat.contexts.flatMap((context) => [
       {
-        key: `${lane.id}:root`,
-        label: lane.name,
-        path: lane.root,
-        writable: lane.writable !== false,
-        onToggleWritable: chat.onSetLaneWritable
-          ? () => chat.onSetLaneWritable!(lane.id, lane.writable === false)
+        key: `${context.id}:root`,
+        label: context.name,
+        path: context.root,
+        writable: context.writable !== false,
+        onToggleWritable: chat.onSetContextWritable
+          ? () => chat.onSetContextWritable!(context.id, context.writable === false)
           : undefined,
       },
-      ...(lane.attachments ?? []).map((att) => ({
-        key: `${lane.id}:att:${att.name}`,
-        label: `${lane.name} · ${att.name}`,
+      ...(context.attachments ?? []).map((att) => ({
+        key: `${context.id}:att:${att.name}`,
+        label: `${context.name} · ${att.name}`,
         path: att.root,
         writable: att.mode === "write",
         onToggleWritable: chat.onSetAttachmentMode
           ? () =>
               chat.onSetAttachmentMode!(
-                lane.id,
+                context.id,
                 att.name,
                 att.mode === "write" ? "read" : "write"
               )
@@ -952,7 +952,7 @@ function CompareChatBody({
       onToggleWritable: chat.onUpdateAttachments
         ? () =>
             void chat.onUpdateAttachments!(
-              chat.session.laneIds,
+              chat.session.contextIds,
               (chat.session.attachments ?? []).map((entry) =>
                 entry.name === att.name
                   ? {
@@ -971,7 +971,7 @@ function CompareChatBody({
       onRemove: chat.onUpdateAttachments
         ? () =>
             void chat.onUpdateAttachments!(
-              chat.session.laneIds,
+              chat.session.contextIds,
               (chat.session.attachments ?? [])
                 .filter((entry) => entry.name !== att.name)
                 .map((entry) => ({
@@ -989,7 +989,7 @@ function CompareChatBody({
   const handleAddAttachment = async () => {
     if (!chat.onUpdateAttachments) return;
     try {
-      const root = await api().chooseLaneRoot();
+      const root = await api().chooseContextRoot();
       if (!root) return;
       const defaultName = filenameFromPath(root);
       setAttachmentDraftName(defaultName);
@@ -1007,7 +1007,7 @@ function CompareChatBody({
       >
         <div style={{ display: "flex", gap: 8, alignItems: "center", width: "100%" }}>
           <strong style={{ color: "#a78bfa" }}>Multi-context chat:</strong>
-          <span>{laneNames}</span>
+          <span>{contextNames}</span>
           <button
             type="button"
             className="link-button"
@@ -1020,7 +1020,7 @@ function CompareChatBody({
         <span style={{ color: "#9ca3af", fontSize: 12 }}>
           {writableEntryCount > 0
             ? `${writableEntryCount} scoped director${writableEntryCount === 1 ? "y is" : "ies are"} writable; write tools still require approval.`
-            : `No writable scoped directories across ${chat.session.laneIds.length} contexts and comparison attachments.`}
+            : `No writable scoped directories across ${chat.session.contextIds.length} contexts and comparison attachments.`}
         </span>
         {keyMissing && (
           <span style={{ color: "#fbbf24" }}>
@@ -1066,8 +1066,8 @@ function CompareChatBody({
           <MessageRow
             key={idx}
             message={msg}
-            saveLanes={chat.lanes}
-            saveable={chat.lanes.length > 0}
+            saveContexts={chat.contexts}
+            saveable={chat.contexts.length > 0}
             onAfterSave={onAfterSave}
           />
         ))}
@@ -1127,7 +1127,7 @@ function CompareChatBody({
             setPendingAttachmentRoot(null);
             setAttachmentDraftName("");
             if (!name || !root || !chat.onUpdateAttachments) return;
-            void chat.onUpdateAttachments(chat.session.laneIds, [
+            void chat.onUpdateAttachments(chat.session.contextIds, [
               ...(chat.session.attachments ?? [])
                 .filter((entry) => entry.name !== name)
                 .map((entry) => ({
@@ -1154,27 +1154,27 @@ export function ChatTab({
   activeSessionId,
   onSelectSession,
   onCloseCompareSession,
-  laneChat,
+  contextChat,
   compareChat,
   onAfterSaveOutput,
 }: ChatTabProps): JSX.Element {
   // Resolve which body to render. A compare session is only active when
   // the id matches one we know about; otherwise we fall back to the
-  // lane chat (e.g. on first render before the parent has chosen).
+  // context chat (e.g. on first render before the parent has chosen).
   const activeCompareSession = useMemo(() => {
     if (!activeSessionId || !activeSessionId.startsWith("compare:")) return null;
     const id = activeSessionId.slice("compare:".length);
     return comparisonSessions.find((s) => s.id === id) ?? null;
   }, [activeSessionId, comparisonSessions]);
 
-  // Resolve compare-session lanes against the live casefile so renames
+  // Resolve compare-session contexts against the live casefile so renames
   // surface in the Save... picker rather than the snapshot stored at
   // open-time.
-  const activeCompareLanes = useMemo(() => {
+  const activeCompareContexts = useMemo(() => {
     if (!activeCompareSession || !casefile) return [];
-    return activeCompareSession.laneIds
-      .map((id) => casefile.lanes.find((lane) => lane.id === id))
-      .filter((lane): lane is Lane => Boolean(lane));
+    return activeCompareSession.contextIds
+      .map((id) => casefile.contexts.find((context) => context.id === id))
+      .filter((context): context is Context => Boolean(context));
   }, [activeCompareSession, casefile]);
 
   return (
@@ -1195,11 +1195,11 @@ export function ChatTab({
             modelIsDefault: compareChat.modelIsDefault,
             session: activeCompareSession,
             busy: compareChat.busy,
-            lanes: activeCompareLanes,
+            contexts: activeCompareContexts,
             onSend: compareChat.onSend,
             onApproveTools: compareChat.onApproveTools,
             onDenyTools: compareChat.onDenyTools,
-            onSetLaneWritable: compareChat.onSetLaneWritable,
+            onSetContextWritable: compareChat.onSetContextWritable,
             onSetAttachmentMode: compareChat.onSetAttachmentMode,
             onUpdateAttachments: compareChat.onUpdateAttachments,
             onClose: () => onCloseCompareSession(activeCompareSession.id),
@@ -1207,7 +1207,7 @@ export function ChatTab({
           onAfterSave={onAfterSaveOutput}
         />
       ) : (
-        <LaneChatBody chat={laneChat} onAfterSave={onAfterSaveOutput} />
+        <ContextChatBody chat={contextChat} onAfterSave={onAfterSaveOutput} />
       )}
     </div>
   );

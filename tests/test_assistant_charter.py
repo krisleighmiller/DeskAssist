@@ -176,20 +176,20 @@ def test_chat_send_layers_charter_and_context_in_order(
     CasefileService(casefile_root).save_context_manifest(
         ContextManifest(files=("_context/rubric.md",))
     )
-    lane_a = tmp_path / "lane_a"
-    lane_a.mkdir()
+    context_a = tmp_path / "context_a"
+    context_a.mkdir()
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+            "context": {"name": "A", "kind": "repo", "root": str(context_a), "id": "a"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:switchLane",
+            "command": "casefile:switchContext",
             "casefileRoot": str(casefile_root),
-            "laneId": "a",
+            "contextId": "a",
         }
     )
     captured: dict[str, Any] = {}
@@ -198,7 +198,7 @@ def test_chat_send_layers_charter_and_context_in_order(
         {
             "command": "chat:send",
             "casefileRoot": str(casefile_root),
-            "laneId": "a",
+            "contextId": "a",
             "provider": "openai",
             "userMessage": "hello",
             "messages": [],
@@ -246,23 +246,23 @@ def test_send_comparison_chat_injects_charter_at_head(
 ):
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane_a = tmp_path / "lane_a"
-    lane_a.mkdir()
-    lane_b = tmp_path / "lane_b"
-    lane_b.mkdir()
+    context_a = tmp_path / "context_a"
+    context_a.mkdir()
+    context_b = tmp_path / "context_b"
+    context_b.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+            "context": {"name": "A", "kind": "repo", "root": str(context_a), "id": "a"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "B", "kind": "repo", "root": str(lane_b), "id": "b"},
+            "context": {"name": "B", "kind": "repo", "root": str(context_b), "id": "b"},
         }
     )
 
@@ -272,7 +272,7 @@ def test_send_comparison_chat_injects_charter_at_head(
         {
             "command": "casefile:sendComparisonChat",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["a", "b"],
+            "contextIds": ["a", "b"],
             "provider": "openai",
             "userMessage": "compare them",
             "messages": [],
@@ -288,23 +288,23 @@ def test_send_comparison_chat_does_not_duplicate_charter(
 ):
     casefile_root = tmp_path / "case"
     casefile_root.mkdir()
-    lane_a = tmp_path / "lane_a"
-    lane_a.mkdir()
-    lane_b = tmp_path / "lane_b"
-    lane_b.mkdir()
+    context_a = tmp_path / "context_a"
+    context_a.mkdir()
+    context_b = tmp_path / "context_b"
+    context_b.mkdir()
     bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "A", "kind": "repo", "root": str(lane_a), "id": "a"},
+            "context": {"name": "A", "kind": "repo", "root": str(context_a), "id": "a"},
         }
     )
     bridge.dispatch(
         {
-            "command": "casefile:registerLane",
+            "command": "casefile:registerContext",
             "casefileRoot": str(casefile_root),
-            "lane": {"name": "B", "kind": "repo", "root": str(lane_b), "id": "b"},
+            "context": {"name": "B", "kind": "repo", "root": str(context_b), "id": "b"},
         }
     )
 
@@ -314,7 +314,7 @@ def test_send_comparison_chat_does_not_duplicate_charter(
         {
             "command": "casefile:sendComparisonChat",
             "casefileRoot": str(casefile_root),
-            "laneIds": ["a", "b"],
+            "contextIds": ["a", "b"],
             "provider": "openai",
             "userMessage": "again",
             "messages": [

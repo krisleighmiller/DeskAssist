@@ -35,12 +35,12 @@ def test_overlay_read_routes_to_correct_root(tmp_path: Path):
     fs = WorkspaceFilesystem(
         write,
         read_overlays={
-            "_ancestors/family": overlay_a,
-            "_attachments/notes": overlay_b,
+            "_scope/family": overlay_a,
+            "_scope/reference": overlay_b,
         },
     )
-    content_a, _, target_a = fs.read_text_bounded("_ancestors/family/rubric.md", 100)
-    content_b, _, target_b = fs.read_text_bounded("_attachments/notes/log.md", 100)
+    content_a, _, target_a = fs.read_text_bounded("_scope/family/rubric.md", 100)
+    content_b, _, target_b = fs.read_text_bounded("_scope/reference/log.md", 100)
     assert content_a == "rubric body"
     assert target_a == (overlay_a / "rubric.md").resolve()
     assert content_b == "log body"
@@ -48,17 +48,17 @@ def test_overlay_read_routes_to_correct_root(tmp_path: Path):
 
 
 def test_longer_overlay_prefix_takes_precedence(tmp_path: Path):
-    """Nested overlay (e.g. ancestor-attachment) must win over its parent prefix."""
+    """Nested overlay prefixes must win over their parent prefix."""
     write, overlay_a, overlay_b = _make(tmp_path)
     fs = WorkspaceFilesystem(
         write,
         read_overlays={
-            "_ancestors/family": overlay_a,
-            "_ancestors/family/_attachments/log": overlay_b,
+            "_scope/family": overlay_a,
+            "_scope/family/log": overlay_b,
         },
     )
     content, _, target = fs.read_text_bounded(
-        "_ancestors/family/_attachments/log/log.md", 100
+        "_scope/family/log/log.md", 100
     )
     assert content == "log body"
     assert target == (overlay_b / "log.md").resolve()
@@ -67,27 +67,27 @@ def test_longer_overlay_prefix_takes_precedence(tmp_path: Path):
 def test_traversal_inside_overlay_is_blocked(tmp_path: Path):
     write, overlay_a, _ = _make(tmp_path)
     (tmp_path / "outside.md").write_text("nope", encoding="utf-8")
-    fs = WorkspaceFilesystem(write, read_overlays={"_ancestors/family": overlay_a})
+    fs = WorkspaceFilesystem(write, read_overlays={"_scope/family": overlay_a})
     with pytest.raises(PermissionError):
-        fs.read_text_bounded("_ancestors/family/../outside.md", 100)
+        fs.read_text_bounded("_scope/family/../outside.md", 100)
 
 
 def test_writes_to_overlay_paths_are_rejected(tmp_path: Path):
     write, overlay_a, _ = _make(tmp_path)
-    fs = WorkspaceFilesystem(write, read_overlays={"_ancestors/family": overlay_a})
+    fs = WorkspaceFilesystem(write, read_overlays={"_scope/family": overlay_a})
     with pytest.raises(PermissionError):
-        fs.save_text("_ancestors/family/new.md", "x", overwrite=True)
+        fs.save_text("_scope/family/new.md", "x", overwrite=True)
     with pytest.raises(PermissionError):
-        fs.append_text("_ancestors/family/rubric.md", "x")
+        fs.append_text("_scope/family/rubric.md", "x")
     with pytest.raises(PermissionError):
-        fs.delete_file("_ancestors/family/rubric.md")
+        fs.delete_file("_scope/family/rubric.md")
     with pytest.raises(PermissionError):
-        fs.delete_path("_ancestors/family", recursive=True)
+        fs.delete_path("_scope/family", recursive=True)
 
 
 def test_writes_to_write_root_still_work(tmp_path: Path):
     write, overlay_a, _ = _make(tmp_path)
-    fs = WorkspaceFilesystem(write, read_overlays={"_ancestors/family": overlay_a})
+    fs = WorkspaceFilesystem(write, read_overlays={"_scope/family": overlay_a})
     target, _ = fs.save_text("new.md", "hello", overwrite=False)
     assert target == (write / "new.md").resolve()
     assert (write / "new.md").read_text(encoding="utf-8") == "hello"
@@ -95,7 +95,7 @@ def test_writes_to_write_root_still_work(tmp_path: Path):
 
 def test_traversal_into_write_root_still_blocked(tmp_path: Path):
     write, overlay_a, _ = _make(tmp_path)
-    fs = WorkspaceFilesystem(write, read_overlays={"_ancestors/family": overlay_a})
+    fs = WorkspaceFilesystem(write, read_overlays={"_scope/family": overlay_a})
     with pytest.raises(PermissionError):
         fs.resolve_relative("../escape")
 
@@ -105,20 +105,20 @@ def test_list_dir_of_write_root_advertises_overlay_prefixes(tmp_path: Path):
     fs = WorkspaceFilesystem(
         write,
         read_overlays={
-            "_ancestors/family": overlay_a,
-            "_attachments/notes": overlay_b,
+            "_scope/family": overlay_a,
+            "_scope/reference": overlay_b,
         },
     )
     _, entries = fs.list_dir(".")
     overlay_entries = [e for e in entries if e["type"] == "overlay"]
     overlay_names = {e["name"] for e in overlay_entries}
-    assert overlay_names == {"_ancestors", "_attachments"}
+    assert overlay_names == {"_scope"}
 
 
 def test_list_dir_inside_overlay_returns_overlay_contents(tmp_path: Path):
     write, overlay_a, _ = _make(tmp_path)
-    fs = WorkspaceFilesystem(write, read_overlays={"_ancestors/family": overlay_a})
-    target, entries = fs.list_dir("_ancestors/family")
+    fs = WorkspaceFilesystem(write, read_overlays={"_scope/family": overlay_a})
+    target, entries = fs.list_dir("_scope/family")
     assert target == overlay_a.resolve()
     assert {e["name"] for e in entries} == {"rubric.md"}
 
@@ -129,12 +129,12 @@ def test_scoped_directories_allow_writes_only_on_writable_mounts(tmp_path: Path)
         write,
         scoped_directories=(
             ScopedDirectory(path=write, label="main", writable=True),
-            ScopedDirectory(path=overlay_a, label="notes", writable=True),
+            ScopedDirectory(path=overlay_a, label="reference", writable=True),
             ScopedDirectory(path=overlay_b, label="logs", writable=False),
         ),
     )
 
-    target, _ = fs.save_text("_scope/notes/new.md", "hello", overwrite=False)
+    target, _ = fs.save_text("_scope/reference/new.md", "hello", overwrite=False)
     assert target == (overlay_a / "new.md").resolve()
     assert (overlay_a / "new.md").read_text(encoding="utf-8") == "hello"
 

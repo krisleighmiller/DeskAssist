@@ -3,7 +3,7 @@ import type {
   AttachmentMode,
   CasefileSnapshot,
   ChatMessage,
-  LaneAttachmentInput,
+  ContextAttachmentInput,
   RecentContext,
 } from "./types";
 import { api } from "./lib/api";
@@ -15,17 +15,17 @@ import {
 import { AppShell } from "./components/AppShell";
 import { InputDialog } from "./components/InputDialog";
 import {
-  EMPTY_LANE_SESSION,
+  EMPTY_CONTEXT_SESSION,
   chatTurnDelta,
   errorMessage,
   normalizeChatTurn,
   sessionKeyFor,
-  type LaneSessionState,
+  type ContextSessionState,
 } from "./hooks/appModelTypes";
 import { useAppShellProps } from "./hooks/useAppShellProps";
 import { useComparisons } from "./hooks/useComparisons";
 import { useContextAndOverlays } from "./hooks/useContextAndOverlays";
-import { useLaneWorkspace } from "./hooks/useLaneWorkspace";
+import { useContextWorkspace } from "./hooks/useContextWorkspace";
 import { useProviderSettings } from "./hooks/useProviderSettings";
 
 function isPlainEntryName(name: string): boolean {
@@ -47,14 +47,14 @@ function joinChildPath(root: string, child: string): string {
 }
 
 export function App(): JSX.Element {
-  // ----- Casefile + active lane -----
+  // ----- Casefile + active context -----
   const [casefile, setCasefile] = useState<CasefileSnapshot | null>(null);
   const [recentContexts, setRecentContexts] = useState<RecentContext[]>(
     () => loadRecentContexts()
   );
-  const activeLaneId = casefile?.activeLaneId ?? null;
-  const activeLane = activeLaneId
-    ? casefile?.lanes.find((lane) => lane.id === activeLaneId) ?? null
+  const activeContextId = casefile?.activeContextId ?? null;
+  const activeContext = activeContextId
+    ? casefile?.contexts.find((context) => context.id === activeContextId) ?? null
     : null;
   // SECURITY (H1): formerly used to gate `allowWriteTools` on the
   // renderer side. With the new approval flow main is the gate, so we
@@ -106,29 +106,29 @@ export function App(): JSX.Element {
   );
   const [treeError, setTreeError] = useState<string | null>(null);
 
-  // ----- Per-lane in-memory session state -----
-  // Keyed by `sessionKeyFor(root, laneId)` (NUL-separated) so multiple
+  // ----- Per-context in-memory session state -----
+  // Keyed by `sessionKeyFor(root, contextId)` (NUL-separated) so multiple
   // casefiles opened in the same session can't bleed into each other,
   // even on exotic paths.
-  const [laneSessions, setLaneSessions] = useState<Map<string, LaneSessionState>>(
+  const [contextSessions, setContextSessions] = useState<Map<string, ContextSessionState>>(
     () => new Map()
   );
 
-  const sessionKey = sessionKeyFor(casefile?.root, activeLane?.sessionId);
-  const session: LaneSessionState =
-    (sessionKey ? laneSessions.get(sessionKey) : null) ?? EMPTY_LANE_SESSION;
-  // Per-lane busy flag, sourced directly from session state so that
-  // switching lanes mid-request shows the correct spinner on each
-  // lane and doesn't let one lane's response cancel another lane's
+  const sessionKey = sessionKeyFor(casefile?.root, activeContext?.sessionId);
+  const session: ContextSessionState =
+    (sessionKey ? contextSessions.get(sessionKey) : null) ?? EMPTY_CONTEXT_SESSION;
+  // Per-context busy flag, sourced directly from session state so that
+  // switching contexts mid-request shows the correct spinner on each
+  // context and doesn't let one context's response cancel another context's
   // in-flight indicator. (Review item #4.)
   const chatBusy = session.busy;
 
   const updateSession = useCallback(
-    (updater: (prev: LaneSessionState) => LaneSessionState) => {
+    (updater: (prev: ContextSessionState) => ContextSessionState) => {
       if (!sessionKey) return;
-      setLaneSessions((prev) => {
+      setContextSessions((prev) => {
         const next = new Map(prev);
-        const current = next.get(sessionKey) ?? EMPTY_LANE_SESSION;
+        const current = next.get(sessionKey) ?? EMPTY_CONTEXT_SESSION;
         next.set(sessionKey, updater(current));
         return next;
       });
@@ -146,7 +146,7 @@ export function App(): JSX.Element {
     providerModels,
     setProviderModels,
   } = useProviderSettings();
-  // ----- Lane comparison -----
+  // ----- Context comparison -----
   const {
     comparisonSessions,
     setActiveComparisonId,
@@ -159,7 +159,7 @@ export function App(): JSX.Element {
     approveComparisonTools,
     denyComparisonTools,
     resetComparisonsForCasefile,
-    clearActiveComparisonForLaneChat,
+    clearActiveComparisonForContextChat,
   } = useComparisons({
     casefile,
     provider,
@@ -168,14 +168,14 @@ export function App(): JSX.Element {
   });
 
   const {
-    handleUpdateLaneAttachments,
-    handleUpdateLane,
-    handleRemoveLane,
+    handleUpdateContextAttachments,
+    handleUpdateContext,
+    handleRemoveContext,
     handleHardResetCasefile,
     handleSoftResetCasefile,
   } = useContextAndOverlays({
     casefile,
-    activeLaneId,
+    activeContextId,
     onCasefileChange: setCasefile,
     onError: (message) => setTreeError(message),
   });
@@ -184,7 +184,7 @@ export function App(): JSX.Element {
     tree,
     setTree,
     refreshTree,
-    loadLaneChatHistory,
+    loadContextChatHistory,
     handleOpenFile,
     handleSelectTab,
     handleCloseTab,
@@ -196,30 +196,30 @@ export function App(): JSX.Element {
     handleTrashEntry,
     handleCreateFile,
     handleCreateFolder,
-  } = useLaneWorkspace({
+  } = useContextWorkspace({
     casefile,
-    activeLane,
-    activeLaneId,
+    activeContext,
+    activeContextId,
     session,
     updateSession,
-    setLaneSessions,
+    setContextSessions,
     setTreeError,
   });
 
   // Two unrelated concerns split into two effects so we re-fetch only
   // what changed. (Review item #20.)
   useEffect(() => {
-    if (!activeLaneId) {
+    if (!activeContextId) {
       setTree(null);
       return;
     }
     void refreshTree();
-  }, [activeLaneId, refreshTree, setTree]);
+  }, [activeContextId, refreshTree, setTree]);
 
   useEffect(() => {
-    if (!sessionKey || !activeLaneId) return;
-    void loadLaneChatHistory(activeLaneId, sessionKey);
-  }, [activeLaneId, sessionKey, loadLaneChatHistory]);
+    if (!sessionKey || !activeContextId) return;
+    void loadContextChatHistory(activeContextId, sessionKey);
+  }, [activeContextId, sessionKey, loadContextChatHistory]);
 
   // Global Ctrl/Cmd+Z handler that restores the most recently trashed
   // entry. We intentionally let the keystroke fall through when the
@@ -286,16 +286,16 @@ export function App(): JSX.Element {
   }, [resetComparisonsForCasefile]);
 
   const handleOpenRecentContext = useCallback(
-    async (root: string, preferredLaneId: string | null) => {
+    async (root: string, preferredContextId: string | null) => {
       try {
         const opened = await api().openCasefile(root);
         let nextSnapshot = opened;
         if (
-          preferredLaneId &&
-          opened.activeLaneId !== preferredLaneId &&
-          opened.lanes.some((lane) => lane.id === preferredLaneId)
+          preferredContextId &&
+          opened.activeContextId !== preferredContextId &&
+          opened.contexts.some((context) => context.id === preferredContextId)
         ) {
-          nextSnapshot = await api().switchLane(preferredLaneId);
+          nextSnapshot = await api().switchContext(preferredContextId);
         }
         setCasefile(nextSnapshot);
         resetComparisonsForCasefile();
@@ -306,18 +306,18 @@ export function App(): JSX.Element {
     [resetComparisonsForCasefile]
   );
 
-  const handleSwitchLane = useCallback(
-    async (laneId: string) => {
-      if (!casefile || laneId === casefile.activeLaneId) return;
+  const handleSwitchContext = useCallback(
+    async (contextId: string) => {
+      if (!casefile || contextId === casefile.activeContextId) return;
       try {
-        const snapshot = await api().switchLane(laneId);
+        const snapshot = await api().switchContext(contextId);
         setCasefile(snapshot);
-        clearActiveComparisonForLaneChat();
+        clearActiveComparisonForContextChat();
       } catch (error) {
         setTreeError(errorMessage(error));
       }
     },
-    [casefile, clearActiveComparisonForLaneChat]
+    [casefile, clearActiveComparisonForContextChat]
   );
 
   useEffect(() => {
@@ -329,8 +329,8 @@ export function App(): JSX.Element {
     setRecentContexts((prev) => setRecentContextPinned(prev, root, pinned));
   }, []);
 
-  const handleChooseLaneRoot = useCallback(async () => {
-    return api().chooseLaneRoot();
+  const handleChooseContextRoot = useCallback(async () => {
+    return api().chooseContextRoot();
   }, []);
 
   const handleQuickCapture = useCallback(async () => {
@@ -385,7 +385,7 @@ export function App(): JSX.Element {
     setCasefile(null);
     setTree(null);
     setTreeError(null);
-    setLaneSessions(new Map());
+    setContextSessions(new Map());
     resetComparisonsForCasefile();
   }, [resetComparisonsForCasefile, setTree]);
 
@@ -399,10 +399,10 @@ export function App(): JSX.Element {
     }
   }, [casefile, resetCasefileState]);
 
-  const handleCreateLaneFromPath = useCallback(
+  const handleCreateContextFromPath = useCallback(
     async (path: string, name: string) => {
       try {
-        const snapshot = await api().registerLane({
+        const snapshot = await api().registerContext({
           name,
           kind: "repo",
           root: path,
@@ -416,69 +416,69 @@ export function App(): JSX.Element {
     []
   );
 
-  // Append a new read-only attachment to the active lane. The bridge's
-  // `updateLaneAttachments` is a full-replacement contract, so we
+  // Append a new read-only related directory to the active context. The bridge's
+  // `updateContextAttachments` is a full-replacement contract, so we
   // re-derive the existing list from the current snapshot instead of
   // assuming caller-side state is fresh.
-  const handleAttachToLane = useCallback(
-    async (path: string, laneId: string, name: string) => {
-      const lane = casefile?.lanes.find((l) => l.id === laneId);
-      if (!lane) return;
-      const existing: LaneAttachmentInput[] = (lane.attachments ?? []).map(
+  const handleAttachToContext = useCallback(
+    async (path: string, contextId: string, name: string) => {
+      const context = casefile?.contexts.find((l) => l.id === contextId);
+      if (!context) return;
+      const existing: ContextAttachmentInput[] = (context.attachments ?? []).map(
         (a) => ({ name: a.name, root: a.root, mode: a.mode })
       );
       if (existing.some((a) => a.name === name)) {
         setTreeError(
-          `Context "${lane.name}" already has an attachment named "${name}".`
+          `Context "${context.name}" already has an attachment named "${name}".`
         );
         return;
       }
       try {
-        await handleUpdateLaneAttachments(laneId, [
+        await handleUpdateContextAttachments(contextId, [
           ...existing,
           { name, root: path },
         ]);
       } catch {
-        // handleUpdateLaneAttachments already surfaces via setTreeError.
+        // handleUpdateContextAttachments already surfaces via setTreeError.
       }
     },
-    [casefile, handleUpdateLaneAttachments]
+    [casefile, handleUpdateContextAttachments]
   );
 
   const handleRemoveAttachment = useCallback(
-    async (laneId: string, attName: string) => {
-      const lane = casefile?.lanes.find((l) => l.id === laneId);
-      if (!lane) return;
-      const updated: LaneAttachmentInput[] = (lane.attachments ?? [])
+    async (contextId: string, attName: string) => {
+      const context = casefile?.contexts.find((l) => l.id === contextId);
+      if (!context) return;
+      const updated: ContextAttachmentInput[] = (context.attachments ?? [])
         .filter((a) => a.name !== attName)
         .map((a) => ({ name: a.name, root: a.root, mode: a.mode }));
       try {
-        await handleUpdateLaneAttachments(laneId, updated);
+        await handleUpdateContextAttachments(contextId, updated);
       } catch {
-        // Error surfaces via setTreeError in handleUpdateLaneAttachments.
+        // Error surfaces via setTreeError in handleUpdateContextAttachments.
       }
     },
-    [casefile, handleUpdateLaneAttachments]
+    [casefile, handleUpdateContextAttachments]
   );
 
   const handleSetAttachmentMode = useCallback(
-    async (laneId: string, attName: string, mode: AttachmentMode) => {
-      const lane = casefile?.lanes.find((l) => l.id === laneId);
-      if (!lane) return;
-      const updated: LaneAttachmentInput[] = (lane.attachments ?? []).map((a) =>
+    async (contextId: string, attName: string, mode: AttachmentMode) => {
+      const context = casefile?.contexts.find((l) => l.id === contextId);
+      if (!context) return;
+      const updated: ContextAttachmentInput[] = (context.attachments ?? []).map((a) =>
         a.name === attName ? { name: a.name, root: a.root, mode } : { name: a.name, root: a.root, mode: a.mode }
       );
       try {
-        await handleUpdateLaneAttachments(laneId, updated);
+        await handleUpdateContextAttachments(contextId, updated);
       } catch {
-        // Error surfaces via setTreeError in handleUpdateLaneAttachments.
+        // Error surfaces via setTreeError in handleUpdateContextAttachments.
       }
     },
-    [casefile, handleUpdateLaneAttachments]
+    [casefile, handleUpdateContextAttachments]
   );
 
   // ----- Menu-bar IPC handlers -----
-  // The Lane menu (main.js) sends IPC messages. Each handler carries out
+  // The Context menu (main.js) sends IPC messages. Each handler carries out
   // the full dialog flow (directory picker → name prompt → register/update).
   // `promptGlobal` renders a global InputDialog in the App's JSX since
   // FileTree's promptForInput is not accessible here.
@@ -552,9 +552,9 @@ export function App(): JSX.Element {
   }, [casefile, handleCreateFolder, promptGlobal]);
 
   useEffect(() => {
-    const unsub = api().onLaneCreate(async () => {
+    const unsub = api().onContextCreate(async () => {
       if (!casefile) return;
-      const root = await handleChooseLaneRoot();
+      const root = await handleChooseContextRoot();
       if (!root) return;
       const defaultName = root.split(/[\\/]/).pop() ?? "context";
       const name = await promptGlobal({
@@ -565,47 +565,47 @@ export function App(): JSX.Element {
       });
       if (!name?.trim()) return;
       try {
-        await handleCreateLaneFromPath(root, name.trim());
+        await handleCreateContextFromPath(root, name.trim());
       } catch {
         // surfaced via setTreeError
       }
     });
     return unsub;
-  // handleChooseLaneRoot and handleCreateLaneFromPath are stable useCallback refs.
+  // handleChooseContextRoot and handleCreateContextFromPath are stable useCallback refs.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [casefile, promptGlobal]);
 
   useEffect(() => {
-    const unsub = api().onLaneAttach(async () => {
-      if (!casefile || casefile.lanes.length === 0) return;
-      const root = await handleChooseLaneRoot();
+    const unsub = api().onContextAttach(async () => {
+      if (!casefile || casefile.contexts.length === 0) return;
+      const root = await handleChooseContextRoot();
       if (!root) return;
-      // Ask which lane to attach to.
-      const laneNames = casefile.lanes.map((l) => l.name).join(" / ");
-      const laneName = await promptGlobal({
+      // Ask which context to attach to.
+      const contextNames = casefile.contexts.map((l) => l.name).join(" / ");
+      const contextName = await promptGlobal({
         title: "Attach to context",
-        message: `Enter the context name to attach to (${laneNames}):`,
-        defaultValue: casefile.lanes[0]?.name ?? "",
+        message: `Enter the context name to attach to (${contextNames}):`,
+        defaultValue: casefile.contexts[0]?.name ?? "",
         confirmLabel: "Next",
       });
-      if (!laneName?.trim()) return;
-      const targetLane = casefile.lanes.find(
-        (l) => l.name.toLowerCase() === laneName.trim().toLowerCase()
+      if (!contextName?.trim()) return;
+      const targetContext = casefile.contexts.find(
+        (l) => l.name.toLowerCase() === contextName.trim().toLowerCase()
       );
-      if (!targetLane) {
-        setTreeError(`No context named "${laneName.trim()}".`);
+      if (!targetContext) {
+        setTreeError(`No context named "${contextName.trim()}".`);
         return;
       }
       const defaultLabel = root.split(/[\\/]/).pop() ?? "attachment";
       const label = await promptGlobal({
-        title: `Attach to "${targetLane.name}"`,
+        title: `Attach to "${targetContext.name}"`,
         message: "Attachment label — how this directory will be referenced in scope.",
         defaultValue: defaultLabel,
         confirmLabel: "Attach",
       });
       if (!label?.trim()) return;
       try {
-        await handleAttachToLane(root, targetLane.id, label.trim());
+        await handleAttachToContext(root, targetContext.id, label.trim());
       } catch {
         // surfaced via setTreeError
       }
@@ -615,48 +615,48 @@ export function App(): JSX.Element {
   }, [casefile, promptGlobal]);
 
   useEffect(() => {
-    const unsub = api().onLaneRename(async () => {
-      if (!activeLane) return;
+    const unsub = api().onContextRename(async () => {
+      if (!activeContext) return;
       const name = await promptGlobal({
         title: "Rename context",
         message: "Enter the new context name.",
-        defaultValue: activeLane.name,
+        defaultValue: activeContext.name,
         confirmLabel: "Rename",
       });
-      if (!name?.trim() || name.trim() === activeLane.name) return;
+      if (!name?.trim() || name.trim() === activeContext.name) return;
       try {
-        await handleUpdateLane(activeLane.id, { name: name.trim() });
+        await handleUpdateContext(activeContext.id, { name: name.trim() });
       } catch {
         // surfaced via setTreeError
       }
     });
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLane, promptGlobal]);
+  }, [activeContext, promptGlobal]);
 
   useEffect(() => {
-    const unsub = api().onLaneToggleAccess(() => {
-      if (!activeLane) return;
-      const isWritable = activeLane.writable !== false;
-      void handleUpdateLane(activeLane.id, { writable: !isWritable });
+    const unsub = api().onContextToggleAccess(() => {
+      if (!activeContext) return;
+      const isWritable = activeContext.writable !== false;
+      void handleUpdateContext(activeContext.id, { writable: !isWritable });
     });
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLane]);
+  }, [activeContext]);
 
   useEffect(() => {
-    const unsub = api().onLaneCompare(async () => {
-      if (!casefile || !activeLane) return;
-      const others = casefile.lanes.filter((lane) => lane.id !== activeLane.id);
+    const unsub = api().onContextCompare(async () => {
+      if (!casefile || !activeContext) return;
+      const others = casefile.contexts.filter((context) => context.id !== activeContext.id);
       if (others.length === 0) return;
       if (others.length === 1) {
-        await handleOpenComparisonChat([activeLane.id, others[0].id]);
+        await handleOpenComparisonChat([activeContext.id, others[0].id]);
         return;
       }
-      const laneNames = others.map((lane) => lane.name).join(" / ");
+      const contextNames = others.map((context) => context.name).join(" / ");
       const selected = await promptGlobal({
         title: "Compare contexts",
-        message: `Enter context names, separated by commas, to compare with "${activeLane.name}" (${laneNames}).`,
+        message: `Enter context names, separated by commas, to compare with "${activeContext.name}" (${contextNames}).`,
         defaultValue: others[0]?.name ?? "",
         confirmLabel: "Compare",
       });
@@ -666,29 +666,29 @@ export function App(): JSX.Element {
         .map((name) => name.trim().toLowerCase())
         .filter(Boolean);
       const selectedIds = others
-        .filter((lane) => selectedNames.includes(lane.name.toLowerCase()))
-        .map((lane) => lane.id);
+        .filter((context) => selectedNames.includes(context.name.toLowerCase()))
+        .map((context) => context.id);
       if (selectedIds.length === 0) {
         setTreeError(`No matching context named "${selected.trim()}".`);
         return;
       }
-      await handleOpenComparisonChat([activeLane.id, ...selectedIds]);
+      await handleOpenComparisonChat([activeContext.id, ...selectedIds]);
     });
     return unsub;
-  }, [activeLane, casefile, handleOpenComparisonChat, promptGlobal]);
+  }, [activeContext, casefile, handleOpenComparisonChat, promptGlobal]);
 
   useEffect(() => {
-    const unsub = api().onLaneRemove(() => {
-      if (!activeLane) return;
+    const unsub = api().onContextRemove(() => {
+      if (!activeContext) return;
       const ok = window.confirm(
-        `Remove context "${activeLane.name}"?\n\nThis removes it from the workspace but does not delete any files.`
+        `Remove context "${activeContext.name}"?\n\nThis removes it from the workspace but does not delete any files.`
       );
       if (!ok) return;
-      void handleRemoveLane(activeLane.id);
+      void handleRemoveContext(activeContext.id);
     });
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeLane]);
+  }, [activeContext]);
 
   useEffect(() => {
     const unsub = api().onCasefileSoftReset(() => {
@@ -722,8 +722,8 @@ export function App(): JSX.Element {
     async (text: string) => {
       const value = text.trim();
       if (!value) return;
-      if (!casefile || !activeLaneId) return;
-      // Race-safe begin: if another send for THIS lane is already in
+      if (!casefile || !activeContextId) return;
+      // Race-safe begin: if another send for THIS context is already in
       // flight (rapid clicks), bail without doing anything. The check
       // happens inside the updater so it sees the freshest `prev`.
       // (Review item #4.)
@@ -783,7 +783,7 @@ export function App(): JSX.Element {
     },
     [
       casefile,
-      activeLaneId,
+      activeContextId,
       updateSession,
       provider,
       providerModels,
@@ -793,7 +793,7 @@ export function App(): JSX.Element {
   );
 
   const approveTools = useCallback(async () => {
-    if (!casefile || !activeLaneId) return;
+    if (!casefile || !activeContextId) return;
     let started = false;
     let historyBeforeTurn: ChatMessage[] = [];
     updateSession((prev) => {
@@ -846,7 +846,7 @@ export function App(): JSX.Element {
     }
   }, [
     casefile,
-    activeLaneId,
+    activeContextId,
     provider,
     providerModels,
     updateSession,
@@ -878,8 +878,8 @@ export function App(): JSX.Element {
   const shellProps = useAppShellProps({
     state: {
       casefile,
-      activeLane,
-      activeLaneId,
+      activeContext,
+      activeContextId,
       activeFilePath,
       provider,
       keyStatus,
@@ -902,7 +902,7 @@ export function App(): JSX.Element {
       onCloseCasefile: handleCloseCasefile,
       onOpenRecentContext: handleOpenRecentContext,
       onSetRecentPinned: handleSetRecentPinned,
-      onSwitchLane: handleSwitchLane,
+      onSwitchContext: handleSwitchContext,
       onQuickCapture: handleQuickCapture,
       onStatusChange: setKeyStatus,
       onModelsChange: setProviderModels,
@@ -915,9 +915,9 @@ export function App(): JSX.Element {
       onCreateFolder: handleCreateFolder,
       onMoveEntry: handleMoveEntry,
       onTrashEntry: handleTrashEntry,
-      onCreateLaneFromPath: handleCreateLaneFromPath,
-      onAttachToLane: handleAttachToLane,
-      onAddAttachment: handleAttachToLane,
+      onCreateContextFromPath: handleCreateContextFromPath,
+      onAttachToContext: handleAttachToContext,
+      onAddAttachment: handleAttachToContext,
       onSelectTab: handleSelectTab,
       onCloseTab: handleCloseTab,
       onEditTab: handleEditTab,
@@ -932,15 +932,15 @@ export function App(): JSX.Element {
       onDenyComparisonTools: denyComparisonTools,
       onOpenComparisonChat: handleOpenComparisonChat,
       onUpdateComparisonAttachments: handleUpdateComparisonAttachments,
-      onUpdateLane: handleUpdateLane,
-      onRemoveLane: handleRemoveLane,
+      onUpdateContext: handleUpdateContext,
+      onRemoveContext: handleRemoveContext,
       onHardResetCasefile: handleHardResetCasefile,
       onSoftResetCasefile: handleSoftResetCasefile,
-      onUpdateLaneName: async (laneId: string, newName: string) => {
-        await handleUpdateLane(laneId, { name: newName });
+      onUpdateContextName: async (contextId: string, newName: string) => {
+        await handleUpdateContext(contextId, { name: newName });
       },
-      onSetLaneWritable: async (laneId: string, writable: boolean) => {
-        await handleUpdateLane(laneId, { writable });
+      onSetContextWritable: async (contextId: string, writable: boolean) => {
+        await handleUpdateContext(contextId, { writable });
       },
       onRemoveAttachment: handleRemoveAttachment,
       onSetAttachmentMode: handleSetAttachmentMode,

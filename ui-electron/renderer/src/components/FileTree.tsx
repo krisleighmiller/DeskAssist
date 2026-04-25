@@ -3,17 +3,17 @@ import type { FileTreeNode } from "../types";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { InputDialog } from "./InputDialog";
 
-/** Lightweight summary of the lanes in the active casefile. We only
+/** Lightweight summary of the contexts in the active casefile. We only
  * need (id, name, root) here — the FileTree uses these to detect
- * which directory rows correspond to a registered lane root and to
+ * which directory rows correspond to a registered context root and to
  * populate the "Compare with…" picker. Lifted to a local interface
- * so we don't drag the full `Lane` type (and its `attachments`
+ * so we don't drag the full `Context` type (and its `attachments`
  * reverse dependency) into the tree. */
-interface FileTreeLaneInfo {
+interface FileTreeContextInfo {
   id: string;
   name: string;
   root: string;
-  /** M2.5: whether this lane has AI write access. Undefined/true means writable. */
+  /** M2.5: whether this context has AI write access. Undefined/true means writable. */
   writable?: boolean;
 }
 
@@ -25,8 +25,8 @@ interface FileTreeProps {
   onOpenFile: (path: string) => void;
   // NOTE: pre-M2.1 versions also rendered ancestor / attachment /
   // context overlay trees as separate sections below the main tree.
-  // That UI was confusing — users saw `_ancestors/...` / `_attachments/...`
-  // virtual paths next to real lane files with no clear meaning. The
+  // That UI was confusing because virtual paths sat next to real context
+  // files with no clear meaning. The
   // overlay system still drives AI scope behind the scenes (see
   // `src/assistant_app/casefile/scope.py`); the tree just no longer
   // visualises it. The associated props (`overlays`, `showOverlays`,
@@ -52,59 +52,59 @@ interface FileTreeProps {
    * The button is hidden when this prop is omitted. */
   onRefresh?: () => void;
   // ----- M2: browser-driven workspace mutations -----
-  /** Lane root the tree is currently rooted at. Used to compute the
-   * lane-relative paths shown in the Move… prompt and to validate
+  /** Context root the tree is currently rooted at. Used to compute the
+   * context-relative paths shown in the Move… prompt and to validate
    * destinations when typed by hand. */
-  activeLaneRoot?: string | null;
-  /** Additional roots (besides `activeLaneRoot`) that belong to the
-   * active lane's scope — typically the lane's read-only attachment
+  activeContextRoot?: string | null;
+  /** Additional roots (besides `activeContextRoot`) that belong to the
+   * active context's scope — typically the context's read-only related directory
    * roots. Tree rows at or under any of these are tinted with the
-   * `in-active-lane` colour cue. */
-  activeLaneScopeRoots?: string[];
-  /** Active lane id, used to skip the "Attach to current lane" action
-   * when the right-clicked node *is* the active lane's own root. */
-  activeLaneId?: string | null;
-  /** All lanes in the open casefile. The FileTree uses this to:
-   *   - tag rows whose path equals a lane root with the lane name,
-   *   - enable the "Compare with…" action only on lane-root rows,
+   * `in-active-context` colour cue. */
+  activeContextScopeRoots?: string[];
+  /** Active context id, used to skip the "Attach to current context" action
+   * when the right-clicked node *is* the active context's own root. */
+  activeContextId?: string | null;
+  /** All contexts in the open casefile. The FileTree uses this to:
+   *   - tag rows whose path equals a context root with the context name,
+   *   - enable the "Compare with…" action only on context-root rows,
    *   - populate the compare picker.
-   * When omitted the lane-aware actions are simply hidden. */
-  lanes?: FileTreeLaneInfo[];
+   * When omitted the context-aware actions are simply hidden. */
+  contexts?: FileTreeContextInfo[];
   /** Create a new (empty) file at `<parentDir>/<name>`. The bridge
    * validates the parent and refuses to clobber an existing entry. */
   onCreateFile?: (parentDir: string, name: string) => Promise<void> | void;
   /** Create a new directory at `<parentDir>/<name>`. */
   onCreateFolder?: (parentDir: string, name: string) => Promise<void> | void;
-  /** Move `sourcePath` to `destinationPath` (both lane-absolute). Used
+  /** Move `sourcePath` to `destinationPath` (both context-absolute). Used
    * by both the Move… prompt and the drag-and-drop drop handler. */
   onMoveEntry?: (sourcePath: string, destinationPath: string) => Promise<void> | void;
   /** Move the entry to the OS trash. The parent is responsible for
    * confirming the action with the user; the FileTree just calls
    * straight through to the bridge. */
   onTrashEntry?: (path: string) => Promise<void> | void;
-  /** Register the right-clicked directory as a new lane in the open
+  /** Register the right-clicked directory as a new context in the open
    * casefile. The parent owns the registration form / dialog. */
-  onCreateLaneFromPath?: (path: string, defaultName: string) => Promise<void> | void;
-  /** Attach the right-clicked directory to any lane the user selects.
-   * A secondary lane-picker menu is shown before the label prompt.
-   * M2.5: replaces the old single-target `onAttachToActiveLane`. */
-  onAttachToLane?: (path: string, laneId: string, name: string) => Promise<void> | void;
-  /** Open a comparison chat across the selected lanes. The first lane id
-   * is the lane whose root was right-clicked; additional ids come from
-   * the multi-lane picker opened by "Compare with…". */
-  onOpenComparisonChat?: (laneIds: string[]) => Promise<void> | void;
-  /** Switch the active lane to the lane whose root was right-clicked.
-   * Added in M2.5 so lane switching works without the Lanes tab. */
-  onSwitchLane?: (laneId: string) => void | Promise<void>;
-  /** Rename the lane whose root was right-clicked.
-   * Added in M2.5 so lane editing works without the Lanes tab. */
-  onUpdateLaneName?: (laneId: string, newName: string) => Promise<void> | void;
-  /** Remove the lane whose root was right-clicked.
-   * Added in M2.5 so lane removal works without the Lanes tab. */
-  onRemoveLane?: (laneId: string) => Promise<void> | void;
-  /** Toggle the AI write access for the lane whose root was right-clicked.
+  onCreateContextFromPath?: (path: string, defaultName: string) => Promise<void> | void;
+  /** Attach the right-clicked directory to any context the user selects.
+   * A secondary context-picker menu is shown before the label prompt.
+   * M2.5: replaces the old single-target `onAttachToActiveContext`. */
+  onAttachToContext?: (path: string, contextId: string, name: string) => Promise<void> | void;
+  /** Open a comparison chat across the selected contexts. The first context id
+   * is the context whose root was right-clicked; additional ids come from
+   * the multi-context picker opened by "Compare with…". */
+  onOpenComparisonChat?: (contextIds: string[]) => Promise<void> | void;
+  /** Switch the active context to the context whose root was right-clicked.
+   * Added in M2.5 so context switching works directly from the browser. */
+  onSwitchContext?: (contextId: string) => void | Promise<void>;
+  /** Rename the context whose root was right-clicked.
+   * Added in M2.5 so context editing works directly from the browser. */
+  onUpdateContextName?: (contextId: string, newName: string) => Promise<void> | void;
+  /** Remove the context whose root was right-clicked.
+   * Added in M2.5 so context removal works directly from the browser. */
+  onRemoveContext?: (contextId: string) => Promise<void> | void;
+  /** Toggle the AI write access for the context whose root was right-clicked.
    * M2.5: per-directory read/write permissions. */
-  onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void> | void;
+  onSetContextWritable?: (contextId: string, writable: boolean) => Promise<void> | void;
   /** Reset the casefile metadata (soft reset — keeps data files on disk). */
   onSoftResetCasefile?: () => Promise<void> | void;
   /** Hard-reset the casefile metadata directory entirely. */
@@ -179,22 +179,22 @@ interface NodeProps {
   onDragOverDir?: (event: React.DragEvent, node: FileTreeNode) => void;
   onDragLeaveDir?: (event: React.DragEvent, node: FileTreeNode) => void;
   onDropOnDir?: (event: React.DragEvent, node: FileTreeNode) => void;
-  /** Map of `lane root path → lane name`. Looked up per-row to add a
-   * "lane" badge next to directory rows that correspond to registered
-   * lanes. Cheaper than walking the lanes array on every render. */
-  laneRootByPath?: Map<string, string>;
-  /** Absolute path of the currently active lane root, if any. Rows
-   * whose path equals or descends from this root get a `in-active-lane`
+  /** Map of `context root path → context name`. Looked up per-row to add a
+   * "context" badge next to directory rows that correspond to registered
+   * contexts. Cheaper than walking the contexts array on every render. */
+  contextRootByPath?: Map<string, string>;
+  /** Absolute path of the currently active context root, if any. Rows
+   * whose path equals or descends from this root get a `in-active-context`
    * CSS class so the user can see at a glance which subtree the active
-   * lane covers (M2.1 colour cue replacing the old overlay sections). */
-  activeLaneRoot?: string | null;
-  /** Additional roots that belong to the active lane's scope but live
-   * outside its write root — currently the lane's read-only attachment
-   * roots (e.g. `ModelA` lane writes under `TEST_TASK/ash` but also
-   * scopes in `TEST_TASK/ash_notes` as the `notes` attachment). Rows
-   * at or under any of these paths receive the same `in-active-lane`
-   * tint as the lane root itself. */
-  activeLaneScopeRoots?: string[];
+   * context covers (M2.1 colour cue replacing the old overlay sections). */
+  activeContextRoot?: string | null;
+  /** Additional roots that belong to the active context's scope but live
+   * outside its write root — currently the context's read-only related directory
+   * roots (e.g. `ModelA` context writes under `TEST_TASK/ash` but also
+   * scopes in `TEST_TASK/ash_reference` as the `reference` attachment). Rows
+   * at or under any of these paths receive the same `in-active-context`
+   * tint as the context root itself. */
+  activeContextScopeRoots?: string[];
 }
 
 function TreeNode({
@@ -212,25 +212,25 @@ function TreeNode({
   onDragOverDir,
   onDragLeaveDir,
   onDropOnDir,
-  laneRootByPath,
-  activeLaneRoot,
-  activeLaneScopeRoots,
+  contextRootByPath,
+  activeContextRoot,
+  activeContextScopeRoots,
 }: NodeProps): JSX.Element {
   const isSelected = selected.has(node.path);
   const selClass = isSelected ? " selected" : "";
-  // True when this row is at or below any of the active lane's scope
-  // roots — the lane's own write root plus any attachment roots. Used
+  // True when this row is at or below any of the active context's scope
+  // roots — the context's own write root plus any attachment roots. Used
   // purely for the colour cue; the row stays clickable and its file
   // ops are identical to any other casefile-internal row.
-  const inActiveLane =
+  const inActiveContext =
     !node.path.startsWith("_") &&
-    pathInAnyRoot(node.path, activeLaneRoot, activeLaneScopeRoots);
-  const laneClass = inActiveLane ? " in-active-lane" : "";
+    pathInAnyRoot(node.path, activeContextRoot, activeContextScopeRoots);
+  const contextClass = inActiveContext ? " in-active-context" : "";
   if (node.type === "file") {
     const isActive = activePath === node.path;
     return (
       <div
-        className={`tree-row${isActive ? " active" : ""}${selClass}${laneClass}`}
+        className={`tree-row${isActive ? " active" : ""}${selClass}${contextClass}`}
         style={{ paddingLeft: depth * 16 + 4 }}
         onClick={(event) => onRowClick(event, node)}
         onContextMenu={(event) => onContextMenu(event, node)}
@@ -252,18 +252,18 @@ function TreeNode({
   const isOpen = expanded.has(node.path);
   const sorted = [...(node.children ?? [])].sort(compareNodes);
   // Overlay nodes use virtual paths starting with "_" — they live outside
-  // the lane and are read-only, so they never accept drops even if the
+  // the context and are read-only, so they never accept drops even if the
   // parent wired up move handlers.
   const isOverlay = node.path.startsWith("_");
   const acceptsDrop = !isOverlay && Boolean(onDropOnDir);
   const dragOverClass = dragOverPath === node.path ? " drag-over" : "";
-  const laneBadge = laneRootByPath?.get(node.path);
+  const contextBadge = contextRootByPath?.get(node.path);
   // Per-child dragOverPath threading: pass it down so deeper directory
   // rows can highlight too. Files don't read it.
   return (
     <div>
       <div
-        className={`tree-row${selClass}${dragOverClass}${laneClass}`}
+        className={`tree-row${selClass}${dragOverClass}${contextClass}`}
         style={{ paddingLeft: depth * 16 + 4 }}
         onClick={(event) => {
           // Plain clicks on a directory toggle expansion; modifier-clicks
@@ -288,7 +288,7 @@ function TreeNode({
             share the same single-glyph leading column. */}
         <span className="twisty">{isOpen ? "▾" : "▸"}</span>
         <span>{node.name}</span>
-        {laneBadge && <span className="lane-badge" title={`Context: ${laneBadge}`}>context</span>}
+        {contextBadge && <span className="context-badge" title={`Context: ${contextBadge}`}>context</span>}
       </div>
       {isOpen && sorted.length > 0 && (
         <div>
@@ -309,9 +309,9 @@ function TreeNode({
               onDragOverDir={onDragOverDir}
               onDragLeaveDir={onDragLeaveDir}
               onDropOnDir={onDropOnDir}
-              laneRootByPath={laneRootByPath}
-              activeLaneRoot={activeLaneRoot}
-              activeLaneScopeRoots={activeLaneScopeRoots}
+              contextRootByPath={contextRootByPath}
+              activeContextRoot={activeContextRoot}
+              activeContextScopeRoots={activeContextScopeRoots}
             />
           ))}
         </div>
@@ -369,9 +369,9 @@ export const FILETREE_DRAG_MIME = "application/x-deskassist-tree-node";
 interface FileTreeDragPayload {
   relativePath: string | null;
   absolutePath: string;
-  /** Set for overlay nodes (e.g. `_ancestors/<lane>/foo.md`). Drop targets
-   * that need the model-facing virtual path (chat composer) read this;
-   * targets that need a real on-disk path (lane attachment editor) read
+  /** Set for historical overlay nodes. Drop targets
+   * that need a model-facing virtual path read this;
+   * targets that need a real on-disk path (context attachment editor) read
    * `absolutePath` instead. Undefined for non-overlay nodes. */
   virtualPath?: string;
   type: "file" | "dir";
@@ -414,7 +414,7 @@ function flattenVisible(
  * rather than assume `process.platform` because the Electron renderer
  * doesn't have access to `process.platform` at runtime and because the
  * bridge sometimes returns POSIX paths even on Windows (overlay roots
- * for read-only attachments registered from a different drive layout).
+ * for read-only related directories registered from a different drive layout).
  */
 function pathSepFor(samplePath: string): "/" | "\\" {
   return samplePath.includes("\\") && !samplePath.includes("/") ? "\\" : "/";
@@ -440,19 +440,19 @@ function isPathOrDescendant(candidate: string, ancestor: string): boolean {
   return candidate.startsWith(ancestor + sep);
 }
 
-interface CompareLaneDialogProps {
-  sourceLaneName: string;
-  candidates: FileTreeLaneInfo[];
-  onSubmit: (laneIds: string[]) => void;
+interface CompareContextDialogProps {
+  sourceContextName: string;
+  candidates: FileTreeContextInfo[];
+  onSubmit: (contextIds: string[]) => void;
   onCancel: () => void;
 }
 
-function CompareLaneDialog({
-  sourceLaneName,
+function CompareContextDialog({
+  sourceContextName,
   candidates,
   onSubmit,
   onCancel,
-}: CompareLaneDialogProps): JSX.Element {
+}: CompareContextDialogProps): JSX.Element {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
@@ -463,18 +463,18 @@ function CompareLaneDialog({
     return () => document.removeEventListener("keydown", onKey);
   }, [onCancel]);
 
-  const toggle = (laneId: string) => {
+  const toggle = (contextId: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(laneId)) next.delete(laneId);
-      else next.add(laneId);
+      if (next.has(contextId)) next.delete(contextId);
+      else next.add(contextId);
       return next;
     });
   };
 
   const submit = (event?: React.FormEvent) => {
     if (event) event.preventDefault();
-    const orderedIds = candidates.filter((lane) => selectedIds.has(lane.id)).map((lane) => lane.id);
+    const orderedIds = candidates.filter((context) => selectedIds.has(context.id)).map((context) => context.id);
     if (orderedIds.length === 0) return;
     onSubmit(orderedIds);
   };
@@ -486,25 +486,25 @@ function CompareLaneDialog({
       onContextMenu={(event) => event.preventDefault()}
     >
       <div
-        className="dialog compare-lanes-dialog"
+        className="dialog compare-contexts-dialog"
         onClick={(event) => event.stopPropagation()}
       >
         <h3>Open compare chat</h3>
         <p className="muted">
-          <span className="compare-lanes-source">Source context: {sourceLaneName}</span>
+          <span className="compare-contexts-source">Source context: {sourceContextName}</span>
           <br />
           Choose one or more additional contexts to include in this scoped comparison chat.
         </p>
         <form onSubmit={submit}>
-          <div className="compare-lanes-list" role="group" aria-label="Contexts to compare">
-            {candidates.map((lane) => (
-              <label key={lane.id} className="compare-lanes-option">
+          <div className="compare-contexts-list" role="group" aria-label="Contexts to compare">
+            {candidates.map((context) => (
+              <label key={context.id} className="compare-contexts-option">
                 <input
                   type="checkbox"
-                  checked={selectedIds.has(lane.id)}
-                  onChange={() => toggle(lane.id)}
+                  checked={selectedIds.has(context.id)}
+                  onChange={() => toggle(context.id)}
                 />
-                <span className="compare-lanes-option-label">{lane.name}</span>
+                <span className="compare-contexts-option-label">{context.name}</span>
               </label>
             ))}
           </div>
@@ -532,21 +532,21 @@ export function FileTree({
   onDismissError,
   onRename,
   onRefresh,
-  activeLaneRoot,
-  activeLaneScopeRoots,
-  activeLaneId,
-  lanes,
+  activeContextRoot,
+  activeContextScopeRoots,
+  activeContextId,
+  contexts,
   onCreateFile,
   onCreateFolder,
   onMoveEntry,
   onTrashEntry,
-  onCreateLaneFromPath,
-  onAttachToLane,
+  onCreateContextFromPath,
+  onAttachToContext,
   onOpenComparisonChat,
-  onSwitchLane,
-  onUpdateLaneName,
-  onRemoveLane,
-  onSetLaneWritable,
+  onSwitchContext,
+  onUpdateContextName,
+  onRemoveContext,
+  onSetContextWritable,
   onSoftResetCasefile,
   onHardResetCasefile,
 }: FileTreeProps): JSX.Element {
@@ -569,7 +569,7 @@ export function FileTree({
   // can't call preventDefault, and the drop event never fires. We clear it
   // in onDragEnd so a cancelled drag doesn't poison subsequent ones.
   const dragSourceRef = useRef<FileTreeDragPayload[] | null>(null);
-  // Secondary lane-target picker used by actions like "Attach to lane…".
+  // Secondary context-target picker used by actions like "Attach to context…".
   // We keep it separate from `menu` because the primary context menu
   // closes on item-select.
   const [pickerMenu, setPickerMenu] = useState<{
@@ -578,9 +578,9 @@ export function FileTree({
     items: ContextMenuItem[];
   } | null>(null);
   const [compareDialog, setCompareDialog] = useState<{
-    sourceLaneId: string;
-    sourceLaneName: string;
-    candidates: FileTreeLaneInfo[];
+    sourceContextId: string;
+    sourceContextName: string;
+    candidates: FileTreeContextInfo[];
   } | null>(null);
   // Single-field text-input dialog state. We render `<InputDialog />`
   // when this is non-null and resolve the stashed promise on submit /
@@ -631,7 +631,7 @@ export function FileTree({
     }
   }, [root]);
 
-  // Whenever the tree root changes (different workspace / lane), drop
+  // Whenever the tree root changes (different workspace / context), drop
   // the selection and anchor — keeping them around would orphan paths
   // that no longer exist in the new tree.
   const lastRootPath = useRef<string | null>(null);
@@ -650,22 +650,22 @@ export function FileTree({
     [root, expanded]
   );
 
-  // Map of lane-root absolute path → lane name. Built once per `lanes`
+  // Map of context-root absolute path → context name. Built once per `contexts`
   // change so each row can do an O(1) lookup instead of scanning the
-  // lanes array on every render.
-  const laneRootByPath = useMemo(() => {
+  // contexts array on every render.
+  const contextRootByPath = useMemo(() => {
     const m = new Map<string, string>();
-    if (lanes) for (const lane of lanes) m.set(lane.root, lane.name);
+    if (contexts) for (const context of contexts) m.set(context.root, context.name);
     return m;
-  }, [lanes]);
+  }, [contexts]);
 
-  /** Resolve the lane id for a given absolute path, or null if it isn't
-   * a registered lane root. The renderer uses this when the user picks
-   * "Compare with…" on a tree row to find the source lane id. */
-  const laneIdAtPath = (absPath: string): string | null => {
-    if (!lanes) return null;
-    for (const lane of lanes) {
-      if (lane.root === absPath) return lane.id;
+  /** Resolve the context id for a given absolute path, or null if it isn't
+   * a registered context root. The renderer uses this when the user picks
+   * "Compare with…" on a tree row to find the source context id. */
+  const contextIdAtPath = (absPath: string): string | null => {
+    if (!contexts) return null;
+    for (const context of contexts) {
+      if (context.root === absPath) return context.id;
     }
     return null;
   };
@@ -747,8 +747,8 @@ export function FileTree({
 
   /** Build a `FileTreeDragPayload` for a tree-node absolute path. The
    * `virtualPath` field remains in the payload type for downstream
-   * consumers (chat composer, context editor) but is no longer
-   * populated here — the FileTree now only renders real on-disk lane
+   * consumers (chat composer or future scope drop targets) but is no longer
+   * populated here — the FileTree now only renders real on-disk context
    * paths since the overlay sections were removed. */
   const buildPayload = (path: string, type: "file" | "dir"): FileTreeDragPayload => {
     const relativePath = casefileRoot ? relativeFromBase(path, casefileRoot) : null;
@@ -765,8 +765,8 @@ export function FileTree({
     if (selected.has(node.path) && selected.size > 1) {
       // We don't have node-type metadata for arbitrary selected paths
       // (they may live in collapsed branches), so we treat them as
-      // files-by-default. Drop targets that care (e.g. the context
-      // editor) only consume the relative path anyway.
+      // files-by-default. Drop targets that care only consume the relative
+      // path anyway.
       payloads = Array.from(selected).map((p) => buildPayload(p, p === node.path ? node.type : "file"));
       plainText = payloads
         .map((p) => p.relativePath ?? p.virtualPath ?? p.absolutePath)
@@ -781,7 +781,7 @@ export function FileTree({
     // input (e.g. the chat composer).
     event.dataTransfer.setData("text/plain", plainText);
     // Use "copyMove" so the OS arrow shows a copy cursor for non-tree
-    // drop targets (composer, context editor) while still letting the
+    // drop targets (composer, future scope drop targets) while still letting the
     // FileTree's own drop handler treat the gesture as a move. The
     // dropEffect is decided per-target in onDragOver.
     event.dataTransfer.effectAllowed = "copyMove";
@@ -884,7 +884,7 @@ export function FileTree({
         try {
           await onMoveEntry(src, dest);
         } catch (err) {
-          // Upstream (`useLaneWorkspace.handleMoveEntry`) already routes
+          // Upstream (`useContextWorkspace.handleMoveEntry`) already routes
           // the error into the tree-level error banner via
           // `setTreeError`, so we just log here for debugging and stop
           // the batch; an alert on top of the banner would double-
@@ -1026,7 +1026,7 @@ export function FileTree({
                   try {
                     await Promise.resolve(onRename(target.path, trimmed));
                   } catch (err) {
-                    // The parent (`useLaneWorkspace`) routes this into
+                    // The parent (`useContextWorkspace`) routes this into
                     // the tree-level error banner; just log here.
                     console.error("FileTree rename failed:", err);
                   }
@@ -1126,7 +1126,7 @@ export function FileTree({
               onSelect: () => {
                 const target = menu.node;
                 const sep = pathSepFor(casefileRoot);
-                // Move is casefile-wide, not lane-scoped: lanes only
+                // Move is casefile-wide, not context-scoped: contexts only
                 // affect what the chat agent sees, not what the user
                 // can move where. The prompt accepts (and pre-fills)
                 // a casefile-relative path.
@@ -1206,17 +1206,17 @@ export function FileTree({
             },
           ]
         : []),
-      // ---------- M2: lane integration ----------
+      // ---------- M2: context integration ----------
       // Single-target, directory-only, real (non-overlay) actions for
-      // promoting browser selections into lane workflows.
-      ...(onCreateLaneFromPath &&
+      // promoting browser selections into context workflows.
+      ...(onCreateContextFromPath &&
       !multi &&
       menu.node.type === "dir" &&
       !menu.node.path.startsWith("_") &&
-      // Don't offer "Create lane from this folder" on a path that's
-      // already a registered lane root — registering the same dir
+      // Don't offer "Create context from this folder" on a path that's
+      // already a registered context root — registering the same dir
       // twice would conflict.
-      !laneRootByPath.has(menu.node.path)
+      !contextRootByPath.has(menu.node.path)
         ? [
             {
               label: "Create context here…",
@@ -1235,47 +1235,47 @@ export function FileTree({
                   if (!trimmed) return;
                   try {
                     await Promise.resolve(
-                      onCreateLaneFromPath(target.path, trimmed)
+                      onCreateContextFromPath(target.path, trimmed)
                     );
                   } catch (err) {
-                    console.error("FileTree create lane failed:", err);
+                    console.error("FileTree create context failed:", err);
                   }
                 })();
               },
             },
           ]
         : []),
-      // "Set as active lane" — on a lane-root directory that is NOT the
-      // currently active lane.
-      ...(onSwitchLane &&
+      // "Set as active context" — on a context-root directory that is NOT the
+      // currently active context.
+      ...(onSwitchContext &&
       !multi &&
       menu.node.type === "dir" &&
-      laneRootByPath.has(menu.node.path)
+      contextRootByPath.has(menu.node.path)
         ? (() => {
-            const laneId = laneIdAtPath(menu.node.path);
-            const alreadyActive = laneId === activeLaneId;
-            if (!laneId || alreadyActive) return [];
+            const contextId = contextIdAtPath(menu.node.path);
+            const alreadyActive = contextId === activeContextId;
+            if (!contextId || alreadyActive) return [];
             return [
               {
                 label: "Set as active context",
                 onSelect: () => {
-                  void Promise.resolve(onSwitchLane(laneId)).catch((err) => {
-                    console.error("FileTree switch lane failed:", err);
+                  void Promise.resolve(onSwitchContext(contextId)).catch((err) => {
+                    console.error("FileTree switch context failed:", err);
                   });
                 },
               },
             ];
           })()
         : []),
-      // "Rename lane…" — on a lane-root directory.
-      ...(onUpdateLaneName &&
+      // "Rename context…" — on a context-root directory.
+      ...(onUpdateContextName &&
       !multi &&
       menu.node.type === "dir" &&
-      laneRootByPath.has(menu.node.path)
+      contextRootByPath.has(menu.node.path)
         ? (() => {
-            const laneId = laneIdAtPath(menu.node.path);
-            const currentLaneName = laneRootByPath.get(menu.node.path) ?? "";
-            if (!laneId) return [];
+            const contextId = contextIdAtPath(menu.node.path);
+            const currentContextName = contextRootByPath.get(menu.node.path) ?? "";
+            if (!contextId) return [];
             return [
               {
                 label: "Rename context…",
@@ -1284,16 +1284,16 @@ export function FileTree({
                     const name = await promptForInput({
                       title: "Rename context",
                       message: "Enter the new context name.",
-                      defaultValue: currentLaneName,
+                      defaultValue: currentContextName,
                       confirmLabel: "Rename",
                     });
                     if (name == null) return;
                     const trimmed = name.trim();
-                    if (!trimmed || trimmed === currentLaneName) return;
+                    if (!trimmed || trimmed === currentContextName) return;
                     try {
-                      await Promise.resolve(onUpdateLaneName(laneId, trimmed));
+                      await Promise.resolve(onUpdateContextName(contextId, trimmed));
                     } catch (err) {
-                      console.error("FileTree rename lane failed:", err);
+                      console.error("FileTree rename context failed:", err);
                     }
                   })();
                 },
@@ -1301,47 +1301,47 @@ export function FileTree({
             ];
           })()
         : []),
-      // "Remove lane" — on a lane-root directory.
-      ...(onRemoveLane &&
+      // "Remove context" — on a context-root directory.
+      ...(onRemoveContext &&
       !multi &&
       menu.node.type === "dir" &&
-      laneRootByPath.has(menu.node.path)
+      contextRootByPath.has(menu.node.path)
         ? (() => {
-            const laneId = laneIdAtPath(menu.node.path);
-            const laneName = laneRootByPath.get(menu.node.path) ?? "";
-            if (!laneId) return [];
+            const contextId = contextIdAtPath(menu.node.path);
+            const contextName = contextRootByPath.get(menu.node.path) ?? "";
+            if (!contextId) return [];
             return [
               {
                 label: "Remove context",
                 onSelect: () => {
                   const ok = window.confirm(
-                    `Remove context "${laneName}"?\n\nThis removes it from the workspace but does not delete any files.`
+                    `Remove context "${contextName}"?\n\nThis removes it from the workspace but does not delete any files.`
                   );
                   if (!ok) return;
-                  void Promise.resolve(onRemoveLane(laneId)).catch((err) => {
-                    console.error("FileTree remove lane failed:", err);
+                  void Promise.resolve(onRemoveContext(contextId)).catch((err) => {
+                    console.error("FileTree remove context failed:", err);
                   });
                 },
               },
             ];
           })()
         : []),
-      // "Set as read-only" / "Set as writable" — on a lane-root directory.
-      ...(onSetLaneWritable &&
+      // "Set as read-only" / "Set as writable" — on a context-root directory.
+      ...(onSetContextWritable &&
       !multi &&
       menu.node.type === "dir" &&
-      laneRootByPath.has(menu.node.path)
+      contextRootByPath.has(menu.node.path)
         ? (() => {
-            const laneId = laneIdAtPath(menu.node.path);
-            if (!laneId) return [];
-            const lane = lanes?.find((l) => l.id === laneId);
-            const currentlyWritable = lane ? (lane.writable !== false) : true;
+            const contextId = contextIdAtPath(menu.node.path);
+            if (!contextId) return [];
+            const context = contexts?.find((l) => l.id === contextId);
+            const currentlyWritable = context ? (context.writable !== false) : true;
             return [
               {
                 label: currentlyWritable ? "Set AI access: read-only" : "Set AI access: writable",
                 onSelect: () => {
-                  void Promise.resolve(onSetLaneWritable(laneId, !currentlyWritable)).catch(
-                    (err) => { console.error("FileTree set lane writable failed:", err); }
+                  void Promise.resolve(onSetContextWritable(contextId, !currentlyWritable)).catch(
+                    (err) => { console.error("FileTree set context writable failed:", err); }
                   );
                 },
               },
@@ -1389,9 +1389,9 @@ export function FileTree({
               : []),
           ]
         : []),
-      ...(onAttachToLane &&
-      lanes &&
-      lanes.length > 0 &&
+      ...(onAttachToContext &&
+      contexts &&
+      contexts.length > 0 &&
       !multi &&
       menu.node.type === "dir" &&
       !menu.node.path.startsWith("_")
@@ -1400,18 +1400,18 @@ export function FileTree({
               label: "Attach to context…",
               onSelect: () => {
                 const target = menu.node;
-                const attachableLanes = lanes.filter(
+                const attachableContexts = contexts.filter(
                   (l) => l.root !== target.path
                 );
-                if (attachableLanes.length === 0) return;
-                // Build a picker that lists every lane the user can attach to.
-                const pickerItems: ContextMenuItem[] = attachableLanes.map(
-                  (lane) => ({
-                    label: lane.name,
+                if (attachableContexts.length === 0) return;
+                // Build a picker that lists every context the user can attach to.
+                const pickerItems: ContextMenuItem[] = attachableContexts.map(
+                  (context) => ({
+                    label: context.name,
                     onSelect: () => {
                       void (async () => {
                         const label = await promptForInput({
-                          title: `Attach "${target.name}" to "${lane.name}"`,
+                          title: `Attach "${target.name}" to "${context.name}"`,
                           message:
                             "Attachment label — how this directory will be referenced in the context's scope.",
                           defaultValue: target.name,
@@ -1422,10 +1422,10 @@ export function FileTree({
                         if (!trimmed) return;
                         try {
                           await Promise.resolve(
-                            onAttachToLane(target.path, lane.id, trimmed)
+                            onAttachToContext(target.path, context.id, trimmed)
                           );
                         } catch (err) {
-                          console.error("FileTree attach to lane failed:", err);
+                          console.error("FileTree attach to context failed:", err);
                         }
                       })();
                     },
@@ -1437,25 +1437,25 @@ export function FileTree({
           ]
         : []),
       // "Compare with…" only on a directory row that EQUALS a registered
-      // lane root, with at least one other lane available. The selected
-      // lane is the left side; the picker chooses the right side.
+      // context root, with at least one other context available. The selected
+      // context is the left side; the picker chooses the right side.
       ...(onOpenComparisonChat &&
       !multi &&
       menu.node.type === "dir" &&
-      laneRootByPath.has(menu.node.path) &&
-      lanes &&
-      lanes.length >= 2
+      contextRootByPath.has(menu.node.path) &&
+      contexts &&
+      contexts.length >= 2
         ? (() => {
-            const selfId = laneIdAtPath(menu.node.path);
-            const others = lanes.filter((l) => l.id !== selfId);
+            const selfId = contextIdAtPath(menu.node.path);
+            const others = contexts.filter((l) => l.id !== selfId);
             if (!selfId || others.length === 0) return [];
             return [
               {
                 label: "Compare with…",
                 onSelect: () => {
                   setCompareDialog({
-                    sourceLaneId: selfId,
-                    sourceLaneName: laneRootByPath.get(menu.node.path) ?? menu.node.name,
+                    sourceContextId: selfId,
+                    sourceContextName: contextRootByPath.get(menu.node.path) ?? menu.node.name,
                     candidates: others,
                   });
                 },
@@ -1498,14 +1498,14 @@ export function FileTree({
             {/* Toolbar shortcuts for "new file/folder at the default
                 target". Right-clicking any directory in the tree gives
                 you a per-folder version of the same action. Default
-                target prefers the active lane root (so the existing
-                lane-driven workflow keeps working), and falls back to
-                the casefile root when no lane is active — file ops
-                are casefile-wide; lanes only affect chat scope. */}
+                target prefers the active context root (so the existing
+                context-driven workflow keeps working), and falls back to
+                the casefile root when no context is active — file ops
+                are casefile-wide; contexts only affect chat scope. */}
             {(() => {
-              const defaultTarget = activeLaneRoot ?? casefileRoot ?? null;
+              const defaultTarget = activeContextRoot ?? casefileRoot ?? null;
               if (!defaultTarget) return null;
-              const targetLabel = activeLaneRoot ? "context root" : "workspace root";
+              const targetLabel = activeContextRoot ? "context root" : "workspace root";
               return (
                 <>
                   {onCreateFile && (
@@ -1613,9 +1613,9 @@ export function FileTree({
         onDragOverDir={onMoveEntry ? handleDragOverDir : undefined}
         onDragLeaveDir={onMoveEntry ? handleDragLeaveDir : undefined}
         onDropOnDir={onMoveEntry ? handleDropOnDir : undefined}
-        laneRootByPath={laneRootByPath}
-        activeLaneRoot={activeLaneRoot}
-        activeLaneScopeRoots={activeLaneScopeRoots}
+        contextRootByPath={contextRootByPath}
+        activeContextRoot={activeContextRoot}
+        activeContextScopeRoots={activeContextScopeRoots}
       />
       {menu && (
         <ContextMenu
@@ -1625,7 +1625,7 @@ export function FileTree({
           onClose={() => setMenu(null)}
         />
       )}
-      {/* Secondary lane-target picker. Rendered after the primary menu
+      {/* Secondary context-target picker. Rendered after the primary menu
           so its outside-click handler doesn't immediately close on
           the same gesture that opened it. */}
       {pickerMenu && (
@@ -1637,14 +1637,14 @@ export function FileTree({
         />
       )}
       {compareDialog && (
-        <CompareLaneDialog
-          sourceLaneName={compareDialog.sourceLaneName}
+        <CompareContextDialog
+          sourceContextName={compareDialog.sourceContextName}
           candidates={compareDialog.candidates}
           onCancel={() => setCompareDialog(null)}
-          onSubmit={(laneIds) => {
-            const allLaneIds = [compareDialog.sourceLaneId, ...laneIds];
+          onSubmit={(contextIds) => {
+            const allContextIds = [compareDialog.sourceContextId, ...contextIds];
             setCompareDialog(null);
-            void Promise.resolve(onOpenComparisonChat?.(allLaneIds)).catch((err) => {
+            void Promise.resolve(onOpenComparisonChat?.(allContextIds)).catch((err) => {
               console.error("FileTree open compare chat failed:", err);
             });
           }}

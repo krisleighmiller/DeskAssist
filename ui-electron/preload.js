@@ -1,22 +1,22 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("assistantApi", {
-  // Casefile + lane management
+  // Casefile + context management
   chooseCasefile: () => ipcRenderer.invoke("casefile:choose"),
   openCasefile: (root) => ipcRenderer.invoke("casefile:open", { root }),
   closeCasefile: () => ipcRenderer.invoke("casefile:close"),
-  chooseLaneRoot: () => ipcRenderer.invoke("casefile:chooseLaneRoot"),
-  registerLane: (lane) => ipcRenderer.invoke("casefile:registerLane", { lane }),
-  switchLane: (laneId) => ipcRenderer.invoke("casefile:switchLane", { laneId }),
-  // M4.6: lane CRUD + casefile reset.
-  updateLane: (laneId, update) =>
-    ipcRenderer.invoke("casefile:updateLane", { laneId, ...update }),
-  removeLane: (laneId) => ipcRenderer.invoke("casefile:removeLane", { laneId }),
+  chooseContextRoot: () => ipcRenderer.invoke("casefile:chooseContextRoot"),
+  registerContext: (context) => ipcRenderer.invoke("casefile:registerContext", { context }),
+  switchContext: (contextId) => ipcRenderer.invoke("casefile:switchContext", { contextId }),
+  // M4.6: context CRUD + casefile reset.
+  updateContext: (contextId, update) =>
+    ipcRenderer.invoke("casefile:updateContext", { contextId, ...update }),
+  removeContext: (contextId) => ipcRenderer.invoke("casefile:removeContext", { contextId }),
   hardResetCasefile: () => ipcRenderer.invoke("casefile:hardReset"),
   softResetCasefile: () => ipcRenderer.invoke("casefile:softReset"),
-  listChat: (laneId) => ipcRenderer.invoke("casefile:listChat", { laneId }),
+  listChat: (contextId) => ipcRenderer.invoke("casefile:listChat", { contextId }),
 
-  // Lane-scoped filesystem (rooted at the active lane).
+  // Context-scoped filesystem (rooted at the active context).
   listWorkspace: (maxDepth = 4) => ipcRenderer.invoke("workspace:list", { maxDepth }),
   readFile: (path, maxChars = 200000) => ipcRenderer.invoke("file:read", { path, maxChars }),
   saveFile: (path, content) => ipcRenderer.invoke("file:save", { path, content }),
@@ -37,16 +37,16 @@ contextBridge.exposeInMainWorld("assistantApi", {
   undoLastTrash: () => ipcRenderer.invoke("file:undoLastTrash"),
   trashUndoStatus: () => ipcRenderer.invoke("file:undoStatus"),
 
-  // Persist a chat message body to a user-chosen directory (lane attachment
+  // Persist a chat message body to a user-chosen directory (context attachment
   // or anywhere else). The directory must already exist; the bridge refuses
   // to overwrite an existing file.
   saveChatOutput: (payload) => ipcRenderer.invoke("chat:saveOutput", payload),
 
   // M3.5: context attachments.
-  updateLaneAttachments: (laneId, attachments) =>
-    ipcRenderer.invoke("casefile:updateLaneAttachments", { laneId, attachments }),
+  updateContextAttachments: (contextId, attachments) =>
+    ipcRenderer.invoke("casefile:updateContextAttachments", { contextId, attachments }),
 
-  // Chat (against the currently active casefile + lane).
+  // Chat (against the currently active casefile + context).
   sendChat: (payload) => ipcRenderer.invoke("chat:send", payload),
   // SECURITY (H1): explicit approval path for write tools. Distinct
   // from `sendChat` so the renderer cannot enable write tools by
@@ -55,11 +55,11 @@ contextBridge.exposeInMainWorld("assistantApi", {
   approveAndResumeChat: (payload) =>
     ipcRenderer.invoke("chat:approveAndResume", payload),
 
-  // M3.5c: comparison-chat sessions (multi-lane scoped chat).
-  openComparison: (laneIds) =>
-    ipcRenderer.invoke("casefile:openComparison", { laneIds }),
-  updateComparisonAttachments: (laneIds, attachments) =>
-    ipcRenderer.invoke("casefile:updateComparisonAttachments", { laneIds, attachments }),
+  // M3.5c: comparison-chat sessions (multi-context scoped chat).
+  openComparison: (contextIds) =>
+    ipcRenderer.invoke("casefile:openComparison", { contextIds }),
+  updateComparisonAttachments: (contextIds, attachments) =>
+    ipcRenderer.invoke("casefile:updateComparisonAttachments", { contextIds, attachments }),
   sendComparisonChat: (payload) =>
     ipcRenderer.invoke("casefile:sendComparisonChat", payload),
   // SECURITY (H1): comparison-chat counterpart of `approveAndResumeChat`.
@@ -107,10 +107,10 @@ contextBridge.exposeInMainWorld("assistantApi", {
     return () => ipcRenderer.removeListener("app:toggle-right-panel", wrapped);
   },
 
-  // Menu-bar → renderer: lane management actions.
+  // Menu-bar → renderer: context management actions.
   // Each returns an unsubscribe function so callers can clean up in
   // useEffect teardowns. The renderer handles the dialog/prompt flow
-  // (main has no access to per-lane state; it just fires the trigger).
+  // (main has no access to per-context state; it just fires the trigger).
   onOpenCasefile: (handler) => {
     const wrapped = () => handler();
     ipcRenderer.on("app:open-casefile", wrapped);
@@ -131,35 +131,35 @@ contextBridge.exposeInMainWorld("assistantApi", {
     ipcRenderer.on("app:folder:new", wrapped);
     return () => ipcRenderer.removeListener("app:folder:new", wrapped);
   },
-  onLaneCreate: (handler) => {
+  onContextCreate: (handler) => {
     const wrapped = () => handler();
-    ipcRenderer.on("app:lane:create", wrapped);
-    return () => ipcRenderer.removeListener("app:lane:create", wrapped);
+    ipcRenderer.on("app:context:create", wrapped);
+    return () => ipcRenderer.removeListener("app:context:create", wrapped);
   },
-  onLaneAttach: (handler) => {
+  onContextAttach: (handler) => {
     const wrapped = () => handler();
-    ipcRenderer.on("app:lane:attach", wrapped);
-    return () => ipcRenderer.removeListener("app:lane:attach", wrapped);
+    ipcRenderer.on("app:context:attach", wrapped);
+    return () => ipcRenderer.removeListener("app:context:attach", wrapped);
   },
-  onLaneRename: (handler) => {
+  onContextRename: (handler) => {
     const wrapped = () => handler();
-    ipcRenderer.on("app:lane:rename", wrapped);
-    return () => ipcRenderer.removeListener("app:lane:rename", wrapped);
+    ipcRenderer.on("app:context:rename", wrapped);
+    return () => ipcRenderer.removeListener("app:context:rename", wrapped);
   },
-  onLaneToggleAccess: (handler) => {
+  onContextToggleAccess: (handler) => {
     const wrapped = () => handler();
-    ipcRenderer.on("app:lane:toggle-access", wrapped);
-    return () => ipcRenderer.removeListener("app:lane:toggle-access", wrapped);
+    ipcRenderer.on("app:context:toggle-access", wrapped);
+    return () => ipcRenderer.removeListener("app:context:toggle-access", wrapped);
   },
-  onLaneRemove: (handler) => {
+  onContextRemove: (handler) => {
     const wrapped = () => handler();
-    ipcRenderer.on("app:lane:remove", wrapped);
-    return () => ipcRenderer.removeListener("app:lane:remove", wrapped);
+    ipcRenderer.on("app:context:remove", wrapped);
+    return () => ipcRenderer.removeListener("app:context:remove", wrapped);
   },
-  onLaneCompare: (handler) => {
+  onContextCompare: (handler) => {
     const wrapped = () => handler();
-    ipcRenderer.on("app:lane:compare", wrapped);
-    return () => ipcRenderer.removeListener("app:lane:compare", wrapped);
+    ipcRenderer.on("app:context:compare", wrapped);
+    return () => ipcRenderer.removeListener("app:context:compare", wrapped);
   },
   onCasefileSoftReset: (handler) => {
     const wrapped = () => handler();

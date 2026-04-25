@@ -24,15 +24,15 @@ def test_workspace_filesystem_read_text_bounded(tmp_path: Path):
 
 def test_workspace_filesystem_save_append_delete(tmp_path: Path):
     fs = WorkspaceFilesystem(tmp_path)
-    target, written = fs.save_text("notes/todo.txt", "one\n", overwrite=False)
+    target, written = fs.save_text("scratch/todo.txt", "one\n", overwrite=False)
     assert target.exists()
     assert written == len("one\n".encode("utf-8"))
 
-    target, appended = fs.append_text("notes/todo.txt", "two\n")
+    target, appended = fs.append_text("scratch/todo.txt", "two\n")
     assert target.read_text(encoding="utf-8") == "one\ntwo\n"
     assert appended == len("two\n".encode("utf-8"))
 
-    deleted = fs.delete_file("notes/todo.txt")
+    deleted = fs.delete_file("scratch/todo.txt")
     assert deleted == target
     assert not target.exists()
 
@@ -45,15 +45,15 @@ def test_workspace_filesystem_refuses_to_delete_workspace_root(tmp_path: Path):
 
 def test_workspace_filesystem_refuses_to_delete_writable_scoped_root(tmp_path: Path):
     primary = tmp_path / "primary"
-    notes = tmp_path / "notes"
+    reference = tmp_path / "reference"
     primary.mkdir()
-    notes.mkdir()
+    reference.mkdir()
     fs = WorkspaceFilesystem(
         primary,
         scoped_directories=(
             ScopedDirectory(path=primary, label="primary", writable=True),
-            ScopedDirectory(path=notes, label="notes", writable=True),
+            ScopedDirectory(path=reference, label="reference", writable=True),
         ),
     )
     with pytest.raises(PermissionError, match="scoped root"):
-        fs.delete_path("_scope/notes", recursive=True)
+        fs.delete_path("_scope/reference", recursive=True)

@@ -3,7 +3,7 @@ import type { RecentContext } from "../types";
 interface HomeViewProps {
   recentContexts: RecentContext[];
   onChooseCasefile: () => void | Promise<void>;
-  onOpenRecentContext: (root: string, activeLaneId: string | null) => void | Promise<void>;
+  onOpenRecentContext: (root: string, activeContextId: string | null) => void | Promise<void>;
   onSetRecentPinned: (root: string, pinned: boolean) => void;
 }
 
@@ -42,7 +42,7 @@ export function HomeView({
         <div className="home-context-main">
           <div className="home-context-title">{rootName}</div>
           <div className="home-context-meta">
-            {context.activeLaneName ? `Resume ${context.activeLaneName}` : "Resume workspace"}
+            {context.activeContextName ? `Resume ${context.activeContextName}` : "Resume workspace"}
             {" - "}
             {formatUpdatedAt(context.updatedAt)}
           </div>
@@ -55,7 +55,7 @@ export function HomeView({
             type="button"
             onClick={() => {
               void Promise.resolve(
-                onOpenRecentContext(context.root, context.activeLaneId)
+                onOpenRecentContext(context.root, context.activeContextId)
               );
             }}
           >
@@ -99,7 +99,7 @@ export function HomeView({
             onClick={() => {
               if (!latest) return;
               void Promise.resolve(
-                onOpenRecentContext(latest.root, latest.activeLaneId)
+                onOpenRecentContext(latest.root, latest.activeContextId)
               );
             }}
           >

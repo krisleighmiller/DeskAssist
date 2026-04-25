@@ -9,7 +9,7 @@ import {
 import type {
   CasefileSnapshot,
   ComparisonSession,
-  LaneAttachmentInput,
+  ContextAttachmentInput,
   Provider,
   ProviderModels,
 } from "../types";
@@ -84,10 +84,10 @@ export function useComparisons({
   );
 
   const handleOpenComparisonChat = useCallback(
-    async (laneIds: string[]) => {
-      if (!casefile || laneIds.length < 2) return;
+    async (contextIds: string[]) => {
+      if (!casefile || contextIds.length < 2) return;
       try {
-        const opened = normalizeComparisonSession(await api().openComparison(laneIds));
+        const opened = normalizeComparisonSession(await api().openComparison(contextIds));
         setComparisonSessions((prev) => {
           const existing = prev.findIndex((entry) => entry.id === opened.id);
           if (existing >= 0) {
@@ -106,10 +106,10 @@ export function useComparisons({
   );
 
   const handleUpdateComparisonAttachments = useCallback(
-    async (laneIds: string[], attachments: LaneAttachmentInput[]) => {
-      if (!casefile || laneIds.length < 2) return;
+    async (contextIds: string[], attachments: ContextAttachmentInput[]) => {
+      if (!casefile || contextIds.length < 2) return;
       try {
-        const updated = await api().updateComparisonAttachments(laneIds, attachments);
+        const updated = await api().updateComparisonAttachments(contextIds, attachments);
         const normalized = normalizeComparisonSession({
           ...updated,
           messages:
@@ -163,7 +163,7 @@ export function useComparisons({
       }));
       try {
         const response = await api().sendComparisonChat({
-          laneIds: target.laneIds,
+          contextIds: target.contextIds,
           provider,
           model: providerModels[provider] || null,
           messages: historyBeforeTurn,
@@ -177,8 +177,8 @@ export function useComparisons({
           : [];
         replaceComparisonSession(targetId, (prev) => ({
           ...prev,
-          laneIds: response.comparison?.laneIds ?? prev.laneIds,
-          lanes: response.comparison?.lanes ?? prev.lanes,
+          contextIds: response.comparison?.contextIds ?? prev.contextIds,
+          contexts: response.comparison?.contexts ?? prev.contexts,
           attachments: response.comparison?.attachments ?? prev.attachments,
           messages: nextMessages,
           pendingApprovals: nextPending,
@@ -222,7 +222,7 @@ export function useComparisons({
       // canonical comparison session before forwarding the resume
       // with `allowWriteTools=true`.
       const response = await api().approveAndResumeComparisonChat({
-        laneIds: target.laneIds,
+        contextIds: target.contextIds,
         provider,
         model: providerModels[provider] || null,
         messages: historyBeforeTurn,
@@ -233,8 +233,8 @@ export function useComparisons({
         : [];
       replaceComparisonSession(targetId, (prev) => ({
         ...prev,
-        laneIds: response.comparison?.laneIds ?? prev.laneIds,
-        lanes: response.comparison?.lanes ?? prev.lanes,
+        contextIds: response.comparison?.contextIds ?? prev.contextIds,
+        contexts: response.comparison?.contexts ?? prev.contexts,
         attachments: response.comparison?.attachments ?? prev.attachments,
         messages: [...historyBeforeTurn, ...delta],
         pendingApprovals: nextPending,
@@ -281,7 +281,7 @@ export function useComparisons({
     setBusyComparisonIds(new Set());
   }, []);
 
-  const clearActiveComparisonForLaneChat = useCallback(() => {
+  const clearActiveComparisonForContextChat = useCallback(() => {
     setActiveComparisonId(null);
   }, []);
 
@@ -297,6 +297,6 @@ export function useComparisons({
     approveComparisonTools,
     denyComparisonTools,
     resetComparisonsForCasefile,
-    clearActiveComparisonForLaneChat,
+    clearActiveComparisonForContextChat,
   };
 }

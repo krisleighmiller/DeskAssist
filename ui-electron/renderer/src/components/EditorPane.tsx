@@ -10,7 +10,7 @@ import { languageFromPath } from "../lib/language";
  */
 interface FileTab {
   kind: "file";
-  /** Synthetic; e.g. `lane:<laneId>:<path>` or `overlay:<laneId>:<virtualPath>`. */
+  /** Synthetic; e.g. `context:<contextId>:<path>` or `overlay:<contextId>:<virtualPath>`. */
   key: string;
   path: string;
   content: string;

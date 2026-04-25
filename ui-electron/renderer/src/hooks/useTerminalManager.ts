@@ -7,14 +7,14 @@ import {
 } from "../components/TerminalsPanel";
 import { api } from "../lib/api";
 
-export interface TerminalLaneContext {
+export interface TerminalContext {
   id: string;
   name: string;
   root: string;
 }
 
 interface UseTerminalManagerOptions {
-  activeLane: TerminalLaneContext | null;
+  activeContext: TerminalContext | null;
   casefileRoot: string | null;
   setTerminalOpen: Dispatch<SetStateAction<boolean>>;
 }
@@ -60,7 +60,7 @@ function nextLabel(existing: TerminalSession[], base: string): string {
 }
 
 export function useTerminalManager({
-  activeLane,
+  activeContext,
   casefileRoot,
   setTerminalOpen,
 }: UseTerminalManagerOptions): UseTerminalManagerResult {
@@ -87,22 +87,22 @@ export function useTerminalManager({
   const pendingAutoSpawnRef = useRef(false);
 
   const handleNewTerminal = useCallback(() => {
-    const cwd = activeLane?.root || casefileRoot || null;
+    const cwd = activeContext?.root || casefileRoot || null;
     const stamp = Date.now().toString(36);
-    const baseLabel = activeLane?.name || "shell";
-    const id = activeLane ? `lane:${activeLane.id}:${stamp}` : `shell:${stamp}`;
+    const baseLabel = activeContext?.name || "shell";
+    const id = activeContext ? `context:${activeContext.id}:${stamp}` : `shell:${stamp}`;
     setTerminalSessions((prev) => [
       ...prev,
       {
         id,
         label: nextLabel(prev, baseLabel),
         cwd: cwd || "",
-        laneId: activeLane?.id ?? null,
+        contextId: activeContext?.id ?? null,
       },
     ]);
     setActiveTerminalId(id);
     setTerminalOpen(true);
-  }, [activeLane, casefileRoot, setActiveTerminalId, setTerminalOpen]);
+  }, [activeContext, casefileRoot, setActiveTerminalId, setTerminalOpen]);
 
   const handleSelectTerminal = useCallback(
     (id: string) => {

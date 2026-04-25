@@ -4,7 +4,7 @@ This document defines the most important DeskAssist terms and maps the current i
 
 The main problem this document solves is vocabulary drift.
 
-Today the codebase is organized around `casefile`, `lane`, and `scope`. The README is organized around `workspace`, `context`, `artifact`, and `scoped AI`. Both are useful. The project needs a consistent way to talk about both without pretending they are already the same thing.
+Today the codebase is organized around `casefile`, `context`, and `scope`. The README is organized around `workspace`, `context`, `artifact`, and `scoped AI`. Both are useful. The project needs a consistent way to talk about both without pretending they are already the same thing.
 
 ## Vocabulary Principle
 
@@ -26,7 +26,8 @@ A workspace is the always-open DeskAssist environment where a user resumes, swit
 Current implementation reality:
 
 - the renderer workbench in [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx)
-- one open casefile plus its active lane, open tabs, right-panel state, and terminal sessions
+- a home surface in [`ui-electron/renderer/src/components/HomeView.tsx`](../../ui-electron/renderer/src/components/HomeView.tsx)
+- one open casefile plus its active context, open tabs, right-panel state, comparison sessions, recent-context state, and terminal sessions
 
 Recommendation:
 
@@ -45,9 +46,11 @@ Current definition:
 
 What it currently owns:
 
-- lane definitions
-- active lane
-- lane chat logs
+- context definitions
+- active context
+- comparison session metadata
+- context chat logs
+- comparison chat logs
 - context manifest
 
 Recommendation:
@@ -65,10 +68,11 @@ Current implementation reality:
 There is not yet one single data structure called `context` that covers the full product meaning. The current system approximates it through a combination of:
 
 - the active casefile
-- the active lane
+- the active context
 - resolved AI scope
 - open editor tabs
 - associated chat and comparison sessions
+- renderer-local recent context records
 
 Recommendation:
 
@@ -76,30 +80,30 @@ Use `context` as the main product-facing umbrella term.
 
 In V1, the practical rule should be:
 
-- a lane is the current implementation of a scoped working context
+- a context is the current implementation of a scoped working context
 - a comparison session is a multi-context view
-- the future home screen should list contexts, not internal lane records
+- the current home screen lists recent casefiles with their last active context; a fuller context model is still a target, not a complete implementation
 
-## Lane
+## Context
 
 Implementation meaning:
 
-A lane is the current durable unit of scoped work inside a casefile.
+A context is the current durable unit of scoped work inside a casefile.
 
 Current definition:
 
-- represented by `Lane` in [`src/assistant_app/casefile/models.py`](../../src/assistant_app/casefile/models.py)
-- has an id, name, kind, root, optional parent, and optional read-only attachments
-- owns a write root and related chat and note history
+- represented by `Context` in [`src/assistant_app/casefile/models.py`](../../src/assistant_app/casefile/models.py)
+- has an id, stable session id, name, kind, root, optional parent, optional attachments, and a writable flag
+- anchors a scoped chat log
 
-What a lane does well today:
+What a context does well today:
 
-- establishes a write boundary
-- supports inheritance through ancestors
-- travels with attachments
+- establishes a scope and default AI write boundary
+- supports UI organization through parents without implying inherited AI scope
+- travels with attachments that can be read-only or writable
 - anchors comparison and scoped chat
 
-What a lane does poorly today as a user-facing term:
+What a context does poorly today as a user-facing term:
 
 - it sounds implementation-specific
 - it does not naturally describe non-code or mixed-mode work
@@ -107,7 +111,7 @@ What a lane does poorly today as a user-facing term:
 
 Recommendation:
 
-Treat `lane` as the current implementation of a scoped context.
+Treat `context` as the current implementation of a scoped context.
 
 Short-term guidance:
 
@@ -129,8 +133,7 @@ Examples from the README:
 
 - files
 - directories
-- notes
-- prompts
+- working files
 - attachments
 - diffs
 - chat transcripts
@@ -139,7 +142,7 @@ Current implementation reality:
 
 Artifacts exist, but they are not yet modeled uniformly. They currently live in separate systems:
 
-- lane-root files through Electron file IO
+- context-root files through Electron file IO
 - chat logs through casefile chat persistence
 - comparison chat logs through casefile chat persistence
 
@@ -161,26 +164,20 @@ Current definition:
 - serialized through [`src/assistant_app/casefile/service.py`](../../src/assistant_app/casefile/service.py)
 - consumed by the bridge in [`src/assistant_app/electron_bridge.py`](../../src/assistant_app/electron_bridge.py)
 
-What scope currently includes (pre-M2.5):
+What scope currently includes:
 
-- one lane write root for lane chat
-- read-only overlays for attachments and ancestors under virtual prefixes (`_ancestors`, `_attachments`)
+- a flat list of `ScopedDirectory(path, label, writable: bool)` entries
+- context root and attachments as independently configurable scoped directories
 - casefile context files under `_context`
-- multi-lane overlays for comparison chat under `_lanes`
+- multi-context comparison entries under `_scope/<label>/...`
 
-Known problems with the current model:
+Implementation audit note:
 
-- `_ancestors` prefix implies a directory hierarchy the product does not need; the AI only needs to know which paths it can access, not their structural relationship
-- read/write access is fixed by structural role (lane root = writable, overlays = read-only) rather than by user intent
-- the model is hard-coded to one writable root, preventing cases like a read-only lane root with a writable attachment
-- the two-scope shapes (lane chat vs comparison chat) are separate systems rather than one unified model
+The old hierarchical virtual-prefix model has been removed from the current Python scope resolver. Structural parents are not inherited into AI scope. If a doc still describes that model as current, it is stale.
 
-M2.5 target:
+Remaining target:
 
-- scope becomes a flat labeled list of `ScopedDirectory(path, label, writable: bool)` entries
-- no structural hierarchy encoded in virtual path prefixes
-- per-directory read/write declared by the user at session creation time, not inferred from role
-- single unified model for both single-directory and multi-directory sessions
+- tighten the product language around scoped sessions so users understand the flat directory list without needing implementation terms
 
 Recommendation:
 
@@ -196,21 +193,18 @@ A comparison is a multi-directory session where related work can be inspected an
 
 Current implementation reality:
 
-- comparison chat opens a synthetic session over two or more lanes
+- comparison chat opens a synthetic session over two or more contexts
 - the session gets its own persistent log keyed by a stable session UUID
+- comparison session metadata is persisted in `.casefile/comparisons.json`
 
-Known problems with the current model:
+Implementation audit note:
 
-- hard-coded to exactly two lanes; the user may want to discuss any N contexts together while deliberately leaving others out
 - "comparison" implies a diff or winner/loser framing; the actual need is a flexible multi-scope session that sometimes compares, sometimes synthesizes
-- the two-lane chat and single-lane chat are separate code paths rather than one unified session model
+- single-context chat and comparison chat still have separate UI and bridge paths, even though they now share the same scoped-directory resolver shape
 
-M2.5 target:
+Current target:
 
-- comparison becomes the multi-directory case of the unified scoped session model
-- any number of directories can participate in a single session
-- each directory's read/write permission is declared independently
-- single-directory sessions (current "lane chat") are the common case of the same model
+- keep comparison as the user-facing capability term while continuing to reduce separate-session mechanics where that improves clarity
 
 Recommendation:
 
@@ -220,22 +214,17 @@ Keep `comparison` as a user-facing capability term for the multi-directory case,
 
 Implementation meaning:
 
-A lane attachment is a directory associated with a lane and mounted into scope under a virtual prefix.
+A context attachment is a directory associated with a context and mounted into scope under a virtual prefix.
 
 Current definition:
 
-- represented by `LaneAttachment` in [`src/assistant_app/casefile/models.py`](../../src/assistant_app/casefile/models.py)
-- resolved into read-only overlays in [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
+- represented by `ContextAttachment` in [`src/assistant_app/casefile/models.py`](../../src/assistant_app/casefile/models.py)
+- resolved into `_scope/<label>/...` scoped directories in [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
+- carries a `mode` field: `read` or `write`
 
-Known problem with the current model:
+Implementation audit note:
 
-- attachments are always read-only by construction; the user cannot declare an attachment writable
-- this prevents valid configurations like a read-only lane root with a writable attachment directory (e.g. a reference codebase alongside a notes or output directory)
-
-M2.5 target:
-
-- the read-only constraint moves from the attachment type to a per-directory permission flag
-- both the lane root and its attachments can be independently declared read-only or read-write
+Attachments are no longer always read-only. New attachments default to writable in the data model, and the UI can toggle attachment access between read-only and writable.
 
 Recommendation:
 
@@ -254,8 +243,8 @@ When talking about the product:
 When talking about the current implementation:
 
 - say `casefile` for the on-disk metadata root
-- say `lane` for the current scoped work record and write boundary
-- say `attachment` for mounted read-only sibling directories
+- say `context` for the current scoped work record and write boundary
+- say `attachment` for mounted sibling directories whose access mode may be read-only or writable
 
 ## Practical Mapping
 
@@ -264,7 +253,7 @@ Use this mental mapping when writing docs, UI copy, or code comments:
 - workspace: the whole DeskAssist environment for a user
 - casefile: the current storage container that backs one workspace area
 - context: the user-facing work unit
-- lane: the current implementation of a scoped context
+- context: the current implementation of a scoped context
 - scope: the AI-visible slice of material for a context or comparison
 - artifact: any durable thing inside or attached to a context
 - comparison: a multi-context session with per-directory AI read/write access
@@ -273,14 +262,14 @@ Use this mental mapping when writing docs, UI copy, or code comments:
 
 Today:
 
-- the code understands lanes and casefiles very well
+- the code understands contexts and casefiles very well
 - the product framing understands contexts and artifacts more clearly than the UI does
 
 Target:
 
 - keep the current storage and scope machinery where it is strong
 - move the visible product language toward workspace, context, artifact, and scope
-- allow `lane` and `casefile` to remain important implementation concepts without making them the only way users can understand the product
+- allow `context` and `casefile` to remain important implementation concepts without making them the only way users can understand the product
 
 ## Domain Model Summary
 
@@ -289,6 +278,6 @@ DeskAssist should be understood as:
 - a workspace that holds many contexts
 - each context contains or references artifacts
 - AI conversations operate over an explicit scope
-- the current implementation represents many of those contexts as lanes inside a casefile
+- the current implementation represents many of those contexts as contexts inside a casefile
 
 That is the cleanest bridge between the current code and the longer-term second-brain workspace vision.

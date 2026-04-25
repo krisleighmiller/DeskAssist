@@ -111,82 +111,82 @@ interface FileSaveResult {
   saved: boolean;
 }
 
-type LaneKind = "repo" | "doc" | "rubric" | "review" | "other";
+type ContextKind = "repo" | "doc" | "rubric" | "review" | "other";
 
 export type AttachmentMode = "read" | "write";
 
-interface LaneAttachmentDto {
+interface ContextAttachmentDto {
   name: string;
   root: string;
   mode: AttachmentMode;
 }
 
-export interface Lane {
+export interface Context {
   id: string;
   /** Stable UUID for session identity; unlike `id`, this is not a structural path key. */
   sessionId: string;
   name: string;
-  kind: LaneKind;
+  kind: ContextKind;
   root: string;
-  /** M3.5: parent lane id; null/undefined means top-level. */
+  /** M3.5: parent context id; null/undefined means top-level. */
   parentId?: string | null;
-  /** M3.5: sibling directories travelling with this lane. */
-  attachments?: LaneAttachmentDto[];
-  /** M2.5: whether the AI has write access to this lane's root directory.
-   * Defaults to true. Set to false to make this lane a read-only reference context. */
+  /** M3.5: sibling directories travelling with this context. */
+  attachments?: ContextAttachmentDto[];
+  /** M2.5: whether the AI has write access to this context's root directory.
+   * Defaults to true. Set to false to make this context a read-only reference context. */
   writable?: boolean;
 }
 
 export interface CasefileSnapshot {
   root: string;
-  lanes: Lane[];
-  activeLaneId: string | null;
+  contexts: Context[];
+  activeContextId: string | null;
 }
 
 export interface RecentContext {
   root: string;
-  activeLaneId: string | null;
-  activeLaneName: string | null;
+  activeContextId: string | null;
+  activeContextName: string | null;
   updatedAt: string;
   pinned?: boolean;
 }
 
-export interface LaneAttachmentInput {
+export interface ContextAttachmentInput {
   name: string;
   root: string;
   mode?: AttachmentMode;
 }
 
-interface RegisterLaneInput {
+interface RegisterContextInput {
   name: string;
-  kind: LaneKind;
+  kind: ContextKind;
   root: string;
   id?: string;
   parentId?: string | null;
-  attachments?: LaneAttachmentInput[];
+  attachments?: ContextAttachmentInput[];
   writable?: boolean;
 }
 
 // M4.6: every field is independently optional. Omitting a field means
 // "leave the existing value unchanged"; the bridge enforces this via
 // JSON key presence.
-export interface LaneUpdateInput {
+export interface ContextUpdateInput {
   name?: string;
-  kind?: LaneKind;
+  kind?: ContextKind;
   root?: string;
-  /** M2.5: toggle AI write access for this lane's root directory. */
+  /** M2.5: toggle AI write access for this context's root directory. */
   writable?: boolean;
 }
 
-// M4.6: `casefile:updateLane` may surface a non-blocking "another lane
+// M4.6: `casefile:updateContext` may surface a non-blocking "another context
 // already references this directory" warning alongside the new
 // snapshot. The renderer is responsible for displaying it.
-export interface UpdateLaneResult {
+export interface UpdateContextResult {
   casefile: CasefileSnapshot;
-  rootConflict: { conflictingLaneId: string } | null;
+  rootConflict: { conflictingContextId: string } | null;
 }
 
-interface ComparisonLaneSummary {
+interface ComparisonContextSummary {
   id: string;
   name: string;
   root: string;
@@ -196,16 +196,16 @@ export interface ComparisonSession {
   id: string;
   /** Stable UUID for this canonical comparison chat session. */
   sessionId: string;
-  laneIds: string[];
-  lanes: ComparisonLaneSummary[];
-  attachments: LaneAttachmentDto[];
+  contextIds: string[];
+  contexts: ComparisonContextSummary[];
+  attachments: ContextAttachmentDto[];
   messages: ChatMessage[];
   pendingApprovals?: ToolCall[];
   skippedCorruptLines?: number;
 }
 
 interface ComparisonChatSendPayload {
-  laneIds: string[];
+  contextIds: string[];
   provider: Provider;
   model?: string | null;
   messages: ChatMessage[];
@@ -218,7 +218,7 @@ interface ComparisonChatSendPayload {
 
 /** SECURITY (H1): payload for `approveAndResumeComparisonChat`. */
 interface ApproveAndResumeComparisonPayload {
-  laneIds: string[];
+  contextIds: string[];
   provider: Provider;
   model?: string | null;
   messages: ChatMessage[];
@@ -235,7 +235,7 @@ interface ComparisonChatSendResponse {
 }
 
 /** Payload for `chat:saveOutput`. The destination is an *absolute* directory
- * the user picked (typically a lane attachment, optionally any other
+ * the user picked (typically a context attachment, optionally any other
  * directory via the system folder dialog). The bridge writes
  * `<destinationDir>/<filename>` and refuses to overwrite. */
 interface SaveChatOutputPayload {
@@ -254,20 +254,20 @@ interface ListChatResult {
 }
 
 export interface AssistantApi {
-  // Casefile + lanes
+  // Casefile + contexts
   chooseCasefile: () => Promise<CasefileSnapshot | null>;
   openCasefile: (root: string) => Promise<CasefileSnapshot>;
   closeCasefile: () => Promise<true>;
-  chooseLaneRoot: () => Promise<string | null>;
-  registerLane: (lane: RegisterLaneInput) => Promise<CasefileSnapshot>;
-  switchLane: (laneId: string) => Promise<CasefileSnapshot>;
-  listChat: (laneId: string) => Promise<ListChatResult>;
+  chooseContextRoot: () => Promise<string | null>;
+  registerContext: (context: RegisterContextInput) => Promise<CasefileSnapshot>;
+  switchContext: (contextId: string) => Promise<CasefileSnapshot>;
+  listChat: (contextId: string) => Promise<ListChatResult>;
 
-  // Lane-scoped filesystem (active lane).
+  // Casefile-scoped filesystem.
   listWorkspace: (maxDepth?: number) => Promise<FileTreeNode>;
   readFile: (path: string, maxChars?: number) => Promise<FileReadResult>;
   saveFile: (path: string, content: string) => Promise<FileSaveResult>;
-  /** Rename a single file or directory inside the active lane.
+  /** Rename a single file or directory inside the active casefile.
    * `newName` is a basename only (no path separators); the bridge
    * refuses to overwrite an existing entry. */
   renameFile: (
@@ -275,27 +275,27 @@ export interface AssistantApi {
     newName: string
   ) => Promise<{ oldPath: string; newPath: string; renamed: boolean }>;
   /** Create a new (empty) file at `<parentDir>/<name>` inside the
-   * active lane.  Refuses to clobber an existing entry. */
+   * active casefile.  Refuses to clobber an existing entry. */
   createFile: (
     parentDir: string,
     name: string
   ) => Promise<{ path: string; created: boolean }>;
   /** Create a new directory at `<parentDir>/<name>` inside the active
-   * lane.  Refuses to clobber an existing entry. */
+   * casefile.  Refuses to clobber an existing entry. */
   createFolder: (
     parentDir: string,
     name: string
   ) => Promise<{ path: string; created: boolean }>;
-  /** Move (or rename) a file or directory inside the active lane.
-   * Both paths must resolve inside the lane root; the bridge refuses
+  /** Move (or rename) a file or directory inside the active casefile.
+   * Both paths must resolve inside the casefile root; the bridge refuses
    * to overwrite an existing destination. */
   moveEntry: (
     sourcePath: string,
     destinationPath: string
   ) => Promise<{ sourcePath: string; destinationPath: string; moved: boolean }>;
-  /** Move a file or directory inside the active lane to the OS trash
-   * via Electron's shell.trashItem (recoverable). The lane root itself
-   * cannot be trashed; lane removal is a separate flow. The bridge
+  /** Move a file or directory inside the active casefile to the OS trash
+   * via Electron's shell.trashItem (recoverable). The context root itself
+   * cannot be trashed; context removal is a separate flow. The bridge
    * snapshots the target into a session-private staging directory
    * before the trash so `undoLastTrash` can restore it. */
   trashEntry: (
@@ -320,17 +320,17 @@ export interface AssistantApi {
   saveChatOutput: (payload: SaveChatOutputPayload) => Promise<SaveChatOutputResult>;
 
   // M3.5: context attachments.
-  updateLaneAttachments: (
-    laneId: string,
-    attachments: LaneAttachmentInput[]
+  updateContextAttachments: (
+    contextId: string,
+    attachments: ContextAttachmentInput[]
   ) => Promise<CasefileSnapshot>;
 
-  // M4.6: lane CRUD (edit/remove) + casefile reset (hard/soft).
-  updateLane: (
-    laneId: string,
-    update: LaneUpdateInput
-  ) => Promise<UpdateLaneResult>;
-  removeLane: (laneId: string) => Promise<CasefileSnapshot>;
+  // M4.6: context CRUD (edit/remove) + casefile reset (hard/soft).
+  updateContext: (
+    contextId: string,
+    update: ContextUpdateInput
+  ) => Promise<UpdateContextResult>;
+  removeContext: (contextId: string) => Promise<CasefileSnapshot>;
   hardResetCasefile: () => Promise<CasefileSnapshot>;
   softResetCasefile: () => Promise<CasefileSnapshot>;
 
@@ -339,18 +339,18 @@ export interface AssistantApi {
   /**
    * SECURITY (H1): explicit approval IPC for write tools. Only succeeds
    * when main has a fresh (≤5 min) bridge-issued approval record for
-   * the active lane. Throws otherwise — the renderer should treat that
+   * the active context. Throws otherwise — the renderer should treat that
    * as "tell the user the model didn't ask for any writes recently."
    */
   approveAndResumeChat: (
     payload: ApproveAndResumePayload
   ) => Promise<ChatSendResponse>;
 
-  // M3.5c: comparison-chat sessions (multi-lane scoped chat).
-  openComparison: (laneIds: string[]) => Promise<ComparisonSession>;
+  // M3.5c: comparison-chat sessions (multi-context scoped chat).
+  openComparison: (contextIds: string[]) => Promise<ComparisonSession>;
   updateComparisonAttachments: (
-    laneIds: string[],
-    attachments: LaneAttachmentInput[]
+    contextIds: string[],
+    attachments: ContextAttachmentInput[]
   ) => Promise<Omit<ComparisonSession, "messages">>;
   sendComparisonChat: (
     payload: ComparisonChatSendPayload
@@ -382,18 +382,18 @@ export interface AssistantApi {
   onToggleLeftPanel: (handler: () => void) => () => void;
   onToggleRightPanel: (handler: () => void) => () => void;
 
-  /** Menu-bar → renderer: Lane management triggers. Each returns an
+  /** Menu-bar → renderer: Context management triggers. Each returns an
    * unsubscribe function for use in useEffect teardowns. */
   onOpenCasefile: (handler: () => void) => () => void;
   onCloseCasefile: (handler: () => void) => () => void;
   onNewFile: (handler: () => void) => () => void;
   onNewFolder: (handler: () => void) => () => void;
-  onLaneCreate: (handler: () => void) => () => void;
-  onLaneAttach: (handler: () => void) => () => void;
-  onLaneRename: (handler: () => void) => () => void;
-  onLaneToggleAccess: (handler: () => void) => () => void;
-  onLaneRemove: (handler: () => void) => () => void;
-  onLaneCompare: (handler: () => void) => () => void;
+  onContextCreate: (handler: () => void) => () => void;
+  onContextAttach: (handler: () => void) => () => void;
+  onContextRename: (handler: () => void) => () => void;
+  onContextToggleAccess: (handler: () => void) => () => void;
+  onContextRemove: (handler: () => void) => () => void;
+  onContextCompare: (handler: () => void) => () => void;
   onCasefileSoftReset: (handler: () => void) => () => void;
   onCasefileHardReset: (handler: () => void) => () => void;
 
@@ -411,7 +411,7 @@ export interface AssistantApi {
   /** Integrated terminal API. Each session corresponds to one PTY-backed
    * shell process owned by the main process. The renderer addresses
    * sessions by an opaque id of its choosing (typically derived from a
-   * lane id) and consumes streaming output via `onTerminalData`. */
+   * context id) and consumes streaming output via `onTerminalData`. */
   terminalAvailable: () => Promise<{ available: boolean; error: string | null }>;
   terminalSpawn: (opts: TerminalSpawnOptions) => Promise<TerminalSpawnResult>;
   terminalWrite: (id: string, data: string) => Promise<boolean>;
@@ -430,7 +430,7 @@ interface TerminalSpawnOptions {
   cwd?: string | null;
   cols?: number;
   rows?: number;
-  laneId?: string | null;
+  contextId?: string | null;
 }
 
 interface TerminalSpawnResult {
@@ -444,7 +444,7 @@ interface TerminalSessionDescriptor {
   id: string;
   cwd: string;
   shell: string;
-  laneId: string | null;
+  contextId: string | null;
   pid: number;
 }
 
