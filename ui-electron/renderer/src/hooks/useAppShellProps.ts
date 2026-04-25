@@ -50,11 +50,14 @@ interface ShellViewModelActions {
   onChooseCasefile: () => void;
   onCloseCasefile: () => void;
   onOpenRecentContext: (root: string, activeLaneId: string | null) => void | Promise<void>;
+  onSetRecentPinned: (root: string, pinned: boolean) => void;
   onSwitchLane: (laneId: string) => void | Promise<void>;
+  onQuickCapture: () => void | Promise<void>;
   onStatusChange: (status: ApiKeyStatus) => void;
   onModelsChange: (models: ProviderModels) => void;
   onOpenFile: (path: string) => void | Promise<void>;
-  onRename?: (sourcePath: string, nextPath: string) => Promise<void>;
+  onRename?: (sourcePath: string, newName: string) => Promise<void>;
+  onRequestFileRename?: (path: string) => void;
   onRefreshTree?: () => void;
   onDismissTreeError: () => void;
   onCreateFile?: (parentDir: string, name: string) => Promise<void>;
@@ -141,6 +144,7 @@ export function useAppShellProps({
       recentContexts: state.recentContexts,
       onOpenRecentContext: actions.onOpenRecentContext,
       onSwitchLane: actions.onSwitchLane,
+      onQuickCapture: state.casefile ? actions.onQuickCapture : undefined,
       onUpdateLaneName: state.casefile ? actions.onUpdateLaneName : undefined,
       onRemoveLane: state.casefile ? actions.onRemoveLane : undefined,
       onSetLaneWritable: state.casefile ? actions.onSetLaneWritable : undefined,
@@ -148,6 +152,12 @@ export function useAppShellProps({
       onHardResetCasefile: state.casefile ? actions.onHardResetCasefile : undefined,
     },
     workbench: {
+      home: {
+        recentContexts: state.recentContexts,
+        onChooseCasefile: actions.onChooseCasefile,
+        onOpenRecentContext: actions.onOpenRecentContext,
+        onSetRecentPinned: actions.onSetRecentPinned,
+      },
       workspaceTitle: state.activeLane ? state.activeLane.name : "Workspace",
       fileTree: {
         root: state.tree,
@@ -217,6 +227,7 @@ export function useAppShellProps({
         onCloseTab: actions.onCloseTab,
         onEdit: actions.onEditTab,
         onSave: actions.onSaveTab,
+        onRequestRename: state.casefile ? actions.onRequestFileRename : undefined,
       },
       rightPanel: {
         chat: {

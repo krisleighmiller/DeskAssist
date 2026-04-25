@@ -19,5 +19,5 @@
     "useDefineForClassFields": true,
     "types": ["vite/client"]
   },
-  "include": ["renderer/src", "vite.config.ts"]
+  "include": ["renderer/src", "vite.config.mts"]
 }

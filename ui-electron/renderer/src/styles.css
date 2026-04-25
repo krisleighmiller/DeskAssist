@@ -103,6 +103,146 @@ a {
   overflow: hidden;
 }
 
+.home-pane {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  background:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 28rem),
+    #0b1220;
+}
+
+.home-view {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 48px 32px 72px;
+}
+
+.home-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+  padding: 28px;
+  border: 1px solid #1f2937;
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.88);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.24);
+}
+
+.home-kicker {
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.home-hero h1,
+.home-section h2 {
+  margin: 0;
+  color: #f9fafb;
+}
+
+.home-hero h1 {
+  margin-top: 8px;
+  font-size: 30px;
+  letter-spacing: -0.03em;
+}
+
+.home-hero p {
+  max-width: 560px;
+  margin: 10px 0 0;
+  color: #9ca3af;
+  line-height: 1.6;
+}
+
+.home-hero-actions,
+.home-context-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.home-hero-actions {
+  justify-content: flex-end;
+}
+
+.home-section {
+  margin-top: 26px;
+}
+
+.home-section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+  color: #6b7280;
+}
+
+.home-section h2 {
+  font-size: 15px;
+}
+
+.home-context-list {
+  display: grid;
+  gap: 10px;
+}
+
+.home-context-card,
+.home-empty-card {
+  border: 1px solid #1f2937;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.72);
+}
+
+.home-context-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px;
+}
+
+.home-context-main {
+  min-width: 0;
+}
+
+.home-context-title {
+  color: #e5e7eb;
+  font-weight: 700;
+}
+
+.home-context-meta,
+.home-context-path,
+.home-empty-card {
+  color: #9ca3af;
+}
+
+.home-context-meta {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.home-context-path {
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.home-secondary-action {
+  background: transparent;
+}
+
+.home-empty-card {
+  padding: 16px;
+  line-height: 1.5;
+}
+
 /* Integrated terminal pane (M4.8). Height is owned by React state and
    pushed in via inline style; the resize handle above it is rendered by
    <HorizontalSplitter>. */
@@ -542,6 +682,18 @@ a {
   border-bottom: 2px solid #3b82f6;
 }
 
+.tab-label-rename,
+.editor-status-file {
+  color: inherit;
+  cursor: context-menu;
+}
+
+.tab.active:hover .tab-label-rename,
+.editor-status-file:hover {
+  color: #f9fafb;
+  text-decoration: underline;
+}
+
 .tab .close {
   color: #6b7280;
   font-size: 14px;
@@ -571,6 +723,10 @@ a {
 
 .editor-status .truncated {
   color: #fbbf24;
+}
+
+.editor-status-file {
+  font-size: 12px;
 }
 
 .editor-host {

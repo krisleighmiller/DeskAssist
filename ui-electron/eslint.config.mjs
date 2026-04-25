@@ -5,7 +5,7 @@ import tseslint from "typescript-eslint";
 
 const tsRecommended = tseslint.configs.recommended.map((config) => ({
   ...config,
-  files: ["**/*.{ts,tsx}"],
+  files: ["**/*.{ts,tsx,mts}"],
 }));
 
 export default [
@@ -31,7 +31,7 @@ export default [
     },
   },
   {
-    files: ["vite.config.ts"],
+    files: ["vite.config.mts"],
     languageOptions: {
       globals: {
         ...globals.node,

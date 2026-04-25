@@ -13,16 +13,19 @@ import {
 } from "../hooks/useWorkbenchLayout";
 import { EditorPane } from "./EditorPane";
 import { FileTree } from "./FileTree";
+import { HomeView } from "./HomeView";
 import { RightPanel } from "./RightPanel";
 import { HorizontalSplitter, Splitter } from "./Splitter";
 import { TerminalsPanel } from "./TerminalsPanel";
 
 type FileTreeProps = ComponentProps<typeof FileTree>;
+type HomeViewProps = ComponentProps<typeof HomeView>;
 type EditorPaneProps = ComponentProps<typeof EditorPane>;
 type RightPanelProps = Omit<ComponentProps<typeof RightPanel>, "onCollapse">;
 type TerminalsPanelProps = ComponentProps<typeof TerminalsPanel>;
 
 interface WorkbenchShellProps {
+  home: HomeViewProps;
   workspaceTitle: string;
   leftPaneWidth: number;
   leftPaneCollapsed: boolean;
@@ -44,6 +47,7 @@ interface WorkbenchShellProps {
 }
 
 export function WorkbenchShell({
+  home,
   workspaceTitle,
   leftPaneWidth,
   leftPaneCollapsed,
@@ -66,6 +70,12 @@ export function WorkbenchShell({
   return (
     <div className="workbench-column">
       <div className="workbench">
+        {!fileTree.hasWorkspace ? (
+          <main className="home-pane">
+            <HomeView {...home} />
+          </main>
+        ) : (
+          <>
         {leftPaneCollapsed ? (
           <button
             type="button"
@@ -133,6 +143,8 @@ export function WorkbenchShell({
             <section className="pane" style={{ width: rightPaneWidth }}>
               <RightPanel {...rightPanel} onCollapse={onToggleRightPane} />
             </section>
+          </>
+        )}
           </>
         )}
       </div>

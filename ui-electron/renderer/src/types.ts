@@ -117,6 +117,7 @@ export interface RecentContext {
   activeLaneId: string | null;
   activeLaneName: string | null;
   updatedAt: string;
+  pinned?: boolean;
 }
 
 export interface LaneAttachmentInput {

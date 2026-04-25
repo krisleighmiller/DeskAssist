@@ -27,6 +27,7 @@ interface EditorPaneProps {
   onCloseTab: (key: string) => void;
   onEdit: (key: string, content: string) => void;
   onSave: (key: string) => void;
+  onRequestRename?: (path: string) => void;
 }
 
 function basename(p: string): string {
@@ -48,9 +49,12 @@ export function EditorPane({
   onCloseTab,
   onEdit,
   onSave,
+  onRequestRename,
 }: EditorPaneProps): JSX.Element {
   const active = tabs.find((t) => t.key === activeKey) ?? null;
   const dirty = active ? isDirty(active) : false;
+
+  const requestRename = (tab: OpenTab) => onRequestRename?.(tab.path);
 
   // Keyboard shortcut: Ctrl/Cmd+S saves the active file tab.
   useEffect(() => {
@@ -81,9 +85,17 @@ export function EditorPane({
                 key={tab.key}
                 className={`tab${isActive ? " active" : ""}`}
                 onClick={() => onSelectTab(tab.key)}
-                title={tab.path}
+                onContextMenu={(event) => {
+                  if (!onRequestRename) return;
+                  event.preventDefault();
+                  onSelectTab(tab.key);
+                  requestRename(tab);
+                }}
+                title={onRequestRename ? "Right-click to rename file" : tab.path}
               >
-                <span>{tabLabel(tab)}</span>
+                <span className={onRequestRename ? "tab-label-rename" : undefined}>
+                  {tabLabel(tab)}
+                </span>
                 {isDirty(tab) && <span className="dirty-dot">●</span>}
                 <span
                   className="close"
@@ -123,7 +135,21 @@ export function EditorPane({
       <div className="editor-status">
         {active ? (
           <>
-            <span title={active.path}>{basename(active.path)}</span>
+            {onRequestRename ? (
+              <button
+                type="button"
+                className="editor-status-file"
+                title="Right-click to rename file"
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  requestRename(active);
+                }}
+              >
+                {basename(active.path)}
+              </button>
+            ) : (
+              <span title={active.path}>{basename(active.path)}</span>
+            )}
             <span>{languageFromPath(active.path)}</span>
             {active.truncated && <span className="truncated">truncated</span>}
             <span style={{ marginLeft: "auto" }}>

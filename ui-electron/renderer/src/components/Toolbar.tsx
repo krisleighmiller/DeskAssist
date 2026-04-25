@@ -4,7 +4,7 @@ import {
   type Lane,
   type RecentContext,
 } from "../types";
-import { ContextMenu } from "./ContextMenu";
+import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 
 interface ToolbarProps {
   casefile: CasefileSnapshot | null;
@@ -18,6 +18,7 @@ interface ToolbarProps {
   onSetLaneWritable?: (laneId: string, writable: boolean) => Promise<void>;
   onHardResetCasefile?: () => Promise<void>;
   onSoftResetCasefile?: () => Promise<void>;
+  onQuickCapture?: () => void | Promise<void>;
 }
 
 function ancestorChain(casefile: CasefileSnapshot, laneId: string | null): Lane[] {
@@ -50,6 +51,7 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
     onSetLaneWritable,
     onHardResetCasefile,
     onSoftResetCasefile,
+    onQuickCapture,
   } = props;
 
   const chain = casefile ? ancestorChain(casefile, casefile.activeLaneId) : [];
@@ -273,6 +275,18 @@ export function Toolbar(props: ToolbarProps): JSX.Element {
             />
           )}
         </div>
+      )}
+      {casefile && onQuickCapture && (
+        <button
+          type="button"
+          className="toolbar-lane-btn"
+          onClick={() => {
+            void Promise.resolve(onQuickCapture());
+          }}
+          title="Open quick-capture.md in this workspace"
+        >
+          Quick Capture
+        </button>
       )}
     </div>
   );

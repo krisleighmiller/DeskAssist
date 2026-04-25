@@ -19,6 +19,7 @@ type RightPanelBaseProps = Omit<
 export interface AppShellProps {
   toolbar: ToolbarBaseProps;
   workbench: {
+    home: ComponentProps<typeof WorkbenchShell>["home"];
     workspaceTitle: string;
     fileTree: ComponentProps<typeof WorkbenchShell>["fileTree"];
     editor: ComponentProps<typeof WorkbenchShell>["editor"];
@@ -96,6 +97,7 @@ export function AppShell({
         {...toolbar}
       />
       <WorkbenchShell
+        home={workbench.home}
         workspaceTitle={workbench.workspaceTitle}
         leftPaneWidth={leftPaneWidth}
         leftPaneCollapsed={leftPaneCollapsed}

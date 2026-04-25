@@ -7,6 +7,11 @@ import type {
   RecentContext,
 } from "./types";
 import { api } from "./lib/api";
+import {
+  loadRecentContexts,
+  setRecentContextPinned,
+  upsertRecentContext,
+} from "./lib/recentContexts";
 import { AppShell } from "./components/AppShell";
 import { InputDialog } from "./components/InputDialog";
 import {
@@ -23,60 +28,22 @@ import { useContextAndOverlays } from "./hooks/useContextAndOverlays";
 import { useLaneWorkspace } from "./hooks/useLaneWorkspace";
 import { useProviderSettings } from "./hooks/useProviderSettings";
 
-const RECENT_CONTEXTS_STORAGE_KEY = "deskassist:recentContexts";
-const MAX_RECENT_CONTEXTS = 8;
-
-function loadRecentContexts(): RecentContext[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(RECENT_CONTEXTS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is RecentContext => (
-        item &&
-        typeof item === "object" &&
-        typeof item.root === "string" &&
-        (typeof item.activeLaneId === "string" || item.activeLaneId === null) &&
-        (typeof item.activeLaneName === "string" || item.activeLaneName === null) &&
-        typeof item.updatedAt === "string"
-      ))
-      .slice(0, MAX_RECENT_CONTEXTS);
-  } catch {
-    return [];
-  }
-}
-
-function persistRecentContexts(contexts: RecentContext[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(RECENT_CONTEXTS_STORAGE_KEY, JSON.stringify(contexts));
-  } catch {
-    // localStorage may be unavailable in restricted renderer contexts.
-  }
-}
-
-function upsertRecentContext(prev: RecentContext[], snapshot: CasefileSnapshot): RecentContext[] {
-  const activeLane = snapshot.activeLaneId
-    ? snapshot.lanes.find((lane) => lane.id === snapshot.activeLaneId) ?? null
-    : null;
-  const nextEntry: RecentContext = {
-    root: snapshot.root,
-    activeLaneId: activeLane?.id ?? snapshot.activeLaneId ?? null,
-    activeLaneName: activeLane?.name ?? null,
-    updatedAt: new Date().toISOString(),
-  };
-  const next = [
-    nextEntry,
-    ...prev.filter((entry) => entry.root !== snapshot.root),
-  ].slice(0, MAX_RECENT_CONTEXTS);
-  persistRecentContexts(next);
-  return next;
-}
-
 function isPlainEntryName(name: string): boolean {
   return !name.includes("/") && !name.includes("\\");
+}
+
+function basenameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+function renameSelection(name: string): { start: number; end: number } {
+  const dot = name.lastIndexOf(".");
+  return { start: 0, end: dot > 0 ? dot : name.length };
+}
+
+function joinChildPath(root: string, child: string): string {
+  const separator = root.includes("\\") ? "\\" : "/";
+  return `${root.replace(/[\\/]+$/, "")}${separator}${child}`;
 }
 
 export function App(): JSX.Element {
@@ -101,6 +68,7 @@ export function App(): JSX.Element {
     message?: string;
     defaultValue: string;
     confirmLabel?: string;
+    selection?: { start: number; end: number };
     resolve: (value: string | null) => void;
   } | null>(null);
 
@@ -112,6 +80,7 @@ export function App(): JSX.Element {
     message?: string;
     defaultValue?: string;
     confirmLabel?: string;
+    selection?: { start: number; end: number };
   }) => Promise<string | null>>();
   promptGlobalRef.current = (opts) =>
     new Promise<string | null>((resolve) => {
@@ -120,12 +89,19 @@ export function App(): JSX.Element {
         message: opts.message,
         defaultValue: opts.defaultValue ?? "",
         confirmLabel: opts.confirmLabel,
+        selection: opts.selection,
         resolve,
       });
     });
 
   const promptGlobal = useCallback(
-    (opts: { title: string; message?: string; defaultValue?: string; confirmLabel?: string }) =>
+    (opts: {
+      title: string;
+      message?: string;
+      defaultValue?: string;
+      confirmLabel?: string;
+      selection?: { start: number; end: number };
+    }) =>
       promptGlobalRef.current!(opts),
     []
   );
@@ -350,9 +326,59 @@ export function App(): JSX.Element {
     setRecentContexts((prev) => upsertRecentContext(prev, casefile));
   }, [casefile]);
 
+  const handleSetRecentPinned = useCallback((root: string, pinned: boolean) => {
+    setRecentContexts((prev) => setRecentContextPinned(prev, root, pinned));
+  }, []);
+
   const handleChooseLaneRoot = useCallback(async () => {
     return api().chooseLaneRoot();
   }, []);
+
+  const handleQuickCapture = useCallback(async () => {
+    if (!casefile) return;
+    const filename = "quick-capture.md";
+    const target = joinChildPath(casefile.root, filename);
+    try {
+      await api().readFile(target);
+      await handleOpenFile(target);
+      return;
+    } catch {
+      // Missing file is the normal first-use path; create it below.
+    }
+    try {
+      const result = await api().createFile(casefile.root, filename);
+      await refreshTree();
+      await handleOpenFile(result.path);
+    } catch (error) {
+      setTreeError(errorMessage(error));
+    }
+  }, [casefile, handleOpenFile, refreshTree]);
+
+  const handleRequestFileRename = useCallback(
+    async (path: string) => {
+      const currentName = basenameFromPath(path);
+      const proposed = await promptGlobal({
+        title: "Rename file",
+        message: "Enter the new name (no path separators).",
+        defaultValue: currentName,
+        confirmLabel: "Rename",
+        selection: renameSelection(currentName),
+      });
+      if (proposed == null) return;
+      const trimmed = proposed.trim();
+      if (!trimmed || trimmed === currentName) return;
+      if (!isPlainEntryName(trimmed)) {
+        window.alert("Name must not contain path separators ('/' or '\\').");
+        return;
+      }
+      try {
+        await handleRenameFile(path, trimmed);
+      } catch {
+        // handleRenameFile surfaces the error in the workspace banner.
+      }
+    },
+    [handleRenameFile, promptGlobal]
+  );
 
   // ----- Browser-driven context actions -----
 
@@ -672,7 +698,7 @@ export function App(): JSX.Element {
         "Soft reset clears context registrations and chat history metadata. Files on disk are preserved."
       );
       if (!ok) return;
-      void handleSoftResetCasefile(false);
+      void handleSoftResetCasefile();
     });
     return unsub;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -875,11 +901,14 @@ export function App(): JSX.Element {
       onChooseCasefile: handleChooseCasefile,
       onCloseCasefile: handleCloseCasefile,
       onOpenRecentContext: handleOpenRecentContext,
+      onSetRecentPinned: handleSetRecentPinned,
       onSwitchLane: handleSwitchLane,
+      onQuickCapture: handleQuickCapture,
       onStatusChange: setKeyStatus,
       onModelsChange: setProviderModels,
       onOpenFile: handleOpenFile,
       onRename: handleRenameFile,
+      onRequestFileRename: handleRequestFileRename,
       onRefreshTree: refreshTreeAction,
       onDismissTreeError: () => setTreeError(null),
       onCreateFile: handleCreateFile,
@@ -927,6 +956,7 @@ export function App(): JSX.Element {
           message={globalDialog.message}
           defaultValue={globalDialog.defaultValue}
           confirmLabel={globalDialog.confirmLabel}
+          selection={globalDialog.selection}
           onSubmit={(value) => {
             const resolve = globalDialog.resolve;
             setGlobalDialog(null);
