@@ -3,8 +3,10 @@ const path = require("path");
 const fs = require("fs/promises");
 const fsSync = require("fs");
 const os = require("os");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { TextDecoder } = require("util");
+const { resolveAllowedTerminalCwd: resolveTerminalCwdPolicy } = require("./terminalPolicy");
 
 // node-pty is a native module compiled against Electron's ABI by the
 // `electron-rebuild` postinstall step. We require it lazily so that a
@@ -31,6 +33,8 @@ let activeCasefileRoot = null;
 let activeLaneId = null;
 let activeLaneRoot = null;
 let registeredLaneRoots = [];
+const approvalSecret = crypto.randomBytes(32).toString("hex");
+const pendingApprovalTokens = new Map();
 
 // Filesystem watcher for the active casefile + extra overlay roots.
 // We notify the renderer any time something inside one of the watched
@@ -982,6 +986,7 @@ function adoptCasefileSnapshot(snapshot) {
   // file in a workspace they're no longer in.
   if (activeCasefileRoot && activeCasefileRoot !== snapshot.root) {
     clearTrashUndoStack();
+    pendingApprovalTokens.clear();
   }
   activeCasefileRoot = snapshot.root;
   activeLaneId = snapshot.activeLaneId || null;
@@ -1005,6 +1010,7 @@ function closeActiveCasefile() {
   activeLaneRoot = null;
   registeredLaneRoots = [];
   extraWatchRoots = [];
+  pendingApprovalTokens.clear();
   clearTrashUndoStack();
   reconcileWatchers();
 }
@@ -1133,6 +1139,23 @@ function requireCasefile() {
     throw new Error("No workspace is open");
   }
   return activeCasefileRoot;
+}
+
+function laneApprovalKey(casefileRoot, laneId) {
+  return `lane:${casefileRoot}:${laneId}`;
+}
+
+function comparisonApprovalKey(casefileRoot, laneIds) {
+  return `comparison:${casefileRoot}:${laneIds.slice().sort().join("\0")}`;
+}
+
+function updatePendingApprovalToken(key, response) {
+  if (response && typeof response.pendingApprovalToken === "string") {
+    pendingApprovalTokens.set(key, response.pendingApprovalToken);
+  } else {
+    pendingApprovalTokens.delete(key);
+  }
+  return response;
 }
 
 ipcMain.handle("chat:saveOutput", async (_, args = {}) => {
@@ -1737,6 +1760,10 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
   // the backend default", which we send as null so the Python side picks
   // its own default.
   const savedModel = providerModelsCache[provider] || null;
+  const approvalKey = laneApprovalKey(activeCasefileRoot, activeLaneId);
+  if (!payload.resumePendingToolCalls) {
+    pendingApprovalTokens.delete(approvalKey);
+  }
   const bridgePayload = {
     command: "chat:send",
     casefileRoot: activeCasefileRoot,
@@ -1747,11 +1774,14 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
     userMessage: payload.userMessage || "",
     allowWriteTools: Boolean(payload.allowWriteTools),
     resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
+    approvalSecret,
+    pendingApprovalToken: pendingApprovalTokens.get(approvalKey) || null,
   };
-  return runPythonBridge(bridgePayload, {
+  const response = await runPythonBridge(bridgePayload, {
     attachApiKeys: true,
     timeoutMs: BRIDGE_CHAT_TIMEOUT_MS,
   });
+  return updatePendingApprovalToken(approvalKey, response);
 });
 
 // ----- M3.5c: comparison-chat sessions -----
@@ -1798,7 +1828,11 @@ ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
   const laneIds = normalizeLaneIds(payload.laneIds);
   const provider = payload.provider || "openai";
   const savedModel = providerModelsCache[provider] || null;
-  return runPythonBridge(
+  const approvalKey = comparisonApprovalKey(casefileRoot, laneIds);
+  if (!payload.resumePendingToolCalls) {
+    pendingApprovalTokens.delete(approvalKey);
+  }
+  const response = await runPythonBridge(
     {
       command: "casefile:sendComparisonChat",
       casefileRoot,
@@ -1809,9 +1843,12 @@ ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
       userMessage: payload.userMessage || "",
       allowWriteTools: Boolean(payload.allowWriteTools),
       resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
+      approvalSecret,
+      pendingApprovalToken: pendingApprovalTokens.get(approvalKey) || null,
     },
     { attachApiKeys: true, timeoutMs: BRIDGE_CHAT_TIMEOUT_MS }
   );
+  return updatePendingApprovalToken(approvalKey, response);
 });
 
 ipcMain.handle("keys:getStatus", async () => {
@@ -1934,34 +1971,15 @@ function killAllPtySessions() {
   }
 }
 
-function isPathWithinRoot(child, root) {
-  return child === root || child.startsWith(`${root}${path.sep}`);
-}
-
-function allowedTerminalRoots() {
-  const roots = new Set();
-  for (const root of [activeCasefileRoot, activeLaneRoot, ...registeredLaneRoots]) {
-    const real = root ? realpathIfDirectory(root) : null;
-    if (real) roots.add(real);
-  }
-  return Array.from(roots);
-}
-
 function resolveAllowedTerminalCwd(requestedCwd) {
-  const fallback =
-    realpathIfDirectory(activeLaneRoot) ||
-    realpathIfDirectory(activeCasefileRoot) ||
-    os.homedir();
-  if (!activeCasefileRoot) {
-    return realpathIfDirectory(requestedCwd) || fallback;
-  }
-  const requested = realpathIfDirectory(requestedCwd);
-  if (!requested) return fallback;
-  const allowedRoots = allowedTerminalRoots();
-  if (allowedRoots.some((root) => isPathWithinRoot(requested, root))) {
-    return requested;
-  }
-  return fallback;
+  return resolveTerminalCwdPolicy({
+    requestedCwd,
+    activeCasefileRoot,
+    activeLaneRoot,
+    registeredLaneRoots,
+    realpathIfDirectory,
+    homeDir: os.homedir(),
+  });
 }
 
 ipcMain.handle("terminal:spawn", async (_event, args = {}) => {

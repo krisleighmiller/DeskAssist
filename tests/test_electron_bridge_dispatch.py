@@ -290,6 +290,125 @@ def test_chat_send_persists_history_delta_to_lane_log(
     assert persisted[1]["content"] == "echo"
 
 
+def test_chat_send_requires_valid_approval_token_for_write_resume(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class StubChatService:
+        def __init__(self, **_kw: Any) -> None:
+            self._history: list[Any] = []
+
+        def replace_history(self, messages: list[Any]) -> None:
+            self._history = list(messages)
+
+        @property
+        def history(self) -> list[Any]:
+            return list(self._history)
+
+        def resume_pending_tool_calls(self, **_kw: Any) -> Any:
+            raise AssertionError("resume should not execute without a valid token")
+
+        def pending_write_tool_calls(self, msg: Any) -> list[dict[str, object]]:
+            calls = getattr(msg, "tool_calls", None) or []
+            return [call for call in calls if call.get("name") == "save_file"]
+
+    monkeypatch.setattr(bridge, "ChatService", StubChatService)
+
+    with pytest.raises(PermissionError, match="pendingApprovalToken"):
+        bridge.dispatch(
+            {
+                "command": "chat:send",
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "name": "save_file",
+                                "input": {"path": "x.md", "content": "x"},
+                            }
+                        ],
+                    }
+                ],
+                "allowWriteTools": True,
+                "resumePendingToolCalls": True,
+                "approvalSecret": "test-secret",
+            }
+        )
+
+
+def test_chat_send_mints_and_accepts_write_approval_token(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    state: dict[str, bool] = {"resumed": False}
+
+    class StubChatService:
+        def __init__(self, **_kw: Any) -> None:
+            self._history: list[Any] = []
+
+        def replace_history(self, messages: list[Any]) -> None:
+            self._history = list(messages)
+
+        @property
+        def history(self) -> list[Any]:
+            return list(self._history)
+
+        def send_user_message(self, text: str, **_kw: Any) -> Any:
+            from assistant_app.models import ChatMessage
+
+            user = ChatMessage(role="user", content=text)
+            assistant = ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "name": "save_file",
+                        "input": {"path": "x.md", "content": "x"},
+                    }
+                ],
+            )
+            self._history.extend([user, assistant])
+            return assistant
+
+        def resume_pending_tool_calls(self, **_kw: Any) -> Any:
+            from assistant_app.models import ChatMessage
+
+            state["resumed"] = True
+            assistant = ChatMessage(role="assistant", content="done")
+            self._history.append(assistant)
+            return assistant
+
+        def pending_write_tool_calls(self, msg: Any) -> list[dict[str, object]]:
+            calls = getattr(msg, "tool_calls", None) or []
+            return [call for call in calls if call.get("name") == "save_file"]
+
+    monkeypatch.setattr(bridge, "ChatService", StubChatService)
+    secret = "test-secret"
+    first = bridge.dispatch(
+        {
+            "command": "chat:send",
+            "userMessage": "please save",
+            "messages": [],
+            "approvalSecret": secret,
+        }
+    )
+
+    token = first["pendingApprovalToken"]
+    bridge.dispatch(
+        {
+            "command": "chat:send",
+            "messages": first["messages"],
+            "allowWriteTools": True,
+            "resumePendingToolCalls": True,
+            "approvalSecret": secret,
+            "pendingApprovalToken": token,
+        }
+    )
+
+    assert state["resumed"] is True
+
+
 # ---------------------------------------------------------------------------
 # M3.5a dispatch coverage: hierarchical lanes, context manifest, scope cascade
 # ---------------------------------------------------------------------------

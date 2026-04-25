@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -30,25 +32,36 @@ from assistant_app.prompts import CHARTER_MARKER, build_charter_system_content
 # Message <-> dict conversions
 # ---------------------------------------------------------------------------
 
+_TRUSTED_HISTORY_ROLES = {"user", "assistant", "tool"}
+
 
 def _parse_messages(raw_messages: list[dict[str, Any]]) -> list[ChatMessage]:
     parsed: list[ChatMessage] = []
     for item in raw_messages:
-        role = str(item.get("role", "user"))
+        role = str(item.get("role", "user")).strip().lower()
         if role == "system":
             # System messages are DeskAssist-owned trust boundaries. Chat logs
             # live inside the user's workspace, so persisted or renderer-provided
             # history must not be allowed to spoof/suppress the charter or scoped
             # context layers we reconstruct below on every turn.
             continue
+        original_role = role
+        if role not in _TRUSTED_HISTORY_ROLES:
+            role = "user"
         content = item.get("content")
         if content is not None and not isinstance(content, str):
             content = str(content)
+        if original_role != role and content:
+            content = f"[{original_role}] {content}"
         tool_calls = item.get("tool_calls")
-        if tool_calls is not None and not isinstance(tool_calls, list):
+        if role != "assistant" or not isinstance(tool_calls, list):
             tool_calls = None
         tool_call_id_raw = item.get("tool_call_id")
-        tool_call_id = str(tool_call_id_raw) if isinstance(tool_call_id_raw, str) else None
+        tool_call_id = (
+            str(tool_call_id_raw)
+            if role == "tool" and isinstance(tool_call_id_raw, str)
+            else None
+        )
         parsed.append(
             ChatMessage(
                 role=role,
@@ -67,6 +80,61 @@ def _require_bool(value: object, field: str) -> bool:
     if type(value) is bool:
         return value
     raise ValueError(f"{field} must be a boolean")
+
+
+def _canonical_tool_calls(tool_calls: list[dict[str, object]]) -> str:
+    """Stable representation for approval-token signing."""
+    return json.dumps(
+        tool_calls,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _approval_token(secret: str, tool_calls: list[dict[str, object]]) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        _canonical_tool_calls(tool_calls).encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"v1:{digest}"
+
+
+def _validate_pending_write_approval(
+    request: dict[str, Any],
+    history: list[ChatMessage],
+    service: ChatService,
+) -> None:
+    if not history:
+        return
+    latest = history[-1]
+    if latest.role != "assistant" or not latest.tool_calls:
+        return
+    pending_writes = service.pending_write_tool_calls(latest)
+    if not pending_writes:
+        return
+    secret = request.get("approvalSecret")
+    token = request.get("pendingApprovalToken")
+    if not isinstance(secret, str) or not secret:
+        raise PermissionError("approvalSecret is required to resume write tools")
+    if not isinstance(token, str) or not token:
+        raise PermissionError("pendingApprovalToken is required to resume write tools")
+    expected = _approval_token(secret, pending_writes)
+    if not hmac.compare_digest(token, expected):
+        raise PermissionError("pendingApprovalToken is invalid for pending write tools")
+
+
+def _attach_pending_approval_token(
+    payload: dict[str, Any],
+    request: dict[str, Any],
+    pending_write_approvals: list[dict[str, object]],
+) -> None:
+    if not pending_write_approvals:
+        return
+    secret = request.get("approvalSecret")
+    if isinstance(secret, str) and secret:
+        payload["pendingApprovalToken"] = _approval_token(secret, pending_write_approvals)
 
 
 def _history_has_context_marker(history: list[ChatMessage]) -> bool:
@@ -330,6 +398,8 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
             )
 
     service.replace_history(parsed_history)
+    if resume_pending and allow_write_tools:
+        _validate_pending_write_approval(request, parsed_history, service)
     history_before_count = len(service.history)
     if resume_pending:
         response = service.resume_pending_tool_calls(
@@ -375,6 +445,7 @@ def handle_chat_send(request: dict[str, Any]) -> dict[str, Any]:
         "messages": serialized_delta,
         "pendingApprovals": pending_write_approvals,
     }
+    _attach_pending_approval_token(payload, request, pending_write_approvals)
     if persistence_error:
         payload["persistenceError"] = persistence_error
     return payload
@@ -879,6 +950,8 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
         ctx_idx = 1 if _history_has_charter_marker(parsed_history) else 0
         parsed_history.insert(ctx_idx, ChatMessage(role="system", content=context_prompt))
     chat.replace_history(parsed_history)
+    if resume_pending and allow_write_tools:
+        _validate_pending_write_approval(request, parsed_history, chat)
     history_before_count = len(chat.history)
     if resume_pending:
         response = chat.resume_pending_tool_calls(
@@ -910,6 +983,7 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
         "pendingApprovals": pending_write_approvals,
         "comparison": _serialize_comparison_summary(service, lane_ids),
     }
+    _attach_pending_approval_token(payload, request, pending_write_approvals)
     if persistence_error:
         payload["persistenceError"] = persistence_error
     return payload

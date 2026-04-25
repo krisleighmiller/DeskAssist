@@ -8,6 +8,7 @@
     "deadcode:ts": "knip",
     "dev:renderer": "vite",
     "lint": "eslint renderer/src/**/*.{ts,tsx} vite.config.ts",
+    "test:unit": "node --test tests/*.test.js",
     "rebuild:native": "electron-rebuild -f -o node-pty -m .",
     "postinstall": "electron-rebuild -f -o node-pty -m . || true",
     "start": "npm run build:renderer && electron .",
