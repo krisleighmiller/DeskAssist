@@ -36,7 +36,7 @@ export function compareSessionId(comparisonId: string): ChatSessionId {
  * with `laneSessionId` / `compareSessionId` so the encoding scheme
  * lives in exactly one place. (Review item #15.)
  */
-export type ParsedChatSessionId =
+type ParsedChatSessionId =
   | { kind: "lane"; id: string }
   | { kind: "compare"; id: string };
 
@@ -633,8 +633,12 @@ function LaneChatBody({
     const raw = event.dataTransfer.getData(FILETREE_DRAG_MIME);
     let filePath: string | null = null;
     if (raw) {
-      const payloads = parseDragPayload(raw);
-      filePath = payloads[0]?.absolutePath ?? null;
+      try {
+        const payloads = parseDragPayload(raw);
+        filePath = payloads[0]?.absolutePath ?? null;
+      } catch {
+        filePath = null;
+      }
     }
     if (!filePath) {
       filePath = event.dataTransfer.getData("text/plain").trim() || null;

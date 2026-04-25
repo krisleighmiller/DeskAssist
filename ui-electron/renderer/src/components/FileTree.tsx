@@ -9,7 +9,7 @@ import { InputDialog } from "./InputDialog";
  * populate the "Compare with…" picker. Lifted to a local interface
  * so we don't drag the full `Lane` type (and its `attachments`
  * reverse dependency) into the tree. */
-export interface FileTreeLaneInfo {
+interface FileTreeLaneInfo {
   id: string;
   name: string;
   root: string;
@@ -366,7 +366,7 @@ async function copyToClipboard(text: string): Promise<void> {
  * handlers should accept both shapes (see `parseDragPayload` below). */
 export const FILETREE_DRAG_MIME = "application/x-deskassist-tree-node";
 
-export interface FileTreeDragPayload {
+interface FileTreeDragPayload {
   relativePath: string | null;
   absolutePath: string;
   /** Set for overlay nodes (e.g. `_ancestors/<lane>/foo.md`). Drop targets

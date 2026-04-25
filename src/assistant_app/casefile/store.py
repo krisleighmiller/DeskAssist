@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import uuid
@@ -30,6 +31,8 @@ LANES_FILE_VERSION = 2
 # generous.  Anything larger almost certainly indicates runaway content.
 MAX_CHAT_LINE_BYTES: int = 1 * 1024 * 1024  # 1 MB
 COMPARISONS_FILE_VERSION = 1
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 
 _logger = logging.getLogger(__name__)
 
@@ -43,6 +46,46 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 def _new_session_id() -> str:
     return str(uuid.uuid4())
+
+
+def _ensure_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(PRIVATE_DIR_MODE)
+    except OSError:
+        # Some filesystems do not support POSIX permissions. Best effort is
+        # still better than failing casefile initialization on those systems.
+        pass
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    _ensure_private_dir(path.parent)
+    tmp = path.with_suffix(f"{path.suffix}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        tmp.chmod(PRIVATE_FILE_MODE)
+    except OSError:
+        pass
+    tmp.replace(path)
+    try:
+        path.chmod(PRIVATE_FILE_MODE)
+    except OSError:
+        pass
+
+
+def _append_private_lines(path: Path, lines: list[str]) -> None:
+    _ensure_private_dir(path.parent)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, PRIVATE_FILE_MODE)
+    try:
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            for line in lines:
+                handle.write(line)
+                handle.write("\n")
+    finally:
+        try:
+            path.chmod(PRIVATE_FILE_MODE)
+        except OSError:
+            pass
 
 
 def _stable_migrated_session_id(kind: str, root: Path, identifier: str) -> str:
@@ -135,8 +178,8 @@ class CasefileStore:
         requiring the user to register anything first.
         """
         meta = self.casefile.metadata_dir
-        meta.mkdir(parents=True, exist_ok=True)
-        self.casefile.chats_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_private_dir(meta)
+        _ensure_private_dir(self.casefile.chats_dir)
         if not self.casefile.lanes_file.exists():
             default_lane = Lane(
                 id="main",
@@ -560,7 +603,6 @@ class CasefileStore:
         per-lane appends so a runaway response can't bloat the log."""
         session = self.ensure_comparison_session(lane_ids)
         path = self._session_chat_log_path(session.session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
         serialized: list[str] = []
         for message in messages:
             line = json.dumps(message, ensure_ascii=False)
@@ -571,10 +613,7 @@ class CasefileStore:
                     f"({line_bytes:,} bytes > {MAX_CHAT_LINE_BYTES:,} bytes)"
                 )
             serialized.append(line)
-        with path.open("a", encoding="utf-8") as handle:
-            for line in serialized:
-                handle.write(line)
-                handle.write("\n")
+        _append_private_lines(path, serialized)
         return path
 
     def read_comparison_chat_messages(
@@ -616,7 +655,6 @@ class CasefileStore:
     ) -> Path:
         lane = self.load_snapshot().lane_by_id(lane_id)
         path = self._session_chat_log_path(lane.session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
         # Validate every message before opening the file so that a size
         # violation on message N never leaves messages 0..N-1 partially
         # appended while the caller sees a ValueError.
@@ -630,10 +668,7 @@ class CasefileStore:
                     f"({line_bytes:,} bytes > {MAX_CHAT_LINE_BYTES:,} bytes)"
                 )
             serialized.append(line)
-        with path.open("a", encoding="utf-8") as handle:
-            for line in serialized:
-                handle.write(line)
-                handle.write("\n")
+        _append_private_lines(path, serialized)
         return path
 
     def read_chat_messages(self, lane_id: str) -> tuple[list[dict[str, Any]], int]:
@@ -796,11 +831,10 @@ class CasefileStore:
                 for session in sorted(sessions.values(), key=lambda entry: entry.id)
             ],
         }
-        meta = self.casefile.metadata_dir
-        meta.mkdir(parents=True, exist_ok=True)
-        tmp = self.casefile.comparisons_file.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(self.casefile.comparisons_file)
+        _write_private_text(
+            self.casefile.comparisons_file,
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        )
 
     def _serialize_attachment(self, attachment: LaneAttachment) -> dict[str, Any]:
         try:
@@ -847,12 +881,11 @@ class CasefileStore:
             "lanes": serialized_lanes,
             "active_lane_id": active_lane_id,
         }
-        meta = self.casefile.metadata_dir
-        meta.mkdir(parents=True, exist_ok=True)
         # Atomic-ish write: write to a temp file then rename.
-        tmp = self.casefile.lanes_file.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(self.casefile.lanes_file)
+        _write_private_text(
+            self.casefile.lanes_file,
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        )
 
     def _lane_from_raw(self, entry: object, *, file_version: int) -> Lane:
         if not isinstance(entry, dict):

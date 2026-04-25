@@ -8,7 +8,7 @@ import { languageFromPath } from "../lib/language";
  * buffer and `savedContent` is what was last persisted, so dirty
  * state is `content !== savedContent`.
  */
-export interface FileTab {
+interface FileTab {
   kind: "file";
   /** Synthetic; e.g. `lane:<laneId>:<path>` or `overlay:<laneId>:<virtualPath>`. */
   key: string;

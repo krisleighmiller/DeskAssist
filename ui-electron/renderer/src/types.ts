@@ -1,6 +1,6 @@
 export type Provider = "openai" | "anthropic" | "deepseek";
 
-export type ChatRole = "user" | "assistant" | "tool" | "system";
+type ChatRole = "user" | "assistant" | "tool" | "system";
 
 export interface ToolCall {
   id?: string;
@@ -16,7 +16,7 @@ export interface ChatMessage {
   name?: string;
 }
 
-export interface ChatSendPayload {
+interface ChatSendPayload {
   provider: Provider;
   model?: string | null;
   messages: ChatMessage[];
@@ -25,7 +25,7 @@ export interface ChatSendPayload {
   resumePendingToolCalls: boolean;
 }
 
-export interface ChatSendResponse {
+interface ChatSendResponse {
   ok?: boolean;
   messages?: ChatMessage[];
   message?: ChatMessage;
@@ -67,24 +67,22 @@ export interface FileTreeNode {
   children?: FileTreeNode[];
 }
 
-export interface FileReadResult {
+interface FileReadResult {
   path: string;
   content: string;
   truncated: boolean;
 }
 
-export interface FileSaveResult {
+interface FileSaveResult {
   path: string;
   saved: boolean;
 }
 
-export type LaneKind = "repo" | "doc" | "rubric" | "review" | "other";
-
-export const LANE_KINDS: readonly LaneKind[] = ["repo", "doc", "rubric", "review", "other"];
+type LaneKind = "repo" | "doc" | "rubric" | "review" | "other";
 
 export type AttachmentMode = "read" | "write";
 
-export interface LaneAttachmentDto {
+interface LaneAttachmentDto {
   name: string;
   root: string;
   mode: AttachmentMode;
@@ -126,7 +124,7 @@ export interface LaneAttachmentInput {
   mode?: AttachmentMode;
 }
 
-export interface RegisterLaneInput {
+interface RegisterLaneInput {
   name: string;
   kind: LaneKind;
   root: string;
@@ -155,7 +153,7 @@ export interface UpdateLaneResult {
   rootConflict: { conflictingLaneId: string } | null;
 }
 
-export interface ComparisonLaneSummary {
+interface ComparisonLaneSummary {
   id: string;
   name: string;
   root: string;
@@ -173,7 +171,7 @@ export interface ComparisonSession {
   skippedCorruptLines?: number;
 }
 
-export interface ComparisonChatSendPayload {
+interface ComparisonChatSendPayload {
   laneIds: string[];
   provider: Provider;
   model?: string | null;
@@ -183,7 +181,7 @@ export interface ComparisonChatSendPayload {
   resumePendingToolCalls?: boolean;
 }
 
-export interface ComparisonChatSendResponse {
+interface ComparisonChatSendResponse {
   ok?: boolean;
   message?: ChatMessage;
   messages?: ChatMessage[];
@@ -197,17 +195,17 @@ export interface ComparisonChatSendResponse {
  * the user picked (typically a lane attachment, optionally any other
  * directory via the system folder dialog). The bridge writes
  * `<destinationDir>/<filename>` and refuses to overwrite. */
-export interface SaveChatOutputPayload {
+interface SaveChatOutputPayload {
   destinationDir: string;
   filename: string;
   body: string;
 }
 
-export interface SaveChatOutputResult {
+interface SaveChatOutputResult {
   path: string;
 }
 
-export interface ListChatResult {
+interface ListChatResult {
   messages: ChatMessage[];
   skippedCorruptLines: number;
 }
@@ -371,7 +369,7 @@ export interface AssistantApi {
   ) => () => void;
 }
 
-export interface TerminalSpawnOptions {
+interface TerminalSpawnOptions {
   id: string;
   cwd?: string | null;
   cols?: number;
@@ -379,14 +377,14 @@ export interface TerminalSpawnOptions {
   laneId?: string | null;
 }
 
-export interface TerminalSpawnResult {
+interface TerminalSpawnResult {
   id: string;
   cwd: string;
   shell: string;
   pid: number;
 }
 
-export interface TerminalSessionDescriptor {
+interface TerminalSessionDescriptor {
   id: string;
   cwd: string;
   shell: string;

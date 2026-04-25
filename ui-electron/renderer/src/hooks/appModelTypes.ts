@@ -7,7 +7,7 @@ import type { ChatMessage, ToolCall } from "../types";
  * deltas (preferred) and a single `message`. We normalize both here
  * with a clear warning if the legacy/empty path is taken.
  */
-export interface ChatTurnResponse {
+interface ChatTurnResponse {
   messages?: ChatMessage[] | null;
   message?: ChatMessage | null;
 }
@@ -97,29 +97,6 @@ export const EMPTY_LANE_SESSION: LaneSessionState = {
 };
 
 /**
- * One directory entry in a scoped session, as represented in renderer state.
- * Mirrors `ScopedDirectoryDto` from the backend but lives here so that
- * session creation can happen entirely in the renderer without a round-trip.
- */
-export interface SessionDirectory {
-  path: string;
-  label: string;
-  writable: boolean;
-}
-
-/**
- * Specification for a scoped session: a set of one or more directories,
- * each with declared read or read-write access.  A single-directory session
- * (one writable entry) is the common lane-chat case.  A multi-directory
- * session is the comparison case.  The unified model makes these
- * structurally identical.
- */
-export interface SessionSpec {
-  id: string;
-  directories: SessionDirectory[];
-}
-
-/**
  * Generate a stable UUID for a new session.  Falls back to a timestamp
  * + random string on the rare chance `crypto.randomUUID` is unavailable.
  */
@@ -129,30 +106,6 @@ export function generateSessionId(): string {
   }
   return `sess-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
-
-export interface NoteState {
-  content: string;
-  loading: boolean;
-  saving: boolean;
-  error: string | null;
-  baseline: string;
-}
-
-export const EMPTY_NOTE_STATE: NoteState = {
-  content: "",
-  loading: false,
-  saving: false,
-  error: null,
-  baseline: "",
-};
-
-/**
- * Backend default for the auto-include byte cap. Kept here as a single
- * source of truth so the renderer doesn't silently re-introduce a
- * different default if the user's manifest fails to load. If the
- * backend default ever changes, update this constant too.
- */
-export const DEFAULT_AUTO_INCLUDE_MAX_BYTES = 32 * 1024;
 
 /**
  * NUL is illegal in POSIX paths and Windows filenames, so it can't
@@ -178,10 +131,6 @@ export function sessionKeyFor(
  */
 export function fileTabKey(laneId: string, path: string): string {
   return `lane:${laneId}:${path}`;
-}
-
-export function overlayTabKey(laneId: string, virtualPath: string): string {
-  return `overlay:${laneId}:${virtualPath}`;
 }
 
 /**

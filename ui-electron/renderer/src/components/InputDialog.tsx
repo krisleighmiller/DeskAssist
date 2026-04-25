@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
  * file…, etc.) silently no-op. This component is the in-app replacement
  * those callers route through.
  */
-export interface InputDialogProps {
+interface InputDialogProps {
   title: string;
   /** Optional secondary line of context shown under the title. */
   message?: string;

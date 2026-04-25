@@ -1,7 +1,7 @@
 import type { CasefileSnapshot, RecentContext } from "../types";
 
-export const RECENT_CONTEXTS_STORAGE_KEY = "deskassist:recentContexts";
-export const MAX_RECENT_CONTEXTS = 8;
+const RECENT_CONTEXTS_STORAGE_KEY = "deskassist:recentContexts";
+const MAX_RECENT_CONTEXTS = 8;
 
 function pinnedFirst(a: RecentContext, b: RecentContext): number {
   if (Boolean(a.pinned) !== Boolean(b.pinned)) {
@@ -10,7 +10,7 @@ function pinnedFirst(a: RecentContext, b: RecentContext): number {
   return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
 }
 
-export function sortRecentContexts(contexts: RecentContext[]): RecentContext[] {
+function sortRecentContexts(contexts: RecentContext[]): RecentContext[] {
   return contexts.slice().sort(pinnedFirst);
 }
 
@@ -37,7 +37,7 @@ export function loadRecentContexts(): RecentContext[] {
   }
 }
 
-export function persistRecentContexts(contexts: RecentContext[]): void {
+function persistRecentContexts(contexts: RecentContext[]): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(

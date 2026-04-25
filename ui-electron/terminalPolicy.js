@@ -52,7 +52,5 @@ function resolveAllowedTerminalCwd({
 }
 
 module.exports = {
-  allowedTerminalRoots,
-  isPathWithinRoot,
   resolveAllowedTerminalCwd,
 };

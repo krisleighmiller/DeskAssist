@@ -971,7 +971,7 @@ def handle_casefile_send_comparison_chat(request: dict[str, Any]) -> dict[str, A
     persistence_error: str | None = None
     try:
         service.append_comparison_chat(lane_ids, serialized_delta)
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         persistence_error = (
             f"comparison chat persistence failed: {type(exc).__name__}: {exc}"
         )

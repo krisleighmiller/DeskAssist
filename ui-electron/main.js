@@ -1576,12 +1576,11 @@ ipcMain.handle("file:move", async (_, args = {}) => {
 // disk usage and require its own GC story).
 //
 // We cap the stack at MAX_TRASH_UNDO entries; once full, the oldest
-// snapshot is purged from disk and from the stack. Per-entry size is
-// not capped here because casefiles can legitimately contain large
-// trees and refusing to back up a directory would yield a
-// silently-undone "trash" the user can't recover. Operators who care
-// about disk usage can lower MAX_TRASH_UNDO.
+// snapshot is purged from disk and from the stack. Each snapshot is also
+// bounded so a large accidental trash cannot fill the OS temp directory
+// before the actual shell.trashItem call runs.
 const MAX_TRASH_UNDO = 20;
+const MAX_TRASH_UNDO_BYTES = 256 * 1024 * 1024;
 const trashUndoStack = [];
 let trashUndoSeq = 0;
 let trashUndoStagingDir = null;
@@ -1616,6 +1615,39 @@ function clearTrashUndoStack() {
   }
 }
 
+async function measureTrashUndoBytes(targetPath, initialStat) {
+  let total = 0;
+  const stack = [{ path: targetPath, stat: initialStat }];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || !current.stat) continue;
+    const stat = current.stat;
+    if (stat.isSymbolicLink && stat.isSymbolicLink()) {
+      continue;
+    }
+    if (stat.isDirectory()) {
+      const entries = await fs.readdir(current.path, { withFileTypes: true });
+      for (const entry of entries) {
+        const childPath = path.join(current.path, entry.name);
+        const childStat = await fs.lstat(childPath);
+        stack.push({ path: childPath, stat: childStat });
+      }
+      continue;
+    }
+    if (stat.isFile()) {
+      total += stat.size;
+      if (total > MAX_TRASH_UNDO_BYTES) {
+        throw new Error(
+          `Cannot trash with undo: item is larger than ${Math.round(
+            MAX_TRASH_UNDO_BYTES / (1024 * 1024)
+          )} MB`
+        );
+      }
+    }
+  }
+  return total;
+}
+
 // Move a file or directory to the OS trash via Electron's shell API.
 // We deliberately do not offer permanent delete from the renderer; if
 // the user wants that, they can empty the OS trash.  shell.trashItem
@@ -1631,13 +1663,14 @@ ipcMain.handle("file:trash", async (_, args = {}) => {
   }
   let stat;
   try {
-    stat = await fs.stat(targetPath);
+    stat = await fs.lstat(targetPath);
   } catch (err) {
     if (err && err.code === "ENOENT") {
       throw new Error(`File or folder no longer exists: ${targetPath}`);
     }
     throw err;
   }
+  await measureTrashUndoBytes(targetPath, stat);
   // Snapshot to the undo staging dir BEFORE trashing. We use a fresh
   // per-entry sub-directory keyed by `trashUndoSeq` so two entries with
   // the same basename can coexist in the staging dir without collision.
