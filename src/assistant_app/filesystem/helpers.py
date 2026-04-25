@@ -168,41 +168,55 @@ class WorkspaceFilesystem:
 
     # ----- read operations (overlay-aware) -----
 
-    def read_text_bounded(self, candidate: str, max_chars: int) -> tuple[str, bool, Path]:
-        if max_chars <= 0:
-            raise ValueError("max_chars must be greater than 0")
+    def read_text_bounded(self, candidate: str, max_bytes: int) -> tuple[str, bool, Path]:
+        """Read up to ``max_bytes`` of UTF-8 text from *candidate*.
+
+        SECURITY (M1): the budget is enforced in *bytes*, not characters,
+        so a file heavy in multi-byte sequences cannot blow past the
+        intended memory cap. A binary-content sniff (NUL in the first
+        8 KiB) rejects non-text files before we try a full decode.
+        """
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be greater than 0")
         target, _ = self._resolve_for_read(candidate)
         if not target.exists():
             raise FileNotFoundError(f"File not found: {candidate}")
         if not target.is_file():
             raise IsADirectoryError(f"Not a file: {candidate}")
-        # Read in binary chunks and decode incrementally to avoid allocating the
-        # entire file in memory even for very large files with no newlines.
-        # Using an incremental decoder handles multi-byte UTF-8 sequences that
-        # straddle chunk boundaries without raising a spurious UnicodeDecodeError.
         _CHUNK = 65536
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
-        parts: list[str] = []
+        _SNIFF = 8192
+        parts: list[bytes] = []
         total = 0
+        truncated = False
         try:
             with target.open("rb") as fh:
-                while True:
-                    raw = fh.read(_CHUNK)
-                    final = not raw
-                    chunk = decoder.decode(raw, final=final)
-                    if chunk:
-                        remaining = max_chars - total
-                        if len(chunk) > remaining:
-                            # We have more than enough characters — truncate and stop.
-                            parts.append(chunk[:remaining])
-                            return "".join(parts), True, target
-                        parts.append(chunk)
-                        total += len(chunk)
-                    if final:
+                while total < max_bytes:
+                    to_read = min(_CHUNK, max_bytes - total)
+                    raw = fh.read(to_read)
+                    if not raw:
                         break
+                    # Binary sniff: NUL bytes in early content.
+                    if total < _SNIFF:
+                        sniff_end = min(len(raw), _SNIFF - total)
+                        if b"\x00" in raw[:sniff_end]:
+                            raise ValueError(
+                                f"File appears to be binary (contains NUL bytes): {candidate}"
+                            )
+                    parts.append(raw)
+                    total += len(raw)
+                # Check for remaining data beyond the budget.
+                if fh.read(1):
+                    truncated = True
+        except ValueError:
+            raise
+        except OSError:
+            raise
+        blob = b"".join(parts)
+        try:
+            text = blob.decode("utf-8")
         except UnicodeDecodeError:
             raise ValueError(f"File is not valid UTF-8 text: {candidate}")
-        return "".join(parts), False, target
+        return text, truncated, target
 
     def list_dir(self, candidate: str) -> tuple[Path, list[dict[str, str]]]:
         normalized_input = candidate.strip()

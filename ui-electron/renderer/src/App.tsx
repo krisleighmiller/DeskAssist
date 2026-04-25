@@ -56,11 +56,10 @@ export function App(): JSX.Element {
   const activeLane = activeLaneId
     ? casefile?.lanes.find((lane) => lane.id === activeLaneId) ?? null
     : null;
-  const activeLaneHasWritableScope = Boolean(
-    activeLane &&
-      (activeLane.writable !== false ||
-        (activeLane.attachments ?? []).some((att) => att.mode === "write"))
-  );
+  // SECURITY (H1): formerly used to gate `allowWriteTools` on the
+  // renderer side. With the new approval flow main is the gate, so we
+  // no longer need to compute this — kept removed intentionally rather
+  // than reintroducing client-side authorisation logic.
 
   // ----- Global dialog (for menu-bar triggered prompts that need text input) -----
   const [globalDialog, setGlobalDialog] = useState<{
@@ -805,13 +804,15 @@ export function App(): JSX.Element {
     });
     if (!started) return;
     try {
-      const response = await api().sendChat({
+      // SECURITY (H1): use the dedicated approval IPC rather than
+      // overloading `sendChat` with `allowWriteTools=true`. Main gates
+      // this call on a stored, bridge-issued approval token, so a
+      // future renderer compromise can no longer execute write tools
+      // by setting a flag on a regular send.
+      const response = await api().approveAndResumeChat({
         provider,
         model: providerModels[provider] || null,
         messages: historyBeforeTurn,
-        userMessage: "",
-        allowWriteTools: activeLaneHasWritableScope,
-        resumePendingToolCalls: true,
       });
       // Accept both the preferred `messages` array and the legacy
       // single `message` form. Without this fallback, a bridge that
@@ -846,7 +847,6 @@ export function App(): JSX.Element {
   }, [
     casefile,
     activeLaneId,
-    activeLaneHasWritableScope,
     provider,
     providerModels,
     updateSession,

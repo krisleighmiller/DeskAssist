@@ -74,18 +74,54 @@ def _write_private_text(path: Path, text: str) -> None:
 
 
 def _append_private_lines(path: Path, lines: list[str]) -> None:
+    """Append JSONL lines to a chat log with crash-safe semantics.
+
+    SECURITY (M2): a crash mid-write previously left a partially
+    serialised JSONL line at the tail of the log. The next
+    ``read_chat_messages`` would skip the corrupt line silently
+    (``skippedCorruptLines``) which is an integrity loss — the user
+    loses the last turn with no indication until they scroll back.
+
+    Strategy: write the new lines to a *sibling temp file*, ``fsync``
+    it, then append its contents to the real log in a single
+    ``write`` + ``fsync``. The temp file is always removed. If we
+    crash between the fsync and the temp-unlink, the worst case is a
+    stale temp file in the chats dir that costs a few KB — never a
+    corrupt log.
+    """
     _ensure_private_dir(path.parent)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, PRIVATE_FILE_MODE)
+    # Build the complete blob we want to append.
+    blob = "".join(f"{line}\n" for line in lines).encode("utf-8")
+    # Stage to a temp file first so we can fsync the content before it
+    # touches the real log.
+    import tempfile as _tf
+
+    tmp_fd, tmp_name = _tf.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
     try:
-        with os.fdopen(fd, "a", encoding="utf-8") as handle:
-            for line in lines:
-                handle.write(line)
-                handle.write("\n")
-    finally:
+        os.write(tmp_fd, blob)
+        os.fsync(tmp_fd)
+        os.close(tmp_fd)
+        tmp_fd = -1  # mark as closed
+        # Append from the staged temp file to the real log.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, PRIVATE_FILE_MODE)
         try:
-            path.chmod(PRIVATE_FILE_MODE)
+            os.write(fd, blob)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if tmp_fd >= 0:
+            os.close(tmp_fd)
+        try:
+            os.unlink(tmp_name)
         except OSError:
             pass
+    try:
+        path.chmod(PRIVATE_FILE_MODE)
+    except OSError:
+        pass
 
 
 def _stable_migrated_session_id(kind: str, root: Path, identifier: str) -> str:

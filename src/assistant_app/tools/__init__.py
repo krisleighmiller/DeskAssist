@@ -80,7 +80,7 @@ def build_default_tool_registry(
             read_overlays=read_overlays,
             scoped_directories=scoped_directories,
         ),
-        input_schema={"path": str, "max_chars": int},
+        input_schema={"path": str, "max_bytes": int, "max_chars": int},
         required_params={"path"},
         permission="workspace_read",
         description="Read text content from a workspace file.",

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage, shell } = require("electron");
 const path = require("path");
 const fs = require("fs/promises");
 const fsSync = require("fs");
@@ -7,6 +7,72 @@ const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { TextDecoder } = require("util");
 const { resolveAllowedTerminalCwd: resolveTerminalCwdPolicy } = require("./terminalPolicy");
+
+// SECURITY (H8): every IPC handler MUST be invoked from the top-level
+// frame of our own renderer window. Without this gate, any future
+// `<webview>` / nested `<iframe>` / popup spawned (or coerced) into
+// the app would be able to call `ipcRenderer.invoke(...)` and reach
+// privileged main-process code.
+//
+// We enforce that:
+//   1. The sending webContents is the main window's webContents.
+//   2. The sending frame is the *top* frame (no nested iframes).
+//   3. The frame URL is one we expect (file:// for packaged builds,
+//      http(s)://localhost for dev). The dev allow-list is
+//      intentionally narrow — `loadURL` already rejects anything else
+//      via `isAllowedDevRendererUrl`, but checking again at IPC time
+//      defends against `will-navigate` races.
+//
+// The check runs inside a wrapper installed on `ipcMain.handle` so
+// every existing call site gets the gate without needing to be edited.
+// The wrapper preserves the exact return / throw semantics callers
+// already rely on (Electron auto-serialises return values; thrown
+// errors surface as renderer-side rejections).
+function isFrameUrlAllowed(rawUrl) {
+  if (typeof rawUrl !== "string" || rawUrl.length === 0) return false;
+  if (rawUrl.startsWith("file://")) return true;
+  try {
+    const parsed = new URL(rawUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) return false;
+    return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function assertTrustedSender(event, channel) {
+  // `mainWindow` is captured by closure in `createWindow`; reference
+  // it via the module-level binding here. Until the window is up,
+  // there is no legitimate sender, so reject everything.
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error(`IPC ${channel}: no main window`);
+  }
+  if (event.sender !== mainWindow.webContents) {
+    throw new Error(`IPC ${channel}: sender is not the main window`);
+  }
+  const frame = event.senderFrame;
+  if (!frame) {
+    throw new Error(`IPC ${channel}: no sender frame`);
+  }
+  if (frame.parent) {
+    // Nested frame — could be a malicious sub-frame loaded via an
+    // ad-hoc `<iframe>` or `<webview>`. Refuse.
+    throw new Error(`IPC ${channel}: refusing call from nested frame`);
+  }
+  if (!isFrameUrlAllowed(frame.url)) {
+    throw new Error(
+      `IPC ${channel}: refusing call from disallowed frame url`
+    );
+  }
+}
+
+const _ipcMainHandle = ipcMain.handle.bind(ipcMain);
+ipcMain.handle = function safeHandle(channel, listener) {
+  return _ipcMainHandle(channel, async (event, ...args) => {
+    assertTrustedSender(event, channel);
+    return listener(event, ...args);
+  });
+};
 
 // node-pty is a native module compiled against Electron's ABI by the
 // `electron-rebuild` postinstall step. We require it lazily so that a
@@ -33,8 +99,29 @@ let activeCasefileRoot = null;
 let activeLaneId = null;
 let activeLaneRoot = null;
 let registeredLaneRoots = [];
+// SECURITY (H3): writable directories within the active lane scope (lane
+// root + any writable attachment root, all realpath-normalised). Used by
+// `chat:saveOutput` to refuse destinations the user did not authorise.
+// Recomputed via `refreshWritableScopeRoots` whenever a casefile is
+// opened, a lane switched, attachments edited, or a lane removed.
+let writableScopeRoots = new Set();
 const approvalSecret = crypto.randomBytes(32).toString("hex");
 const pendingApprovalTokens = new Map();
+
+// SECURITY (H2): roots the user has explicitly vetted via the OS file
+// picker (`casefile:choose`). Re-opening one of these via
+// `casefile:open(root)` is a no-prompt op (matches the renderer's
+// "Recent" list UX), but opening a path NOT in this set requires the
+// renderer to drive the dialog flow first. This blocks a renderer
+// compromise (XSS, stored-state corruption, malicious markdown render)
+// from coercing main into reading or initialising arbitrary directories
+// — including any directory the bridge's `_validate_path_depth` would
+// otherwise accept (e.g. `/home/<user>/Documents/anything`).
+//
+// Persisted to `<userData>/vetted-casefiles.json` so the user does not
+// have to re-pick across launches. Realpath-normalised on insertion so
+// symlink-vs-target spoofing cannot bypass the set membership check.
+const vettedCasefileRoots = new Set();
 
 // Filesystem watcher for the active casefile + extra overlay roots.
 // We notify the renderer any time something inside one of the watched
@@ -322,12 +409,89 @@ let providerModelsCache = {
 const KEY_SERVICE = "deskassist";
 const PROVIDERS = ["openai", "anthropic", "deepseek"];
 let keytar = null;
-let keyStorageBackend = "file";
+// SECURITY (C2): possible values, in order of preference:
+//   - "keychain"        : node-keytar / OS keychain available
+//   - "encrypted-file"  : keytar absent, but Electron safeStorage works,
+//                        so we encrypt before persisting. This is bound to
+//                        the OS user via DPAPI / Keychain / libsecret-derived
+//                        key, depending on platform.
+//   - "unavailable"     : neither backend is usable. We refuse to write keys
+//                        to disk (no plaintext fallback). The renderer will
+//                        see this status and surface a hard error rather
+//                        than silently downgrading to plaintext storage.
+let keyStorageBackend = "unavailable";
 let mainWindow = null;
-const MAX_FILE_READ_CHARS = 2_000_000;
+const MAX_FILE_READ_BYTES = 2_000_000;
+
+// SECURITY (C2): magic prefix marking the on-disk file as a safeStorage
+// blob rather than legacy plaintext JSON. Plaintext files start with `{`,
+// which is mutually exclusive with this byte sequence, so the migration
+// path in `readFileKeys` can detect format unambiguously.
+const ENCRYPTED_FILE_MAGIC = Buffer.from("DSKEC1\n", "utf-8");
 
 function apiKeysPath() {
   return path.join(app.getPath("userData"), "api-keys.json");
+}
+
+// SECURITY (H2): file backing `vettedCasefileRoots`. Stored as a JSON
+// array of strings (realpaths). 0o600 perms because the contents reveal
+// directory layout that may be sensitive (e.g. project codenames in
+// path components).
+function vettedCasefilesPath() {
+  return path.join(app.getPath("userData"), "vetted-casefiles.json");
+}
+
+async function loadVettedCasefileRoots() {
+  try {
+    const raw = await fs.readFile(vettedCasefilesPath(), "utf-8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    vettedCasefileRoots.clear();
+    for (const entry of parsed) {
+      if (typeof entry === "string" && entry.length > 0) {
+        // realpathIfDirectory is hoisted (function declaration); safe
+        // to call here even though the source-order definition is
+        // below.
+        const real = realpathIfDirectory(entry);
+        if (real) vettedCasefileRoots.add(real);
+      }
+    }
+  } catch {
+    // First launch / corrupt file / no such file: start with an empty set.
+  }
+}
+
+async function persistVettedCasefileRoots() {
+  await fs.mkdir(path.dirname(vettedCasefilesPath()), { recursive: true });
+  await fs.writeFile(
+    vettedCasefilesPath(),
+    JSON.stringify(Array.from(vettedCasefileRoots), null, 2),
+    { encoding: "utf-8", mode: 0o600 }
+  );
+  try {
+    await fs.chmod(vettedCasefilesPath(), 0o600);
+  } catch {
+    // Non-fatal on filesystems without POSIX perms.
+  }
+}
+
+async function vetCasefileRoot(rawPath) {
+  const real = realpathIfDirectory(rawPath);
+  if (!real) {
+    throw new Error(`Cannot vet path: not a directory or unreadable: ${rawPath}`);
+  }
+  if (!vettedCasefileRoots.has(real)) {
+    vettedCasefileRoots.add(real);
+    try {
+      await persistVettedCasefileRoots();
+    } catch (err) {
+      console.warn(
+        "[main] failed to persist vetted casefile roots:",
+        err && err.message
+      );
+    }
+  }
+  return real;
 }
 
 function providerModelsPath() {
@@ -361,56 +525,146 @@ function tryInitKeytar() {
   try {
     keytar = require("keytar");
     keyStorageBackend = "keychain";
+    return;
   } catch (error) {
     keytar = null;
-    keyStorageBackend = "file";
   }
+  // SECURITY (C2): keytar is missing, fall back to Electron safeStorage.
+  // `isEncryptionAvailable()` is only meaningful after `app.whenReady()`,
+  // which is the case at every site where we call `tryInitKeytar`.
+  try {
+    if (safeStorage && safeStorage.isEncryptionAvailable()) {
+      keyStorageBackend = "encrypted-file";
+      return;
+    }
+  } catch (error) {
+    // Some Linux setups (no libsecret + no Gnome keyring) throw rather
+    // than returning false. Treat that the same as "unavailable".
+  }
+  keyStorageBackend = "unavailable";
+  console.warn(
+    "[main] No secure storage backend is available (no keytar and " +
+      "Electron safeStorage reports unavailable). API keys cannot be " +
+      "persisted. Install libsecret-1 / a system keyring or rebuild " +
+      "with keytar to enable storage."
+  );
 }
 
 async function readFileKeys() {
+  // SECURITY (C2): supports three on-disk encodings:
+  //   - encrypted (safeStorage blob, magic prefix)
+  //   - legacy plaintext JSON (read for one-time migration only)
+  //   - missing/corrupt (return empty)
+  let buffer;
   try {
-    const raw = await fs.readFile(apiKeysPath(), "utf-8");
-    const parsed = JSON.parse(raw);
+    buffer = await fs.readFile(apiKeysPath());
+  } catch {
+    return { openai: "", anthropic: "", deepseek: "" };
+  }
+  const empty = { openai: "", anthropic: "", deepseek: "" };
+  if (buffer.length >= ENCRYPTED_FILE_MAGIC.length &&
+      buffer.subarray(0, ENCRYPTED_FILE_MAGIC.length).equals(ENCRYPTED_FILE_MAGIC)) {
+    if (!safeStorage || !safeStorage.isEncryptionAvailable()) {
+      console.warn(
+        "[main] api-keys.json is encrypted but safeStorage is not " +
+          "available; refusing to load (would otherwise expose ciphertext " +
+          "as opaque key data)."
+      );
+      return empty;
+    }
+    try {
+      const ciphertext = buffer.subarray(ENCRYPTED_FILE_MAGIC.length);
+      const decrypted = safeStorage.decryptString(ciphertext);
+      const parsed = JSON.parse(decrypted);
+      return {
+        openai: typeof parsed.openai === "string" ? parsed.openai : "",
+        anthropic: typeof parsed.anthropic === "string" ? parsed.anthropic : "",
+        deepseek: typeof parsed.deepseek === "string" ? parsed.deepseek : "",
+      };
+    } catch (error) {
+      console.warn("[main] failed to decrypt api-keys.json:", error && error.message);
+      return empty;
+    }
+  }
+  // Legacy plaintext path. We only return the parsed keys so the caller
+  // can migrate them into a secure backend; we do NOT keep writing
+  // plaintext on subsequent saves.
+  try {
+    const parsed = JSON.parse(buffer.toString("utf-8"));
     return {
       openai: typeof parsed.openai === "string" ? parsed.openai : "",
       anthropic: typeof parsed.anthropic === "string" ? parsed.anthropic : "",
       deepseek: typeof parsed.deepseek === "string" ? parsed.deepseek : "",
     };
   } catch (error) {
-    return { openai: "", anthropic: "", deepseek: "" };
+    return empty;
+  }
+}
+
+function fileKeysAreLegacyPlaintext(buffer) {
+  return buffer.length === 0 ||
+    !buffer.subarray(0, ENCRYPTED_FILE_MAGIC.length).equals(ENCRYPTED_FILE_MAGIC);
+}
+
+async function fileIsLegacyPlaintext() {
+  try {
+    const buffer = await fs.readFile(apiKeysPath());
+    return fileKeysAreLegacyPlaintext(buffer);
+  } catch {
+    return false;
   }
 }
 
 async function loadApiKeys() {
-  if (!keytar) {
-    apiKeysCache = await readFileKeys();
+  // SECURITY (C2): unified loader for keychain + encrypted-file backends.
+  // The encrypted-file branch transparently migrates legacy plaintext
+  // `api-keys.json` files to encrypted form on first load. The keychain
+  // branch additionally consumes any leftover encrypted/plaintext file.
+  const wasLegacyPlaintext = await fileIsLegacyPlaintext();
+  const fileKeys = await readFileKeys();
+
+  if (keytar) {
+    const loaded = { openai: "", anthropic: "", deepseek: "" };
+    for (const provider of PROVIDERS) {
+      const keyFromKeychain = await keytar.getPassword(KEY_SERVICE, provider);
+      if (keyFromKeychain) {
+        loaded[provider] = keyFromKeychain;
+        continue;
+      }
+      if (fileKeys[provider]) {
+        await keytar.setPassword(KEY_SERVICE, provider, fileKeys[provider]);
+        loaded[provider] = fileKeys[provider];
+      }
+    }
+    apiKeysCache = loaded;
+    // Drop the on-disk file once we've migrated everything into the
+    // keychain. Done only after a fully successful migration so a partial
+    // failure does not leave the user with no recoverable copy.
+    const fileHadKeys = PROVIDERS.some((p) => Boolean(fileKeys[p]));
+    if (fileHadKeys) {
+      try {
+        await fs.unlink(apiKeysPath());
+      } catch {
+        // Non-fatal: file may already be absent or on a read-only filesystem.
+      }
+    }
     return;
   }
 
-  const fileKeys = await readFileKeys();
-  const loaded = { openai: "", anthropic: "", deepseek: "" };
-  for (const provider of PROVIDERS) {
-    const keyFromKeychain = await keytar.getPassword(KEY_SERVICE, provider);
-    if (keyFromKeychain) {
-      loaded[provider] = keyFromKeychain;
-      continue;
-    }
-    if (fileKeys[provider]) {
-      await keytar.setPassword(KEY_SERVICE, provider, fileKeys[provider]);
-      loaded[provider] = fileKeys[provider];
-    }
-  }
-  apiKeysCache = loaded;
-  // Remove the plain-text fallback file once keys are available from the
-  // system keychain.  We delete it whenever the file contained at least one
-  // non-empty key; if any keytar.setPassword call above threw, we never reach
-  // this point, so the file is only removed after a fully successful cycle.
-  const fileHasKeys = PROVIDERS.some((p) => Boolean(fileKeys[p]));
-  if (fileHasKeys) {
+  apiKeysCache = fileKeys;
+  // Migrate legacy plaintext into the encrypted format on first load.
+  if (wasLegacyPlaintext && PROVIDERS.some((p) => Boolean(fileKeys[p])) &&
+      keyStorageBackend === "encrypted-file") {
     try {
-      await fs.unlink(apiKeysPath());
-    } catch {
-      // Non-fatal: file may already be absent or on a read-only filesystem.
+      await persistApiKeys();
+      console.warn(
+        "[main] migrated legacy plaintext api-keys.json to encrypted form."
+      );
+    } catch (error) {
+      console.warn(
+        "[main] failed to migrate api-keys.json to encrypted form:",
+        error && error.message
+      );
     }
   }
 }
@@ -428,13 +682,26 @@ async function persistApiKeys() {
     return;
   }
 
+  // SECURITY (C2): refuse to write plaintext API keys to disk. If
+  // safeStorage is unavailable we surface a hard error instead of
+  // silently downgrading. Callers are expected to bubble this up to
+  // the renderer so the user knows storage is broken.
+  if (keyStorageBackend !== "encrypted-file") {
+    throw new Error(
+      "Refusing to persist API keys: no secure storage backend is " +
+        "available. Install a system keyring (libsecret-1 / Keychain) or " +
+        "rebuild with keytar so DeskAssist can store keys safely."
+    );
+  }
+  if (!safeStorage || !safeStorage.isEncryptionAvailable()) {
+    throw new Error(
+      "Refusing to persist API keys: Electron safeStorage is not available."
+    );
+  }
   await fs.mkdir(path.dirname(apiKeysPath()), { recursive: true });
-  await fs.writeFile(apiKeysPath(), JSON.stringify(apiKeysCache, null, 2), {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
-  // Tighten permissions on an already-existing file; writeFile's `mode`
-  // option only applies on creation, not when the file is truncated.
+  const ciphertext = safeStorage.encryptString(JSON.stringify(apiKeysCache));
+  const blob = Buffer.concat([ENCRYPTED_FILE_MAGIC, ciphertext]);
+  await fs.writeFile(apiKeysPath(), blob, { mode: 0o600 });
   try {
     await fs.chmod(apiKeysPath(), 0o600);
   } catch {
@@ -606,9 +873,23 @@ function createWindow() {
           label: "show/hide right panel",
           click: () => sendToRenderer("app:toggle-right-panel"),
         },
-        { type: "separator" },
-        { role: "reload" },
-        { role: "forceReload" },
+        // SECURITY (H9): Reload / Force Reload / Toggle DevTools are
+        // dev-only conveniences. In a packaged build they let a user
+        // (or, more importantly, a stored-state corruption that
+        // triggered an XSS) recover the renderer after a panic
+        // banner — which is exactly what the panic banner is meant
+        // to *prevent*. We strip them in `app.isPackaged` builds.
+        // DevTools also exposes `process.binding(...)` to anyone who
+        // can open the console, which would defeat the renderer
+        // sandbox entirely.
+        ...(app.isPackaged
+          ? []
+          : [
+              { type: "separator" },
+              { role: "reload" },
+              { role: "forceReload" },
+              { role: "toggleDevTools" },
+            ]),
         { type: "separator" },
         { role: "resetZoom" },
         { role: "zoomIn" },
@@ -797,14 +1078,93 @@ const BRIDGE_DEFAULT_TIMEOUT_MS = 120_000;
 const BRIDGE_METADATA_TIMEOUT_MS = 10_000;
 const BRIDGE_CHAT_TIMEOUT_MS = 600_000;
 
+// SECURITY (H5): regex of provider key shapes — used by
+// `redactSensitive` to mask anything that *looks* like a key, in the
+// (unlikely) case that one ends up in a logged stderr or an error
+// message we forward to the renderer. This is best-effort; the real
+// fix is not putting keys on those paths in the first place (H4 +
+// H10), but a belt-and-braces masking layer is cheap insurance.
+const _KEY_SHAPE_PATTERNS = [
+  /sk-[A-Za-z0-9_-]{16,}/g, // OpenAI / DeepSeek
+  /sk-ant-[A-Za-z0-9_-]{16,}/g, // Anthropic
+];
+
+function _homeDirOrNull() {
+  try {
+    return os.homedir();
+  } catch {
+    return null;
+  }
+}
+
+function _escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const _HOME_DIR_REGEX = (() => {
+  const home = _homeDirOrNull();
+  if (!home || home === "/") return null;
+  return new RegExp(_escapeRegExp(home), "g");
+})();
+
+// SECURITY (H5): replace outbound absolute paths under the user's
+// home directory with `~` and mask anything that looks like a
+// provider key. Used both for renderer-facing error messages
+// (`runPythonBridge` reject path, `chat:saveOutput` errors, etc.) and
+// for main-process `console.error` so the user's username does not
+// leak into uploaded crash dumps.
+function redactSensitive(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  let out = text;
+  if (_HOME_DIR_REGEX) {
+    out = out.replace(_HOME_DIR_REGEX, "~");
+  }
+  for (const re of _KEY_SHAPE_PATTERNS) {
+    out = out.replace(re, "[redacted-api-key]");
+  }
+  return out;
+}
+
+// SECURITY (H4): list of bridge command names that are allowed to
+// receive provider API keys. Every other command path MUST be invoked
+// without keys — `runPythonBridge` enforces this defensively even if a
+// caller sets `attachApiKeys: true` by mistake. Keeping the allow-list
+// alongside the helper makes the contract obvious at the call site.
+const CHAT_COMMANDS_NEEDING_KEYS = new Set([
+  "chat:send",
+  "casefile:sendComparisonChat",
+]);
+
 async function runPythonBridge(payload, { attachApiKeys = false, timeoutMs } = {}) {
   const repoRoot = path.resolve(__dirname, "..");
   const pythonPath = process.env.PYTHONPATH
     ? `${path.join(repoRoot, "src")}:${process.env.PYTHONPATH}`
     : path.join(repoRoot, "src");
+  // SECURITY (H4): build the child env without inheriting any provider
+  // API keys that may have leaked into our own `process.env`. We
+  // deliver keys exclusively through the stdin payload (`apiKeys`)
+  // for chat commands, so the env transport is never legitimately
+  // used and scrubbing it costs us nothing while removing a leak path
+  // (e.g. a Python traceback that prints `os.environ`, or a child
+  // shell spawned from inside a tool).
   const env = { ...process.env, PYTHONPATH: pythonPath };
+  for (const k of Object.keys(env)) {
+    if (/_API_KEY$/i.test(k)) delete env[k];
+  }
   const bridgePayload = { ...payload };
-  if (attachApiKeys) {
+  // SECURITY (H4): defensively gate attachApiKeys to the allow-list
+  // even when the caller asks for them on a non-chat command. A bug
+  // in a future call site cannot accidentally ship the keys to e.g.
+  // `workspace:list` or `file:read`.
+  const cmd = typeof bridgePayload.command === "string" ? bridgePayload.command : "";
+  const wantKeys = attachApiKeys && CHAT_COMMANDS_NEEDING_KEYS.has(cmd);
+  if (attachApiKeys && !wantKeys) {
+    console.warn(
+      "[main] refusing to attach API keys to non-chat bridge command:",
+      cmd
+    );
+  }
+  if (wantKeys) {
     bridgePayload.apiKeys = {
       openai: apiKeysCache.openai || null,
       anthropic: apiKeysCache.anthropic || null,
@@ -851,7 +1211,14 @@ async function runPythonBridge(payload, { attachApiKeys = false, timeoutMs } = {
       }
       settled = true;
       clearTimeout(timeout);
-      reject(new Error(`Python bridge process error: ${error.message}`));
+      // SECURITY (H5): error.message often contains the spawned binary
+      // path, which on macOS / Linux includes the username. Redact
+      // before the message reaches the renderer.
+      reject(
+        new Error(
+          `Python bridge process error: ${redactSensitive(String(error.message))}`
+        )
+      );
     });
 
     child.on("close", (code) => {
@@ -860,11 +1227,13 @@ async function runPythonBridge(payload, { attachApiKeys = false, timeoutMs } = {
       }
       settled = true;
       clearTimeout(timeout);
-      // Always log raw stderr in the main process only — it may contain
-      // request payload fragments (including API keys) from Python tracebacks
-      // and must never be forwarded verbatim to the renderer.
+      // SECURITY (H4 + H5): main-process logs stay readable to the
+      // user and to remote crash reporters. Scrub provider keys (in
+      // case the bridge re-echoed a payload) and the user's home
+      // directory (replaced with `~`) before printing. We only ever
+      // emit `stderr` here, never to the renderer.
       if (stderr) {
-        console.error("[bridge stderr]", stderr);
+        console.error("[bridge stderr]", redactSensitive(stderr));
       }
       try {
         const response = extractBridgeResponse(stdout);
@@ -874,9 +1243,24 @@ async function runPythonBridge(payload, { attachApiKeys = false, timeoutMs } = {
         }
         // response.error is produced by the bridge's own error handling and
         // is safe to surface; raw stderr is kept in the main process only.
-        reject(new Error(response.error || `Bridge failed with exit code ${code}`));
+        // SECURITY (H5): bridge errors frequently embed absolute
+        // paths from `_validate_path_depth`, `FileNotFoundError`,
+        // etc. Redact home before the renderer sees them.
+        reject(
+          new Error(
+            redactSensitive(
+              response.error || `Bridge failed with exit code ${code}`
+            )
+          )
+        );
       } catch (error) {
-        reject(new Error(`Bridge response parse error (exit ${code}): ${error.message}`));
+        reject(
+          new Error(
+            redactSensitive(
+              `Bridge response parse error (exit ${code}): ${error.message}`
+            )
+          )
+        );
       }
     });
 
@@ -932,38 +1316,62 @@ function extractBridgeResponse(stdout) {
   throw new Error("No JSON response found on bridge stdout");
 }
 
-async function readUtf8Bounded(filePath, maxChars) {
-  const decoder = new TextDecoder("utf-8", { fatal: true });
+// SECURITY (M1): read at most `maxBytes` worth of UTF-8 content from
+// `filePath`. The budget is enforced in *bytes*, not characters, so
+// a UTF-16-heavy file cannot blow past the allocation by having
+// multi-byte codepoints that consume a single `String.length` slot
+// but 3–4 bytes on disk.
+//
+// Before decoding, the first `SNIFF_BYTES` bytes are checked for NUL
+// bytes (the strongest heuristic for binary content). If found, the
+// function throws instead of returning garbage-replacement text.
+const SNIFF_BYTES = 8192;
+
+async function readFileBounded(filePath, maxBytes) {
   const handle = await fs.open(filePath, "r");
   try {
-    const chunkSize = Math.min(64 * 1024, maxChars + 1);
+    const chunkSize = 64 * 1024;
     const buffer = Buffer.allocUnsafe(chunkSize);
     const chunks = [];
     let totalBytes = 0;
-    // Approximate-byte budget: ASCII is 1 byte/char so reading
-    // `maxChars` bytes is a safe lower bound on the eventual decoded
-    // length. We over-read by `chunkSize` to absorb multi-byte codepoints
-    // straddling the cap, then verify the truncation cleanly after a
-    // single decode.
-    const byteBudget = maxChars + chunkSize;
     let truncated = false;
-    while (totalBytes < byteBudget) {
-      const { bytesRead } = await handle.read(buffer, 0, chunkSize, null);
-      if (bytesRead === 0) {
-        break;
+
+    // Read up to maxBytes, collecting chunks.
+    while (totalBytes < maxBytes) {
+      const remaining = maxBytes - totalBytes;
+      const toRead = Math.min(chunkSize, remaining);
+      const { bytesRead } = await handle.read(buffer, 0, toRead, null);
+      if (bytesRead === 0) break;
+      const chunk = Buffer.from(buffer.subarray(0, bytesRead));
+
+      // Binary sniff: check early bytes for NUL.
+      if (totalBytes < SNIFF_BYTES) {
+        const sniffEnd = Math.min(bytesRead, SNIFF_BYTES - totalBytes);
+        for (let i = 0; i < sniffEnd; i++) {
+          if (chunk[i] === 0) {
+            throw new Error(
+              "File appears to be binary (contains NUL bytes)"
+            );
+          }
+        }
       }
-      chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+
+      chunks.push(chunk);
       totalBytes += bytesRead;
     }
-    // Single decode after the loop: previously this ran on every
-    // iteration, making the overall read O(n²) in file size. For a 2 MB
-    // file at the declared MAX_FILE_READ_CHARS limit that was a real
-    // regression, however unlikely in practice.
-    const decoded = decoder.decode(Buffer.concat(chunks, totalBytes));
-    if (decoded.length > maxChars) {
-      truncated = true;
+
+    // Check if there's more data after our budget.
+    if (!truncated) {
+      const { bytesRead } = await handle.read(buffer, 0, 1, null);
+      if (bytesRead > 0) truncated = true;
     }
-    return { content: decoded.slice(0, maxChars), truncated };
+
+    const raw = Buffer.concat(chunks, totalBytes);
+    // Decode the complete buffer in one pass. `fatal: true` rejects
+    // invalid UTF-8 sequences immediately.
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const content = decoder.decode(raw);
+    return { content, truncated, readBytes: totalBytes };
   } catch (error) {
     if (error instanceof TypeError) {
       throw new Error("File is not valid UTF-8 text");
@@ -1001,6 +1409,12 @@ function adoptCasefileSnapshot(snapshot) {
   // changes (`git checkout`, `cp` from another terminal, the
   // assistant writing via tools, etc.).
   reconcileWatchers();
+  // SECURITY (H3): refresh the writable-scope set used by
+  // `chat:saveOutput`. Fire-and-forget — if the bridge call fails the
+  // set is cleared and saves fall back to the strict deny path.
+  refreshWritableScopeRoots().catch(() => {
+    /* refresh handler already logs */
+  });
   return snapshot;
 }
 
@@ -1011,6 +1425,10 @@ function closeActiveCasefile() {
   registeredLaneRoots = [];
   extraWatchRoots = [];
   pendingApprovalTokens.clear();
+  // SECURITY (H3): no active lane => no writable scope at all.
+  // `chat:saveOutput` will refuse every destination until a lane is
+  // re-opened.
+  writableScopeRoots = new Set();
   clearTrashUndoStack();
   reconcileWatchers();
 }
@@ -1038,7 +1456,15 @@ ipcMain.handle("casefile:choose", async () => {
     return null;
   }
   const chosen = result.filePaths[0];
-  const response = await runPythonBridgeMeta({ command: "casefile:open", root: chosen });
+  // SECURITY (H2): record this OS-picker-confirmed path as vetted
+  // before opening it. Subsequent renderer-driven `casefile:open`
+  // calls against the same realpath can then proceed without a
+  // dialog (the "Recent" list in the renderer relies on this).
+  const vettedRoot = await vetCasefileRoot(chosen);
+  const response = await runPythonBridgeMeta({
+    command: "casefile:open",
+    root: vettedRoot,
+  });
   return adoptCasefileSnapshot(response.casefile);
 });
 
@@ -1047,7 +1473,32 @@ ipcMain.handle("casefile:open", async (_, args = {}) => {
   if (!root) {
     throw new Error("root is required");
   }
-  const response = await runPythonBridgeMeta({ command: "casefile:open", root });
+  // SECURITY (H2): the renderer is not trusted to nominate arbitrary
+  // disk paths. Either the path is in the vetted set (the user picked
+  // it via the OS dialog at some point in the past, possibly across
+  // launches) or this is the path we are already operating against
+  // (re-open is idempotent). Anything else is refused with a hint
+  // to use the dialog flow — including paths the bridge would
+  // otherwise accept under `_validate_path_depth`.
+  const real = realpathIfDirectory(root);
+  if (!real) {
+    throw new Error(
+      `Cannot open workspace: path is not an accessible directory: ${root}`
+    );
+  }
+  const isVetted = vettedCasefileRoots.has(real);
+  const isCurrent =
+    activeCasefileRoot && realpathIfDirectory(activeCasefileRoot) === real;
+  if (!isVetted && !isCurrent) {
+    throw new Error(
+      "Refusing to open a workspace path that has not been confirmed via " +
+        "the Open Workspace dialog. Use File → Open Casefile."
+    );
+  }
+  const response = await runPythonBridgeMeta({
+    command: "casefile:open",
+    root: real,
+  });
   return adoptCasefileSnapshot(response.casefile);
 });
 
@@ -1149,25 +1600,84 @@ function comparisonApprovalKey(casefileRoot, laneIds) {
   return `comparison:${casefileRoot}:${laneIds.slice().sort().join("\0")}`;
 }
 
+// SECURITY (H1): how long a freshly minted write-approval token stays
+// valid for. Five minutes is generous enough for a user to read the
+// approval banner and click while still bounding replay opportunities
+// for a renderer compromise that captured a token earlier in the
+// session. Tokens are tied to the *exact* tool_calls list that minted
+// them via the bridge-side HMAC; expiry is a defence-in-depth limit on
+// blast radius if both the renderer and the model collude across
+// multiple turns.
+const APPROVAL_TOKEN_TTL_MS = 5 * 60 * 1000;
+
 function updatePendingApprovalToken(key, response) {
   if (response && typeof response.pendingApprovalToken === "string") {
-    pendingApprovalTokens.set(key, response.pendingApprovalToken);
+    pendingApprovalTokens.set(key, {
+      token: response.pendingApprovalToken,
+      issuedAt: Date.now(),
+    });
   } else {
     pendingApprovalTokens.delete(key);
   }
   return response;
 }
 
+// SECURITY (H1): consume a pending approval record after verifying it
+// is fresh and present. Returns the token string, or null when no
+// approval is pending. Caller MUST treat null as "no write tools may
+// be authorised" — this is the gate that distinguishes a real
+// user-driven approval from a renderer XSS forging an approval flow.
+function consumePendingApproval(key) {
+  const record = pendingApprovalTokens.get(key);
+  if (!record) return null;
+  pendingApprovalTokens.delete(key);
+  const isFresh = Date.now() - record.issuedAt <= APPROVAL_TOKEN_TTL_MS;
+  if (!isFresh) {
+    console.warn(
+      "[main] refusing stale approval token for",
+      key,
+      "(age:", Date.now() - record.issuedAt, "ms)"
+    );
+    return null;
+  }
+  return record.token;
+}
+
 ipcMain.handle("chat:saveOutput", async (_, args = {}) => {
-  // The destination directory is an *absolute* path picked by the user
-  // via the lane attachment list or the system folder dialog. It is not
-  // necessarily inside the active lane root, so we pass it straight to
-  // the Python bridge instead of resolving against `activeCasefileRoot`.
+  // SECURITY (H3): the destination directory used to be passed
+  // straight to the Python bridge with no authorisation check, on the
+  // theory that the renderer-side picker had already constrained it.
+  // That is not a security boundary — a renderer compromise can call
+  // this IPC directly with `destinationDir = "/etc"` and the bridge's
+  // `_validate_path_depth` allows any path under e.g. `/home/<user>`.
+  //
+  // Now we require the destination to land inside one of the active
+  // lane's WRITABLE scope directories (lane write_root + writable
+  // attachments). The set is recomputed on every casefile / lane /
+  // attachment change via `refreshWritableScopeRoots`. We do not let
+  // the renderer write to read-only attachments because "Save chat
+  // here" is a mutating action — exposing it for read-only mounts
+  // would surface a false affordance.
+  if (!activeCasefileRoot || !activeLaneId) {
+    throw new Error("No active lane — cannot save chat output");
+  }
   const destinationDir = typeof args.destinationDir === "string" ? args.destinationDir : "";
   const filename = typeof args.filename === "string" ? args.filename : "";
   const body = typeof args.body === "string" ? args.body : "";
   if (!destinationDir) throw new Error("destinationDir is required");
   if (!filename) throw new Error("filename is required");
+  if (!isInsideWritableScope(destinationDir)) {
+    // Refresh once in case the renderer raced ahead of the snapshot
+    // adoption (e.g. user clicked "Save" while we were still
+    // resolving the new lane's scope). One retry only: a steady-state
+    // miss is a real authorisation failure that must surface.
+    await refreshWritableScopeRoots();
+    if (!isInsideWritableScope(destinationDir)) {
+      throw new Error(
+        "destinationDir is outside the active lane's writable scope"
+      );
+    }
+  }
   const response = await runPythonBridgeMeta({
     command: "chat:saveOutput",
     destinationDir,
@@ -1285,6 +1795,58 @@ async function allowedWatchRootsForActiveScope() {
   return allowed;
 }
 
+// SECURITY (H3): recompute the set of directories the renderer is
+// allowed to nominate as a `chat:saveOutput` destination. The set
+// covers every WRITABLE directory in the active lane's resolved scope
+// — i.e. the lane's own write_root plus any attachment whose mode is
+// "rw". Read-only attachments are intentionally excluded: a "Save chat
+// here" UI action implies the user wants to mutate the target.
+//
+// Failures are swallowed and the set cleared, which is the strict /
+// fail-closed posture: a stale set could let a saved file land
+// outside the current lane after a switch.
+async function refreshWritableScopeRoots() {
+  const next = new Set();
+  if (!activeCasefileRoot || !activeLaneId) {
+    writableScopeRoots = next;
+    return;
+  }
+  try {
+    const response = await runPythonBridgeMeta({
+      command: "casefile:resolveScope",
+      casefileRoot: activeCasefileRoot,
+      laneId: activeLaneId,
+    });
+    const scope = response.scope || {};
+    const directories = Array.isArray(scope.directories) ? scope.directories : [];
+    for (const entry of directories) {
+      if (!entry || typeof entry.path !== "string") continue;
+      if (!entry.writable) continue;
+      const real = realpathIfDirectory(entry.path);
+      if (real) next.add(real);
+    }
+  } catch (err) {
+    console.warn(
+      "[main] refreshWritableScopeRoots failed; saves will be denied:",
+      err && err.message
+    );
+  }
+  writableScopeRoots = next;
+}
+
+// SECURITY (H3): test whether `targetDir` is inside one of the
+// currently writable scope roots. Resolves both sides via realpath so
+// symlink-vs-target spoofing cannot defeat the prefix match.
+function isInsideWritableScope(targetDir) {
+  const realTarget = realpathIfDirectory(targetDir);
+  if (!realTarget) return false;
+  for (const root of writableScopeRoots) {
+    if (realTarget === root) return true;
+    if (realTarget.startsWith(`${root}${path.sep}`)) return true;
+  }
+  return false;
+}
+
 ipcMain.handle("workspace:registerWatchRoots", async (_, args = {}) => {
   const incoming = Array.isArray(args.roots) ? args.roots : [];
   const allowed = await allowedWatchRootsForActiveScope();
@@ -1329,11 +1891,21 @@ ipcMain.handle("file:read", async (_, args = {}) => {
   if (!stat.isFile()) {
     throw new Error("Path is not a file");
   }
-  const requestedMaxChars = Number.isInteger(args.maxChars) ? args.maxChars : 200000;
-  if (requestedMaxChars <= 0 || requestedMaxChars > MAX_FILE_READ_CHARS) {
-    throw new Error(`maxChars must be between 1 and ${MAX_FILE_READ_CHARS}`);
+  // SECURITY (M1): budget is now in BYTES, not characters, so a
+  // UTF-16-heavy file cannot blow past the memory allocation. The
+  // `maxBytes` parameter replaces the old `maxChars`; for backward
+  // compat we also accept the legacy `maxChars` name, interpreting it
+  // as a byte limit (safe: 1 char >= 1 byte in UTF-8).
+  const rawLimit = args.maxBytes ?? args.maxChars;
+  const requestedMaxBytes =
+    Number.isInteger(rawLimit) ? rawLimit : 200_000;
+  if (requestedMaxBytes <= 0 || requestedMaxBytes > MAX_FILE_READ_BYTES) {
+    throw new Error(`maxBytes must be between 1 and ${MAX_FILE_READ_BYTES}`);
   }
-  const { content, truncated } = await readUtf8Bounded(filePath, requestedMaxChars);
+  const { content, truncated } = await readFileBounded(
+    filePath,
+    requestedMaxBytes
+  );
   return {
     path: filePath,
     content,
@@ -1587,13 +2159,73 @@ let trashUndoStagingDir = null;
 
 async function ensureTrashUndoStagingDir() {
   if (trashUndoStagingDir) return trashUndoStagingDir;
-  const base = path.join(
-    os.tmpdir(),
-    `deskassist-trash-undo-${process.pid}-${Date.now()}`
+  // SECURITY (C3): trash backups can carry sensitive content (e.g. a
+  // user trashing a `.env`). The previous implementation used a
+  // predictable name with `recursive: true`, which on POSIX inherits
+  // the umask (typically 0o755), making the staging directory
+  // world-traversable for the file lifetime. Other unprivileged users
+  // on the same host could enumerate filenames and, depending on
+  // per-file modes inherited from the source, read contents.
+  // We now:
+  //   1. Use `mkdtemp` so the unique suffix is generated atomically.
+  //   2. Tighten the directory to 0o700 immediately after creation.
+  //   3. Belt-and-braces verify the resulting mode and abort if the
+  //      filesystem could not honour the perms (e.g. FAT32 mount).
+  const base = await fs.mkdtemp(
+    path.join(os.tmpdir(), `deskassist-trash-undo-${process.pid}-`)
   );
-  await fs.mkdir(base, { recursive: true });
+  try {
+    await fs.chmod(base, 0o700);
+  } catch {
+    // chmod can fail on filesystems without POSIX perms (FAT32, exFAT
+    // on USB sticks). On those systems we cannot guarantee isolation,
+    // so refuse to use the staging dir at all rather than pretending
+    // it is private.
+    await fs.rm(base, { recursive: true, force: true });
+    throw new Error(
+      "Cannot create a private trash-undo staging directory on this " +
+        "filesystem (perms unsupported). Trash-with-undo is disabled."
+    );
+  }
   trashUndoStagingDir = base;
   return base;
+}
+
+// SECURITY (C3): walk a freshly-staged backup tree and tighten perms.
+// Source files copied via `fs.copyFile` / `fs.cp` inherit the source's
+// mode minus the umask, which can leave intermediate dirs at 0o755 or
+// individual files at 0o644. With the parent staging dir locked to
+// 0o700 the leaks are blocked one level up, but we tighten leaves too
+// so a bug in the staging dir creation does not silently expose
+// content to other UIDs.
+async function lockdownTrashUndoBackup(targetPath) {
+  const stack = [targetPath];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let stat;
+    try {
+      stat = await fs.lstat(current);
+    } catch {
+      continue;
+    }
+    if (stat.isSymbolicLink()) continue;
+    try {
+      await fs.chmod(current, stat.isDirectory() ? 0o700 : 0o600);
+    } catch {
+      // Best-effort on filesystems without POSIX perms.
+    }
+    if (stat.isDirectory()) {
+      let entries;
+      try {
+        entries = await fs.readdir(current);
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        stack.push(path.join(current, entry));
+      }
+    }
+  }
 }
 
 async function purgeTrashUndoEntry(entry) {
@@ -1666,7 +2298,11 @@ ipcMain.handle("file:trash", async (_, args = {}) => {
     stat = await fs.lstat(targetPath);
   } catch (err) {
     if (err && err.code === "ENOENT") {
-      throw new Error(`File or folder no longer exists: ${targetPath}`);
+      // SECURITY (H5): redact the home dir before returning to the
+      // renderer (which forwards to logs the user may share).
+      throw new Error(
+        `File or folder no longer exists: ${redactSensitive(targetPath)}`
+      );
     }
     throw err;
   }
@@ -1676,21 +2312,36 @@ ipcMain.handle("file:trash", async (_, args = {}) => {
   // the same basename can coexist in the staging dir without collision.
   const stagingRoot = await ensureTrashUndoStagingDir();
   const undoId = `undo-${++trashUndoSeq}-${Date.now().toString(36)}`;
-  const backupPath = path.join(stagingRoot, undoId, path.basename(targetPath));
-  await fs.mkdir(path.dirname(backupPath), { recursive: true });
+  const backupParent = path.join(stagingRoot, undoId);
+  const backupPath = path.join(backupParent, path.basename(targetPath));
+  await fs.mkdir(backupParent, { recursive: true });
+  // SECURITY (C3): match the stagingRoot perms on every per-entry
+  // sub-directory.  fs.mkdir respects the umask by default.
+  try {
+    await fs.chmod(backupParent, 0o700);
+  } catch {
+    // Non-fatal on filesystems without POSIX perms; the parent dir is
+    // already 0o700.
+  }
   if (stat.isDirectory()) {
     await fs.cp(targetPath, backupPath, { recursive: true, preserveTimestamps: true });
   } else {
     await fs.copyFile(targetPath, backupPath);
   }
+  await lockdownTrashUndoBackup(backupPath);
   // Record the casefile root that owned this entry so we can refuse to
   // restore it across casefile switches (`originalCasefileRoot` mismatch).
+  // SECURITY (M8): capture the original stat mode so the restore path
+  // can reinstate it. Without this, a `chmod 700` private file comes
+  // back at the umask default (e.g. 644), exposing content to other
+  // local users.
   const entry = {
     id: undoId,
     originalPath: targetPath,
     backupPath,
     type: stat.isDirectory() ? "dir" : "file",
     originalCasefileRoot: activeCasefileRoot,
+    originalMode: stat.mode,
     timestamp: Date.now(),
   };
   // Now do the actual trash. If trashItem fails after the snapshot we
@@ -1766,6 +2417,16 @@ ipcMain.handle("file:undoLastTrash", async () => {
     } else {
       await fs.copyFile(entry.backupPath, entry.originalPath);
     }
+    // SECURITY (M8): restore the original file/dir mode. `fs.cp` and
+    // `fs.copyFile` inherit the umask, so without this a private
+    // `chmod 700` directory comes back world-readable.
+    if (typeof entry.originalMode === "number") {
+      try {
+        await fs.chmod(entry.originalPath, entry.originalMode & 0o7777);
+      } catch {
+        // Non-fatal: some filesystems don't support chmod.
+      }
+    }
     void purgeTrashUndoEntry(entry);
     return { restored: true, path: entry.originalPath, type: entry.type };
   }
@@ -1794,9 +2455,20 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
   // its own default.
   const savedModel = providerModelsCache[provider] || null;
   const approvalKey = laneApprovalKey(activeCasefileRoot, activeLaneId);
-  if (!payload.resumePendingToolCalls) {
-    pendingApprovalTokens.delete(approvalKey);
-  }
+  // SECURITY (H1): a fresh chat turn always invalidates any prior
+  // approval. Approving means "let *this* batch of pending writes
+  // through"; once the user types a new message, prior approvals must
+  // not be reusable.
+  pendingApprovalTokens.delete(approvalKey);
+  // SECURITY (H1): the renderer is NOT allowed to opt into write tools
+  // here. Any `allowWriteTools` / `resumePendingToolCalls` value the
+  // renderer sends is ignored; resuming with writes goes through the
+  // dedicated `chat:approveAndResume` handler which gates on a
+  // server-side stored approval record. This means a renderer
+  // compromise (XSS, malicious markdown render, future bug) cannot
+  // execute write tools without first triggering a model turn that
+  // mints an approval token AND going through the explicit approval
+  // path.
   const bridgePayload = {
     command: "chat:send",
     casefileRoot: activeCasefileRoot,
@@ -1805,10 +2477,56 @@ ipcMain.handle("chat:send", async (_, payload = {}) => {
     model: payload.model || savedModel,
     messages: Array.isArray(payload.messages) ? payload.messages : [],
     userMessage: payload.userMessage || "",
-    allowWriteTools: Boolean(payload.allowWriteTools),
-    resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
+    allowWriteTools: false,
+    resumePendingToolCalls: false,
     approvalSecret,
-    pendingApprovalToken: pendingApprovalTokens.get(approvalKey) || null,
+    pendingApprovalToken: null,
+  };
+  const response = await runPythonBridge(bridgePayload, {
+    attachApiKeys: true,
+    timeoutMs: BRIDGE_CHAT_TIMEOUT_MS,
+  });
+  return updatePendingApprovalToken(approvalKey, response);
+});
+
+// SECURITY (H1): explicit, server-gated approval path for write tools.
+// Distinct from `chat:send` so the renderer can never set
+// `allowWriteTools=true` directly; the only way write tools execute is:
+//   1. A regular `chat:send` turn returns `pendingApprovals` and a
+//      bridge-issued HMAC token, which main stores keyed by lane.
+//   2. The user clicks Approve in the UI, which calls THIS handler.
+//   3. Main verifies a fresh stored token exists, then forwards the
+//      resume to the bridge with `allowWriteTools=true` server-side.
+// Without a stored token the call is refused before reaching the
+// bridge, so a renderer attacker who calls this handler at random
+// times sees PermissionError, not silent execution.
+ipcMain.handle("chat:approveAndResume", async (_, payload = {}) => {
+  if (!activeCasefileRoot || !activeLaneId) {
+    throw new Error("Open a workspace before approving tools");
+  }
+  const provider = payload.provider || "openai";
+  const savedModel = providerModelsCache[provider] || null;
+  const approvalKey = laneApprovalKey(activeCasefileRoot, activeLaneId);
+  const token = consumePendingApproval(approvalKey);
+  if (!token) {
+    throw new Error(
+      "No pending write approval is recorded for this context. Send a " +
+        "new message first; write tools can only be approved in response " +
+        "to a model turn that requested them."
+    );
+  }
+  const bridgePayload = {
+    command: "chat:send",
+    casefileRoot: activeCasefileRoot,
+    laneId: activeLaneId,
+    provider,
+    model: payload.model || savedModel,
+    messages: Array.isArray(payload.messages) ? payload.messages : [],
+    userMessage: "",
+    allowWriteTools: true,
+    resumePendingToolCalls: true,
+    approvalSecret,
+    pendingApprovalToken: token,
   };
   const response = await runPythonBridge(bridgePayload, {
     attachApiKeys: true,
@@ -1862,9 +2580,11 @@ ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
   const provider = payload.provider || "openai";
   const savedModel = providerModelsCache[provider] || null;
   const approvalKey = comparisonApprovalKey(casefileRoot, laneIds);
-  if (!payload.resumePendingToolCalls) {
-    pendingApprovalTokens.delete(approvalKey);
-  }
+  // SECURITY (H1): identical contract to `chat:send` — the renderer is
+  // never trusted to enable write tools. See the comment in `chat:send`
+  // for the full rationale; resuming with writes goes through
+  // `casefile:approveAndResumeComparison` instead.
+  pendingApprovalTokens.delete(approvalKey);
   const response = await runPythonBridge(
     {
       command: "casefile:sendComparisonChat",
@@ -1874,10 +2594,44 @@ ipcMain.handle("casefile:sendComparisonChat", async (_, payload = {}) => {
       model: payload.model || savedModel,
       messages: Array.isArray(payload.messages) ? payload.messages : [],
       userMessage: payload.userMessage || "",
-      allowWriteTools: Boolean(payload.allowWriteTools),
-      resumePendingToolCalls: Boolean(payload.resumePendingToolCalls),
+      allowWriteTools: false,
+      resumePendingToolCalls: false,
       approvalSecret,
-      pendingApprovalToken: pendingApprovalTokens.get(approvalKey) || null,
+      pendingApprovalToken: null,
+    },
+    { attachApiKeys: true, timeoutMs: BRIDGE_CHAT_TIMEOUT_MS }
+  );
+  return updatePendingApprovalToken(approvalKey, response);
+});
+
+// SECURITY (H1): comparison-chat counterpart of `chat:approveAndResume`.
+ipcMain.handle("casefile:approveAndResumeComparison", async (_, payload = {}) => {
+  const casefileRoot = requireCasefile();
+  const laneIds = normalizeLaneIds(payload.laneIds);
+  const provider = payload.provider || "openai";
+  const savedModel = providerModelsCache[provider] || null;
+  const approvalKey = comparisonApprovalKey(casefileRoot, laneIds);
+  const token = consumePendingApproval(approvalKey);
+  if (!token) {
+    throw new Error(
+      "No pending write approval is recorded for this comparison " +
+        "session. Send a new message first; write tools can only be " +
+        "approved in response to a model turn that requested them."
+    );
+  }
+  const response = await runPythonBridge(
+    {
+      command: "casefile:sendComparisonChat",
+      casefileRoot,
+      laneIds,
+      provider,
+      model: payload.model || savedModel,
+      messages: Array.isArray(payload.messages) ? payload.messages : [],
+      userMessage: "",
+      allowWriteTools: true,
+      resumePendingToolCalls: true,
+      approvalSecret,
+      pendingApprovalToken: token,
     },
     { attachApiKeys: true, timeoutMs: BRIDGE_CHAT_TIMEOUT_MS }
   );
@@ -1948,8 +2702,31 @@ ipcMain.handle("keys:clear", async (_, payload = {}) => {
   if (!PROVIDERS.includes(provider)) {
     throw new Error("Unknown provider for key clear");
   }
+  // SECURITY (M5): clear the in-memory cache FIRST so a racing
+  // `chat:send` that fires between the cache wipe and the backend
+  // write cannot pick up the stale key. If `persistApiKeys` fails
+  // below, the cache stays empty (strict posture), and we also try
+  // a direct `keytar.deletePassword` as a fallback so the backend
+  // doesn't resurrect the key on the next `loadApiKeys`.
   apiKeysCache[provider] = "";
-  await persistApiKeys();
+  try {
+    await persistApiKeys();
+  } catch (err) {
+    // Direct-delete fallback: if the backend persist failed (e.g.
+    // safeStorage temporarily unavailable), try removing just this
+    // provider from keytar so it doesn't survive a restart.
+    if (keytar) {
+      try {
+        await keytar.deletePassword(KEY_SERVICE, provider);
+      } catch {
+        // Best-effort.
+      }
+    }
+    console.warn(
+      "[main] keys:clear: persistApiKeys failed, cache already cleared:",
+      err && err.message
+    );
+  }
   return {
     openaiConfigured: Boolean(apiKeysCache.openai),
     anthropicConfigured: Boolean(apiKeysCache.anthropic),
@@ -2004,6 +2781,63 @@ function killAllPtySessions() {
   }
 }
 
+// SECURITY (H7): allow-list of env vars forwarded to spawned shells.
+// Anything here is copied verbatim from the Electron process env;
+// everything else is silently dropped. We accept a small UX hit (a
+// custom var the user set in their login env will NOT make it to the
+// spawned shell unless their shell rc re-exports it) for a large
+// security win (provider keys can never leak via the terminal).
+const TERMINAL_ENV_ALLOWLIST = [
+  // Filesystem + identity
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "PWD",
+  "TMPDIR",
+  // Locale
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LC_MESSAGES",
+  "LC_NUMERIC",
+  "LC_TIME",
+  // Time zone
+  "TZ",
+  // Terminal capabilities
+  "TERM",
+  "COLORTERM",
+  // Linux desktop / display
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "XDG_RUNTIME_DIR",
+  "XDG_SESSION_TYPE",
+  "XDG_CURRENT_DESKTOP",
+  "DBUS_SESSION_BUS_ADDRESS",
+  // SSH agent forwarding (the user's existing agent connection — a
+  // separate concern from API keys)
+  "SSH_AUTH_SOCK",
+  "SSH_AGENT_PID",
+  // Windows compatibility (ignored on POSIX)
+  "COMSPEC",
+  "SYSTEMROOT",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+];
+
+function buildTerminalEnv() {
+  const env = {};
+  for (const k of TERMINAL_ENV_ALLOWLIST) {
+    if (process.env[k] !== undefined) env[k] = process.env[k];
+  }
+  // Always force TERM so xterm-256color rendering matches what
+  // node-pty negotiated for us.
+  env.TERM = "xterm-256color";
+  return env;
+}
+
 function resolveAllowedTerminalCwd(requestedCwd) {
   return resolveTerminalCwdPolicy({
     requestedCwd,
@@ -2038,10 +2872,23 @@ ipcMain.handle("terminal:spawn", async (_event, args = {}) => {
   // node-pty's spawn signature is (file, args, opts). We pass an empty
   // arg list so we get a normal interactive shell — login behavior is
   // controlled by SHELL and the user's rc files.
-  const env = { ...process.env, TERM: "xterm-256color" };
-  // Strip ELECTRON_*/NODE_* leakage that confuses subprocess shells
-  // (e.g. ELECTRON_RUN_AS_NODE forces children into Node mode).
-  delete env.ELECTRON_RUN_AS_NODE;
+  // SECURITY (H7): build the terminal env from a curated allow-list
+  // rather than blanket-inheriting `process.env`. Two motivations:
+  //   1. Provider API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+  //      `DEEPSEEK_API_KEY`) MUST NOT leak into the user's shell —
+  //      otherwise any command they run, any subshell, and anything
+  //      that subshell calls (including arbitrary network tools)
+  //      inherits the keys. The Python bridge takes great care
+  //      (H10) to scope keys to a single chat turn; that work is
+  //      worthless if a separate `terminal:spawn` channel were to
+  //      hand the keys out for the lifetime of the user's shell.
+  //   2. Other Electron-internal vars (`ELECTRON_*`, `NODE_*`)
+  //      confuse subprocess shells. Bulk-dropping them is simpler
+  //      than the previous "delete one at a time" approach.
+  // We start from a small set of vars the user's shell really does
+  // need (PATH, HOME, locale, TZ, display server hooks, SHELL) and
+  // re-add them explicitly. Anything else is dropped.
+  const env = buildTerminalEnv();
   let ptyProc;
   try {
     ptyProc = ptyLib.spawn(shell, [], {
@@ -2052,8 +2899,14 @@ ipcMain.handle("terminal:spawn", async (_event, args = {}) => {
       env,
     });
   } catch (err) {
+    // SECURITY (M4): the full error message often contains
+    // `__dirname` or the user's home path. Surface only the error
+    // code (e.g. ENOENT, EIO) so the renderer never receives a
+    // username via the shell path.
+    const code = err && err.code ? err.code : "UNKNOWN";
     throw new Error(
-      `Failed to spawn shell '${shell}': ${err && err.message ? err.message : String(err)}`
+      `Failed to spawn terminal shell (${code}). ` +
+        `Verify that '${path.basename(shell)}' is installed and executable.`
     );
   }
 
@@ -2127,6 +2980,10 @@ app.whenReady().then(async () => {
   tryInitKeytar();
   await loadApiKeys();
   providerModelsCache = await readProviderModels();
+  // SECURITY (H2): hydrate the vetted-roots set BEFORE creating the
+  // window so the very first IPC the renderer fires (typically
+  // `casefile:open` against a remembered root) is gated correctly.
+  await loadVettedCasefileRoots();
   createWindow();
 });
 

@@ -217,14 +217,15 @@ export function useComparisons({
     const historyBeforeTurn = target.messages;
     setComparisonBusyId(targetId, true);
     try {
-      const response = await api().sendComparisonChat({
+      // SECURITY (H1): use the dedicated approval IPC. Main verifies
+      // that a fresh bridge-issued approval token exists for this
+      // canonical comparison session before forwarding the resume
+      // with `allowWriteTools=true`.
+      const response = await api().approveAndResumeComparisonChat({
         laneIds: target.laneIds,
         provider,
         model: providerModels[provider] || null,
         messages: historyBeforeTurn,
-        userMessage: "",
-        allowWriteTools: true,
-        resumePendingToolCalls: true,
       });
       const delta = chatTurnDelta(response) ?? [];
       const nextPending = Array.isArray(response.pendingApprovals)

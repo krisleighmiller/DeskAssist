@@ -11,7 +11,11 @@ const DEFAULT_KEY_STATUS: ApiKeyStatus = {
   openaiConfigured: false,
   anthropicConfigured: false,
   deepseekConfigured: false,
-  storageBackend: "file",
+  // SECURITY (C2): default to the strict "no usable backend" state until
+  // the main process reports back. This means the UI shows a hard error
+  // before a real status arrives instead of optimistically pretending we
+  // can store keys to a plaintext file.
+  storageBackend: "unavailable",
 };
 
 const EMPTY_PROVIDER_MODELS: ProviderModels = {

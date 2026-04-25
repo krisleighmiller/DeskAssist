@@ -128,7 +128,17 @@ export function ApiKeysDialog({
       <div className="dialog" onClick={(event) => event.stopPropagation()}>
         <h3>API Keys & Models</h3>
         <p className="muted">
-          Keys stored via {status.storageBackend === "keychain" ? "system keychain" : "user-data file"}.
+          {status.storageBackend === "keychain" &&
+            "Keys stored in the system keychain. "}
+          {status.storageBackend === "encrypted-file" &&
+            "Keys stored in an OS-encrypted user-data file (Electron safeStorage). "}
+          {status.storageBackend === "unavailable" && (
+            <strong style={{ color: "#fbbf24" }}>
+              No secure storage backend is available — saving API keys is
+              disabled to avoid plaintext storage. Install a system keyring
+              (libsecret-1 / Keychain) and restart DeskAssist.{" "}
+            </strong>
+          )}
           Empty key fields leave the existing key unchanged. Model fields override the
           built-in defaults shown as placeholders; leave blank to keep using the default.
         </p>
@@ -145,7 +155,19 @@ export function ApiKeysDialog({
         </div>
         <div className="actions">
           {error && <span className="status error">Error: {error}</span>}
-          <button type="button" onClick={save} disabled={busy}>
+          <button
+            type="button"
+            onClick={save}
+            // SECURITY (C2): block Save when there is no encrypted backend.
+            // The IPC will throw anyway, so this is purely a UX hint that
+            // explains *why* before the user clicks.
+            disabled={busy || status.storageBackend === "unavailable"}
+            title={
+              status.storageBackend === "unavailable"
+                ? "Cannot save: no secure storage backend"
+                : undefined
+            }
+          >
             {busy ? "Saving..." : "Save"}
           </button>
           <button type="button" onClick={onClose} disabled={busy}>

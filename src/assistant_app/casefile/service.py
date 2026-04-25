@@ -298,10 +298,16 @@ def serialize_context_manifest(
 
 
 def serialize_scope(scope: ScopeContext) -> dict[str, Any]:
+    # SECURITY (M7): omit `writeRoot` and `casefileRoot` from the
+    # serialised form. These absolute paths reveal the user's directory
+    # layout; the only consumer is `main.js`, which already knows them
+    # via `activeCasefileRoot` and `activeLaneRoot`. Removing them from
+    # the wire format shrinks the blast radius of an XSS that manages to
+    # intercept bridge responses (even though such responses currently
+    # stay within the main process, defence-in-depth says not to put
+    # them on the wire if nobody needs them).
     return {
         "laneId": scope.lane_id,
-        "writeRoot": str(scope.write_root),
-        "casefileRoot": str(scope.casefile_root),
         "directories": [
             {
                 "path": str(d.path),

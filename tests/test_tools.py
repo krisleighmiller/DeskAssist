@@ -154,7 +154,7 @@ def test_bounded_file_read_rejects_non_positive_limit(tmp_path: Path):
     result = registry.execute({"cmd": "read_file", "params": {"path": "hello.txt", "max_chars": 0}})
     assert result["ok"] is False
     assert result["error"]["type"] == "ValueError"
-    assert "max_chars" in result["error"]["message"]
+    assert "max_bytes" in result["error"]["message"]
 
 
 def test_no_bridge_handler_uses_internal_capability():

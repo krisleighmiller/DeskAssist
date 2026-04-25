@@ -20,6 +20,16 @@ from assistant_app.tools import ToolRegistry, ToolSpec, build_default_tool_regis
 # DeepSeek hit the cap on routine multi-file reads.
 MAX_TOOL_TURNS = 32
 
+# SECURITY (M9): hard cap on the total serialised size (in bytes) of
+# the conversation history we are willing to send to a provider. A
+# malicious lane chat log that somebody has written to directly (or a
+# renderer compromise that inflates the history array) can otherwise
+# cost the user arbitrary money on the next `send_user_message`.
+# 4 MB is large enough for several hundred normal turns (including
+# embedded tool-call results) but small enough that a single request
+# cannot burn through more than ~$1 on the most expensive model.
+MAX_HISTORY_BYTES = 4 * 1024 * 1024
+
 
 class ChatService:
     def __init__(
@@ -84,6 +94,25 @@ class ChatService:
         return list(self._history)
 
     def replace_history(self, messages: list[ChatMessage]) -> None:
+        # SECURITY (M9): enforce the byte budget before the history is
+        # accepted. Measuring the JSON serialisation of each message
+        # is a reasonable proxy for the eventual token count (within a
+        # factor of 3–4×) and catches both bloated tool results and
+        # replay attacks where a corrupted log contains enormous
+        # assistant turns.
+        total_bytes = 0
+        for msg in messages:
+            total_bytes += len((msg.content or "").encode("utf-8"))
+            if msg.tool_calls:
+                total_bytes += len(
+                    json.dumps(msg.tool_calls, ensure_ascii=False).encode("utf-8")
+                )
+            if total_bytes > MAX_HISTORY_BYTES:
+                raise ValueError(
+                    f"Conversation history exceeds the {MAX_HISTORY_BYTES:,} byte "
+                    f"safety limit ({total_bytes:,} bytes). Trim older messages or "
+                    "start a new chat."
+                )
         self._history = list(messages)
 
     def list_providers(self) -> list[str]:

@@ -495,7 +495,10 @@ def test_resolve_scope_returns_overlays_and_context(tmp_path: Path):
         }
     )
     scope = response["scope"]
-    assert scope["writeRoot"] == str(child_dir.resolve())
+    # SECURITY (M7): `writeRoot` and `casefileRoot` are intentionally
+    # omitted from the serialised scope to reduce path leakage.
+    assert "writeRoot" not in scope
+    assert "casefileRoot" not in scope
     # New flat model: directories list with labels and writable flags.
     directories = scope["directories"]
     labels = [d["label"] for d in directories]
@@ -644,5 +647,213 @@ def test_update_lane_attachments_command(tmp_path: Path):
     lane_a = next(lane for lane in response["casefile"]["lanes"] if lane["id"] == "a")
     assert lane_a["attachments"][0]["name"] == "notes"
     assert lane_a["attachments"][0]["root"] == str(notes_dir.resolve())
+
+
+# ---------------------------------------------------------------------------
+# Security regression: H6 — sensitive directories rejected as roots
+# ---------------------------------------------------------------------------
+
+
+def test_register_lane_rejects_attachment_pointing_at_sensitive_path(tmp_path: Path):
+    """SECURITY (H6): an attachment root inside a denylisted system dir
+    must be rejected at registration time, not at first use.
+    """
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane_dir = tmp_path / "lane"
+    lane_dir.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    with pytest.raises(ValueError, match="sensitive"):
+        bridge.dispatch(
+            {
+                "command": "casefile:registerLane",
+                "casefileRoot": str(casefile_root),
+                "lane": {
+                    "name": "Bad",
+                    "kind": "repo",
+                    "root": str(lane_dir),
+                    "id": "bad",
+                    "attachments": [{"name": "leak", "root": "/etc/ssl/private"}],
+                },
+            }
+        )
+
+
+def test_update_lane_attachments_rejects_sensitive_root(tmp_path: Path):
+    """SECURITY (H6): the same denylist applies to attachment edits, not
+    just initial registration. Otherwise a renderer compromise can
+    sidestep the gate by registering with a benign root then mutating.
+    """
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane_dir = tmp_path / "lane"
+    lane_dir.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {
+                "name": "L",
+                "kind": "repo",
+                "root": str(lane_dir),
+                "id": "l",
+            },
+        }
+    )
+    # `/proc/self/root` resolves to `/` so it trips the depth check
+    # first; either rejection (depth or sensitive-prefix) is a valid
+    # security outcome — the assertion is that we refuse the path.
+    with pytest.raises(ValueError, match=r"(sensitive|too shallow)"):
+        bridge.dispatch(
+            {
+                "command": "casefile:updateLaneAttachments",
+                "casefileRoot": str(casefile_root),
+                "laneId": "l",
+                "attachments": [{"name": "leak", "root": "/proc/self/root"}],
+            }
+        )
+    # Direct `/etc` test for explicit sensitive-prefix coverage.
+    with pytest.raises(ValueError, match="sensitive"):
+        bridge.dispatch(
+            {
+                "command": "casefile:updateLaneAttachments",
+                "casefileRoot": str(casefile_root),
+                "laneId": "l",
+                "attachments": [{"name": "leak", "root": "/etc/ssh"}],
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# Security regression: H10 — API keys scoped to a single chat call
+# ---------------------------------------------------------------------------
+
+
+def test_chat_send_pops_api_key_env_after_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """SECURITY (H10): provider API keys delivered via the request
+    payload must NOT linger in `os.environ` after the chat handler
+    returns. Otherwise a follow-up handler in the same Python
+    interpreter (or a child process spawned by an unrelated tool)
+    would inherit them.
+    """
+    import os as _os
+
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "L", "kind": "repo", "root": str(lane), "id": "l"},
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:switchLane",
+            "casefileRoot": str(casefile_root),
+            "laneId": "l",
+        }
+    )
+
+    # Make sure the env starts clean so the assertion below is meaningful.
+    _os.environ.pop("OPENAI_API_KEY", None)
+
+    class StubChatService:
+        def __init__(self, **_kw: Any) -> None:
+            self._history: list[Any] = []
+            # Capture env-state mid-call: this is the only point at
+            # which keys are *legitimately* visible.
+            assert _os.environ.get("OPENAI_API_KEY") == "sk-test-1234567890abcdef"
+
+        def replace_history(self, _messages: list[Any]) -> None:
+            pass
+
+        @property
+        def history(self) -> list[Any]:
+            return list(self._history)
+
+        def send_user_message(self, _text: str, **_kw: Any) -> Any:
+            from assistant_app.models import ChatMessage
+
+            response = ChatMessage(role="assistant", content="ok")
+            self._history.append(response)
+            return response
+
+        def pending_write_tool_calls(self, _msg: Any) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(bridge, "ChatService", StubChatService)
+
+    bridge.dispatch(
+        {
+            "command": "chat:send",
+            "casefileRoot": str(casefile_root),
+            "provider": "openai",
+            "userMessage": "hello",
+            "messages": [],
+            "apiKeys": {"openai": "sk-test-1234567890abcdef"},
+        }
+    )
+    # POST-condition: env scrubbed.
+    assert "OPENAI_API_KEY" not in _os.environ
+    assert "ANTHROPIC_API_KEY" not in _os.environ
+    assert "DEEPSEEK_API_KEY" not in _os.environ
+
+
+def test_chat_send_pops_api_key_env_even_when_handler_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """SECURITY (H10): the env scrub MUST run even if the chat handler
+    raises. Otherwise a tool-error mid-turn leaks the key into the
+    process env until the bridge exits (or, worse, until a follow-up
+    handler reads it).
+    """
+    import os as _os
+
+    casefile_root = tmp_path / "case"
+    casefile_root.mkdir()
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    bridge.dispatch({"command": "casefile:open", "root": str(casefile_root)})
+    bridge.dispatch(
+        {
+            "command": "casefile:registerLane",
+            "casefileRoot": str(casefile_root),
+            "lane": {"name": "L", "kind": "repo", "root": str(lane), "id": "l"},
+        }
+    )
+    bridge.dispatch(
+        {
+            "command": "casefile:switchLane",
+            "casefileRoot": str(casefile_root),
+            "laneId": "l",
+        }
+    )
+    _os.environ.pop("ANTHROPIC_API_KEY", None)
+
+    class ExplodingChatService:
+        def __init__(self, **_kw: Any) -> None:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(bridge, "ChatService", ExplodingChatService)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        bridge.dispatch(
+            {
+                "command": "chat:send",
+                "casefileRoot": str(casefile_root),
+                "provider": "anthropic",
+                "userMessage": "hi",
+                "messages": [],
+                "apiKeys": {"anthropic": "sk-ant-1234567890abcdef"},
+            }
+        )
+    assert "ANTHROPIC_API_KEY" not in _os.environ
 
 

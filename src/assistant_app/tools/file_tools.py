@@ -50,8 +50,8 @@ def make_read_file_tool(
         raw_path = str(params.get("path", ""))
         if not raw_path:
             raise ValueError("path is required")
-        max_chars = int(params.get("max_chars", 5000))
-        content, truncated, target = fs.read_text_bounded(raw_path, max_chars)
+        max_bytes = int(params.get("max_bytes", params.get("max_chars", 5000)))
+        content, truncated, target = fs.read_text_bounded(raw_path, max_bytes)
         return {
             "path": str(target),
             "content": content,

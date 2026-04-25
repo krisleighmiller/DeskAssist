@@ -48,6 +48,12 @@ contextBridge.exposeInMainWorld("assistantApi", {
 
   // Chat (against the currently active casefile + lane).
   sendChat: (payload) => ipcRenderer.invoke("chat:send", payload),
+  // SECURITY (H1): explicit approval path for write tools. Distinct
+  // from `sendChat` so the renderer cannot enable write tools by
+  // toggling a flag on the regular send. Main verifies a fresh
+  // bridge-issued approval token exists before enabling writes.
+  approveAndResumeChat: (payload) =>
+    ipcRenderer.invoke("chat:approveAndResume", payload),
 
   // M3.5c: comparison-chat sessions (multi-lane scoped chat).
   openComparison: (laneIds) =>
@@ -56,6 +62,9 @@ contextBridge.exposeInMainWorld("assistantApi", {
     ipcRenderer.invoke("casefile:updateComparisonAttachments", { laneIds, attachments }),
   sendComparisonChat: (payload) =>
     ipcRenderer.invoke("casefile:sendComparisonChat", payload),
+  // SECURITY (H1): comparison-chat counterpart of `approveAndResumeChat`.
+  approveAndResumeComparisonChat: (payload) =>
+    ipcRenderer.invoke("casefile:approveAndResumeComparison", payload),
 
   // API keys.
   getApiKeyStatus: () => ipcRenderer.invoke("keys:getStatus"),

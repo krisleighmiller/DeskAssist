@@ -21,8 +21,30 @@ interface ChatSendPayload {
   model?: string | null;
   messages: ChatMessage[];
   userMessage: string;
-  allowWriteTools: boolean;
-  resumePendingToolCalls: boolean;
+  /**
+   * SECURITY (H1): retained on the type for backward compatibility with
+   * older call sites, but main IGNORES this flag on `sendChat`. Use
+   * `approveAndResumeChat` to enable write tools server-side after a
+   * pending approval has been minted.
+   */
+  allowWriteTools?: boolean;
+  /**
+   * SECURITY (H1): same as `allowWriteTools` — ignored by main on
+   * `sendChat`. Use `approveAndResumeChat` instead.
+   */
+  resumePendingToolCalls?: boolean;
+}
+
+/**
+ * SECURITY (H1): payload for `approveAndResumeChat` /
+ * `approveAndResumeComparisonChat`. The renderer never sets
+ * `allowWriteTools` here either; it is forced to true server-side and
+ * gated on a freshly-minted approval token stored in main.
+ */
+interface ApproveAndResumePayload {
+  provider: Provider;
+  model?: string | null;
+  messages: ChatMessage[];
 }
 
 interface ChatSendResponse {
@@ -37,7 +59,18 @@ export interface ApiKeyStatus {
   openaiConfigured: boolean;
   anthropicConfigured: boolean;
   deepseekConfigured: boolean;
-  storageBackend: "keychain" | "file";
+  /**
+   * SECURITY (C2): identifies the at-rest storage backend currently in
+   * use for API keys.
+   * - `keychain`        — node-keytar / OS credential store
+   * - `encrypted-file`  — Electron safeStorage-encrypted file (OS-bound key)
+   * - `unavailable`     — neither backend is usable; saving will throw.
+   *                       The renderer should surface this prominently so
+   *                       the user fixes their keyring before relying on
+   *                       the app, rather than silently downgrading to
+   *                       plaintext.
+   */
+  storageBackend: "keychain" | "encrypted-file" | "unavailable";
 }
 
 /** Per-provider preferred model id. Empty string means "use the backend
@@ -177,8 +210,18 @@ interface ComparisonChatSendPayload {
   model?: string | null;
   messages: ChatMessage[];
   userMessage: string;
+  /** SECURITY (H1): ignored by main; see `ChatSendPayload`. */
   allowWriteTools?: boolean;
+  /** SECURITY (H1): ignored by main; see `ChatSendPayload`. */
   resumePendingToolCalls?: boolean;
+}
+
+/** SECURITY (H1): payload for `approveAndResumeComparisonChat`. */
+interface ApproveAndResumeComparisonPayload {
+  laneIds: string[];
+  provider: Provider;
+  model?: string | null;
+  messages: ChatMessage[];
 }
 
 interface ComparisonChatSendResponse {
@@ -293,6 +336,15 @@ export interface AssistantApi {
 
   // Chat
   sendChat: (payload: ChatSendPayload) => Promise<ChatSendResponse>;
+  /**
+   * SECURITY (H1): explicit approval IPC for write tools. Only succeeds
+   * when main has a fresh (≤5 min) bridge-issued approval record for
+   * the active lane. Throws otherwise — the renderer should treat that
+   * as "tell the user the model didn't ask for any writes recently."
+   */
+  approveAndResumeChat: (
+    payload: ApproveAndResumePayload
+  ) => Promise<ChatSendResponse>;
 
   // M3.5c: comparison-chat sessions (multi-lane scoped chat).
   openComparison: (laneIds: string[]) => Promise<ComparisonSession>;
@@ -302,6 +354,10 @@ export interface AssistantApi {
   ) => Promise<Omit<ComparisonSession, "messages">>;
   sendComparisonChat: (
     payload: ComparisonChatSendPayload
+  ) => Promise<ComparisonChatSendResponse>;
+  /** SECURITY (H1): comparison-chat counterpart of `approveAndResumeChat`. */
+  approveAndResumeComparisonChat: (
+    payload: ApproveAndResumeComparisonPayload
   ) => Promise<ComparisonChatSendResponse>;
 
   // API keys
