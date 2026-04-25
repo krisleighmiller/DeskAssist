@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import codecs
 from pathlib import Path
 from typing import Iterable, Mapping
 import shutil

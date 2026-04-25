@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 from uuid import UUID
 
 from assistant_app.casefile import CasefileService, LANE_KINDS, Lane
+from assistant_app.casefile import store as store_module
 from assistant_app.casefile.store import CasefileStore, LanesFileError, normalize_lane_id
 
 
@@ -263,6 +265,29 @@ def test_chat_log_round_trip(tmp_path: Path):
     assert read[-1]["content"] == "again"
     assert (tmp_path / ".casefile" / "chats" / f"{session_id}.jsonl").is_file()
     assert not store.chat_log_path("main").exists()
+
+
+def test_chat_log_append_retries_short_os_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    store = CasefileStore(tmp_path)
+    store.ensure_initialized()
+    session_id = store.load_snapshot().lane_by_id("main").session_id
+    real_write = os.write
+    write_calls = 0
+
+    def short_write(fd: int, data: bytes | memoryview) -> int:
+        nonlocal write_calls
+        write_calls += 1
+        chunk_size = max(1, len(data) // 3)
+        return real_write(fd, bytes(data[:chunk_size]))
+
+    monkeypatch.setattr(store_module.os, "write", short_write)
+
+    message = {"role": "assistant", "content": "x" * 1024}
+    store.append_chat_messages("main", [message])
+
+    log = tmp_path / ".casefile" / "chats" / f"{session_id}.jsonl"
+    assert [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] == [message]
+    assert write_calls > 2
 
 
 def test_chat_log_uses_session_id_not_reused_lane_id(tmp_path: Path):

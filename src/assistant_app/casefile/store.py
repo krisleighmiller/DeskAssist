@@ -73,6 +73,16 @@ def _write_private_text(path: Path, text: str) -> None:
         pass
 
 
+def _write_all(fd: int, blob: bytes) -> None:
+    view = memoryview(blob)
+    total_written = 0
+    while total_written < len(view):
+        written = os.write(fd, view[total_written:])
+        if written == 0:
+            raise OSError("os.write returned 0 before all bytes were written")
+        total_written += written
+
+
 def _append_private_lines(path: Path, lines: list[str]) -> None:
     """Append JSONL lines to a chat log with crash-safe semantics.
 
@@ -84,7 +94,7 @@ def _append_private_lines(path: Path, lines: list[str]) -> None:
 
     Strategy: write the new lines to a *sibling temp file*, ``fsync``
     it, then append its contents to the real log in a single
-    ``write`` + ``fsync``. The temp file is always removed. If we
+    complete write loop + ``fsync``. The temp file is always removed. If we
     crash between the fsync and the temp-unlink, the worst case is a
     stale temp file in the chats dir that costs a few KB — never a
     corrupt log.
@@ -100,14 +110,14 @@ def _append_private_lines(path: Path, lines: list[str]) -> None:
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
     try:
-        os.write(tmp_fd, blob)
+        _write_all(tmp_fd, blob)
         os.fsync(tmp_fd)
         os.close(tmp_fd)
         tmp_fd = -1  # mark as closed
         # Append from the staged temp file to the real log.
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, PRIVATE_FILE_MODE)
         try:
-            os.write(fd, blob)
+            _write_all(fd, blob)
             os.fsync(fd)
         finally:
             os.close(fd)
