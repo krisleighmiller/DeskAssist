@@ -30,6 +30,7 @@ try {
 let activeCasefileRoot = null;
 let activeLaneId = null;
 let activeLaneRoot = null;
+let registeredLaneRoots = [];
 
 // Filesystem watcher for the active casefile + extra overlay roots.
 // We notify the renderer any time something inside one of the watched
@@ -987,6 +988,9 @@ function adoptCasefileSnapshot(snapshot) {
   const lanes = Array.isArray(snapshot.lanes) ? snapshot.lanes : [];
   const activeLane = lanes.find((lane) => lane && lane.id === activeLaneId);
   activeLaneRoot = activeLane && typeof activeLane.root === "string" ? activeLane.root : null;
+  registeredLaneRoots = lanes
+    .map((lane) => (lane && typeof lane.root === "string" ? lane.root : null))
+    .filter(Boolean);
   // Re-bind the filesystem watchers to the (possibly new) casefile +
   // overlay roots so the renderer's file tree picks up external
   // changes (`git checkout`, `cp` from another terminal, the
@@ -999,6 +1003,7 @@ function closeActiveCasefile() {
   activeCasefileRoot = null;
   activeLaneId = null;
   activeLaneRoot = null;
+  registeredLaneRoots = [];
   extraWatchRoots = [];
   clearTrashUndoStack();
   reconcileWatchers();
@@ -1929,6 +1934,36 @@ function killAllPtySessions() {
   }
 }
 
+function isPathWithinRoot(child, root) {
+  return child === root || child.startsWith(`${root}${path.sep}`);
+}
+
+function allowedTerminalRoots() {
+  const roots = new Set();
+  for (const root of [activeCasefileRoot, activeLaneRoot, ...registeredLaneRoots]) {
+    const real = root ? realpathIfDirectory(root) : null;
+    if (real) roots.add(real);
+  }
+  return Array.from(roots);
+}
+
+function resolveAllowedTerminalCwd(requestedCwd) {
+  const fallback =
+    realpathIfDirectory(activeLaneRoot) ||
+    realpathIfDirectory(activeCasefileRoot) ||
+    os.homedir();
+  if (!activeCasefileRoot) {
+    return realpathIfDirectory(requestedCwd) || fallback;
+  }
+  const requested = realpathIfDirectory(requestedCwd);
+  if (!requested) return fallback;
+  const allowedRoots = allowedTerminalRoots();
+  if (allowedRoots.some((root) => isPathWithinRoot(requested, root))) {
+    return requested;
+  }
+  return fallback;
+}
+
 ipcMain.handle("terminal:spawn", async (_event, args = {}) => {
   if (!ptyLib) {
     throw new Error(
@@ -1942,15 +1977,10 @@ ipcMain.handle("terminal:spawn", async (_event, args = {}) => {
     throw new Error(`terminal session already exists: ${id}`);
   }
   const requestedCwd = typeof args.cwd === "string" && args.cwd ? args.cwd : null;
-  let cwd = requestedCwd || activeLaneRoot || activeCasefileRoot || os.homedir();
-  // Don't trust the renderer; fall back to homedir if the requested cwd
-  // doesn't exist or isn't a directory.
-  try {
-    const stat = fsSync.statSync(cwd);
-    if (!stat.isDirectory()) cwd = os.homedir();
-  } catch {
-    cwd = os.homedir();
-  }
+  // Don't trust the renderer: when a casefile is open, terminals may start
+  // only inside the casefile or registered lane roots. User file operations
+  // remain casefile-wide elsewhere; this only constrains shell authority.
+  const cwd = resolveAllowedTerminalCwd(requestedCwd);
   const cols = Number.isInteger(args.cols) && args.cols > 0 ? args.cols : 80;
   const rows = Number.isInteger(args.rows) && args.rows > 0 ? args.rows : 24;
   const shell = pickShell();

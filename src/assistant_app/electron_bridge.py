@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,12 @@ def _parse_messages(raw_messages: list[dict[str, Any]]) -> list[ChatMessage]:
     parsed: list[ChatMessage] = []
     for item in raw_messages:
         role = str(item.get("role", "user"))
+        if role == "system":
+            # System messages are DeskAssist-owned trust boundaries. Chat logs
+            # live inside the user's workspace, so persisted or renderer-provided
+            # history must not be allowed to spoof/suppress the charter or scoped
+            # context layers we reconstruct below on every turn.
+            continue
         content = item.get("content")
         if content is not None and not isinstance(content, str):
             content = str(content)
@@ -725,14 +732,24 @@ def handle_chat_save_output(request: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("body must be a string")
 
     target = destination / filename
-    if target.exists():
-        raise FileExistsError(f"Refusing to overwrite existing file: {target}")
-    # Atomic-ish write via a sibling temp file so a crash mid-write doesn't
-    # leave a half-written file behind.
-    tmp = target.with_suffix(target.suffix + ".tmp")
+    # Atomic write without a time-of-check/time-of-use overwrite race:
+    # stage to a unique sibling temp file, then link it into place using
+    # exclusive create semantics. If another save wins the race first, the
+    # link fails and the existing target is preserved.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        dir=destination,
+        text=True,
+    )
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(body, encoding="utf-8")
-        tmp.replace(target)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        try:
+            os.link(tmp, target)
+        except FileExistsError as exc:
+            raise FileExistsError(f"Refusing to overwrite existing file: {target}") from exc
     finally:
         if tmp.exists():
             try:

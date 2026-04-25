@@ -78,6 +78,9 @@ class WorkspaceFilesystem:
         self._mounts: tuple[tuple[str, Path, bool], ...] = tuple(
             sorted(mounts, key=lambda item: -len(item[0]))
         )
+        writable_roots = [self.workspace_root] if self._workspace_writable else []
+        writable_roots.extend(root for _prefix, root, writable in self._mounts if writable)
+        self._protected_write_roots: frozenset[Path] = frozenset(writable_roots)
 
     # ----- mount helpers -----
 
@@ -138,6 +141,13 @@ class WorkspaceFilesystem:
                 "`_scope/<label>/...` path instead."
             )
         return self.resolve_relative(candidate)
+
+    def _reject_protected_root_delete(self, target: Path, candidate: str) -> None:
+        if target in self._protected_write_roots:
+            raise PermissionError(
+                f"Refusing to delete scoped root directory: {candidate!r}. "
+                "Delete a child path instead."
+            )
 
     @staticmethod
     def _virtualize(prefix: str, mount_root: Path, absolute: Path) -> str:
@@ -308,6 +318,7 @@ class WorkspaceFilesystem:
 
     def delete_path(self, candidate: str, recursive: bool) -> tuple[Path, str]:
         target = self._resolve_for_write(candidate)
+        self._reject_protected_root_delete(target, candidate)
         if not target.exists():
             raise FileNotFoundError(f"Path not found: {candidate}")
         if target.is_file():
