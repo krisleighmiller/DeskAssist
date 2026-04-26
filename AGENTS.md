@@ -11,7 +11,7 @@ It is an execution constraint.
 
 ## Product Definition
 
-DeskAssist V1 is a **unified context-switching workspace with scoped AI**.
+DeskAssist V1 is a **unified focus-switching workspace with scoped AI**.
 
 It is not being built as:
 - a repo-analysis tool with miscellaneous extras
@@ -64,10 +64,11 @@ These are fixed unless explicitly changed:
 
 - Keep the Electron main / preload / renderer / Python bridge split.
 - Keep scope resolution in Python.
-- Keep comparison chat governed by the same per-directory read/write scope model as context chat.
-- Keep active-context containment enforcement in Electron main for file operations.
-- Treat `context` as the current implementation of a scoped context, not the product identity.
-- Treat `context` as the product-facing work unit.
+- Keep comparison chat governed by the same per-directory read/write scope model as focus chat.
+- Keep casefile containment enforcement in Electron main for ordinary file operations.
+- Keep active context root guardrails where the current implementation uses them, such as refusing to trash the active context root.
+- Treat `context` as the current implementation of a scoped focus, not the product identity.
+- Treat `focus` as the product-facing work unit.
 - DO NOT duplicate scope logic in the renderer.
 - DO NOT bypass existing write-approval and safety boundaries.
 
@@ -204,7 +205,7 @@ Using “cleanup” or “refactor” as an excuse to redesign unrelated behavio
 Adding flexibility for imagined future use cases that are not in the current milestone.
 
 ### 6. Repo-analysis gravity
-Improving only the casefile/context analysis path in ways that make the broader context-switching workspace vision harder to reach.
+Improving only the casefile/context analysis path in ways that make the broader focus-switching workspace vision harder to reach.
 
 ---
 

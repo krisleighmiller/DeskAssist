@@ -8,6 +8,7 @@ The goal is to reduce confusion from older milestone history. Use these docs to 
 - what is incomplete from the current baseline?
 - what should be built next?
 - how does the current architecture work?
+- what language should docs use for product concepts versus implementation records?
 
 ## Reading Order
 
@@ -58,7 +59,7 @@ If an older architecture or planning document appears to disagree with the curre
 [`architecture/domain-model.md`](architecture/domain-model.md)
 
 - Product and implementation vocabulary.
-- How `workspace`, `casefile`, `context`, `scope`, `comparison`, and `attachment` relate.
+- How `workspace`, `focus`, `casefile`, `context`, `scope`, `comparison`, and `attachment` relate.
 
 [`architecture/runtime-flows.md`](architecture/runtime-flows.md)
 

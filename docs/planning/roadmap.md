@@ -10,13 +10,13 @@ DeskAssist currently has:
 
 - a stable Electron desktop shell
 - a casefile-backed workspace model
-- context creation, switching, update, and removal
+- context-backed focus creation, switching, update, and removal
 - browser-driven file operations
-- scoped context chat
-- multi-context comparison chat
+- scoped focus chat
+- multi-focus comparison chat
 - flat per-directory scope with read/write access
 - persisted context and comparison chat logs
-- a lightweight home view with recent and pinned contexts
+- a lightweight home view with recent and pinned work records
 - quick capture into the active workspace
 
 The main gaps are:
@@ -24,15 +24,16 @@ The main gaps are:
 - scope is implemented more clearly than it is explained
 - scoped chat discussions cannot be referenced from other scoped chats
 - home/resume is lightweight and renderer-local
-- there is no standalone non-code context
+- there is no standalone non-code focus
 - extension boundaries are not defined
 
 ## Build Rules
 
 - Build from the current app, not from old milestone assumptions.
-- Keep `context` as the scoped work unit.
+- Keep `focus` as the product-facing work unit.
+- Keep `context` as the implementation record for a scoped focus.
 - Keep scope resolution in Python.
-- Keep comparison chat governed by the same scope model as context chat.
+- Keep comparison chat governed by the same scope model as focus chat.
 - Do not introduce integrations before extension boundaries.
 - Do not create a new persistence model unless the current roadmap item requires it.
 - Prefer focused, user-visible improvements over framework work.
@@ -50,16 +51,16 @@ The scope engine already works. The missing work is explanation, presentation, a
 ### Includes
 
 - review and improve scope header copy
-- improve empty states for context chat and comparison chat
+- improve empty states for focus chat and comparison chat
 - clarify RW/RO language
 - clarify what attachments are in user-facing language
 - clarify when write tools require approval
-- ensure context and comparison chat explain scope consistently
+- ensure focus and comparison chat explain scope consistently
 
 ### Does Not Include
 
 - replacing the scope resolver
-- unifying context chat and comparison chat runtime paths
+- unifying focus chat and comparison chat runtime paths
 - changing persistence
 - building onboarding as a separate system
 
@@ -68,7 +69,7 @@ The scope engine already works. The missing work is explanation, presentation, a
 - A new user can answer what the AI can read right now.
 - A new user can answer where the AI may write right now.
 - A user can understand how to widen, narrow, or change access without knowing implementation details.
-- Context chat and comparison chat use consistent scope language.
+- Focus chat and comparison chat use consistent scope language.
 
 ---
 
@@ -78,18 +79,18 @@ The scope engine already works. The missing work is explanation, presentation, a
 
 Allow one scoped chat to reference the discussion from another scoped chat.
 
-This is the missing continuity feature between context chat and comparison chat. Chat logs already persist, but the user cannot explicitly bring one discussion into another session.
+This is the missing continuity feature between focus chat and comparison chat. Chat logs already persist, but the user cannot explicitly bring one discussion into another session.
 
 ### Example
 
-A user discusses Context A in a single-context chat, then opens a comparison chat between Context A and Context B. The user should be able to reference the earlier Context A discussion inside the comparison chat without manually copying text.
+A user discusses Focus A in a single-focus chat, then opens a comparison chat between Focus A and Focus B. The user should be able to reference the earlier Focus A discussion inside the comparison chat without manually copying text.
 
 ### Includes
 
 - list or select prior chat discussions available in the current casefile
-- include a chosen discussion as readable context in another chat
+- include a chosen discussion as readable reference material in another chat
 - preserve provenance in the prompt or message context
-- support context chat and comparison chat as reference sources
+- support focus chat and comparison chat as reference sources
 - avoid silently merging histories
 
 ### Does Not Include
@@ -102,7 +103,7 @@ A user discusses Context A in a single-context chat, then opens a comparison cha
 ### Exit Criteria
 
 - A user can choose a prior scoped discussion and include it in the current chat.
-- The current chat can use that discussion as context.
+- The current chat can use that discussion as reference material.
 - The UI makes it clear which discussion was referenced.
 - The original discussion remains unchanged.
 - The referenced discussion is not automatically added to every future chat.
@@ -119,9 +120,9 @@ Home exists today, but recent work is renderer-local and resume is shallow.
 
 ### Includes
 
-- durable user-level recent-context index
+- durable user-level recent-work index
 - richer resume targets
-- recent context, recent file, recent chat, and recent comparison entries where useful
+- recent focus, recent file, recent chat, and recent comparison entries where useful
 - restore enough workbench state to make resume feel real
 - clear distinction between pinned work and recent work
 
@@ -139,19 +140,19 @@ Opening DeskAssist answers:
 
 - what was I doing?
 - what can I resume?
-- which contexts or discussions were active recently?
+- which focuses or discussions were active recently?
 
 Resume should restore more than a casefile root. It should put the user near the actual work they left.
 
 ---
 
-## 4. First Standalone Non-Code Context
+## 4. First Standalone Non-Code Focus
 
 ### Goal
 
 Prove DeskAssist is broader than project or repo work.
 
-Quick capture currently writes a file inside the active workspace. That is useful, but it is not a standalone non-code context.
+Quick capture currently writes a file inside the active workspace. That is useful, but it is not a standalone non-code focus.
 
 ### Recommended First Version
 
@@ -159,14 +160,14 @@ Pick one:
 
 - journal
 - daily log
-- scratch context
+- scratch focus
 
 ### Includes
 
-- a local non-code context that can be opened and resumed like other contexts
+- a local non-code focus that can be opened and resumed like other focuses
 - file-backed storage using existing file/editor mechanics where possible
-- scoped AI over that context
-- capture into that context without needing an active project workspace
+- scoped AI over that focus
+- capture into that focus without needing an active project workspace
 
 ### Does Not Include
 
@@ -179,7 +180,7 @@ Pick one:
 
 ### Exit Criteria
 
-- A user can switch from project work to the non-code context and back.
+- A user can switch from project work to the non-code focus and back.
 - A user can capture into it without opening a project workspace first.
 - AI can work over it using the same scope safety model.
 - The implementation does not introduce a separate platform subsystem.
@@ -192,7 +193,7 @@ Pick one:
 
 Define how future integrations can connect without reshaping the core product.
 
-This should come after the core workspace, context, scope, resume, and non-code context loops are stronger.
+This should come after the core workspace, focus, scope, resume, and non-code focus loops are stronger.
 
 ### Includes
 
@@ -211,14 +212,14 @@ This should come after the core workspace, context, scope, resume, and non-code 
 
 ### Exit Criteria
 
-Future integrations can be added without changing the core meaning of workspace, context, scope, comparison, or file work.
+Future integrations can be added without changing the core meaning of workspace, focus, scope, comparison, or file work.
 
 ## Current Priority Order
 
 1. Scope clarity pass
 2. Cross-session chat reference access
 3. Durable recent work and resume
-4. First standalone non-code context
+4. First standalone non-code focus
 5. Extension boundaries
 
-This order keeps the product focused on context switching and scoped AI before expanding into broader platform behavior.
+This order keeps the product focused on switching focus and scoped AI before expanding into broader platform behavior.

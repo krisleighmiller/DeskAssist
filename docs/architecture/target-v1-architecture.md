@@ -6,7 +6,7 @@ It is not a rewrite proposal. It is a shaping document for how the current codeb
 
 The central V1 bet remains:
 
-**a unified context-switching workspace with scoped AI**
+**a unified focus-switching workspace with scoped AI**
 
 The architecture should make that bet obvious in both the user experience and the code structure.
 
@@ -16,7 +16,7 @@ V1 architecture should:
 
 - preserve the current strength of the scoped chat and comparison model
 - make the shell feel reliable and boring in a good way
-- promote contexts and artifacts over internal feature silos
+- promote focuses and artifacts over internal feature silos
 - let browsing, editing, comparison, and capture feel like one workflow
 - prepare for future integrations without making them part of the core too early
 
@@ -25,13 +25,13 @@ V1 architecture should:
 ```mermaid
 flowchart TD
   Shell[ShellLayer]
-  Contexts[ContextLayer]
+  Focuses[FocusLayer]
   Artifacts[ArtifactLayer]
   Capabilities[CapabilityLayer]
   Extensions[ExtensionLayer]
 
-  Shell --> Contexts
-  Contexts --> Artifacts
+  Shell --> Focuses
+  Focuses --> Artifacts
   Artifacts --> Capabilities
   Capabilities --> Extensions
 ```
@@ -39,8 +39,8 @@ flowchart TD
 The key idea is that each layer should depend on the layer below it conceptually, but the product should be experienced from the top down:
 
 - the user lives in the shell
-- the shell helps the user move between contexts
-- contexts contain or reference artifacts
+- the shell helps the user move between focuses
+- focuses contain or reference artifacts
 - capabilities operate over those artifacts
 - extensions add optional inputs and outputs
 
@@ -67,67 +67,67 @@ Where the current system leaks:
 
 - the home/landing experience exists, but is still lightweight and renderer-local
 - too much shell state and workflow state are mixed together in `App.tsx`
-- the right panel has been reduced to chat/conversation sessions, but broader artifact and context presentation is still incomplete
+- the right panel has been reduced to chat/conversation sessions, but broader artifact and focus presentation is still incomplete
 
 V1 target:
 
 - a shell state model distinct from domain and session state
 - a meaningful workspace home or resume surface
 - predictable pane and panel behavior
-- first-class context switching rather than indirect context switching only
+- first-class focus switching rather than indirect active-context switching only
 
 Recommended technical boundary:
 
 Split renderer state into at least three concerns:
 
 - shell and layout state
-- context and session state
+- focus and session state
 - settings and integrations state
 
-## Layer 2: Contexts
+## Layer 2: Focuses
 
 Product meaning:
 
-Contexts are the units the user switches between: active work areas, scoped conversations, comparisons, capture spaces, and later non-code spaces such as a journal.
+Focuses are the units the user switches between: active work areas, scoped conversations, comparisons, capture spaces, and later non-code spaces such as a journal.
 
 Current implementation:
 
 - contexts inside a casefile
 - comparison sessions across multiple contexts
 - active context plus associated tabs, chat, attachments, scope header, and comparison sessions
-- renderer-local recent context records shown in the home view and toolbar
+- renderer-local recent work records shown in the home view and toolbar
 
 What already aligns:
 
-- contexts are durable scoped work units
-- comparison sessions already behave like multi-context scoped sessions
+- contexts already implement durable scoped focuses
+- comparison sessions already behave like multi-focus scoped sessions
 - the active context already rebinds chat, terminal context, AI scope, and file-tree highlighting
 
 Where the current system leaks:
 
-- `context` is a useful implementation term, but not a broad user-facing term
-- contexts are surfaced through recent casefile/active-context records rather than a complete first-class context registry
+- `context` is a useful implementation term, but not the broad user-facing term
+- focuses are surfaced through recent casefile/active-context records rather than a complete first-class focus registry
 - home and recency exist, but persistence is still renderer `localStorage`, not the durable user-level index implied by the V1 target
 
 V1 target:
 
-- a context registry or context list the shell can display
+- a focus registry or focus list the shell can display
 - clear distinction between:
-  - single context
-  - comparison context
-  - capture context
-  - future non-code context
-- explicit current-scope visibility inside each context
+  - single focus
+  - comparison focus
+  - capture focus
+  - future non-code focus
+- explicit current-scope visibility inside each focus
 
 Recommended technical boundary:
 
-Introduce a renderer-side context session model that is broader than raw context selection. The current context model can remain the storage and scoping implementation for many contexts, but the UI should operate on context sessions.
+Introduce a renderer-side focus session model that is broader than raw context selection. The current context model can remain the storage and scoping implementation for many focuses, but the UI should operate on focus sessions.
 
 ## Layer 3: Artifacts
 
 Product meaning:
 
-Artifacts are the things users actually work with: files, chat transcripts, comparisons, context files, attachments, and future captured material.
+Artifacts are the things users actually work with: files, chat transcripts, comparisons, context files, related directories, and future captured material.
 
 Current implementation:
 
@@ -152,7 +152,7 @@ V1 target:
 - a coherent artifact model, even if it is still backed by multiple stores
 - easier insertion of captured material into chat and workflows
 - a clearer difference between:
-  - context-owned files
+  - focus-owned files
   - casefile-scoped files
   - external reference directories
 
@@ -173,7 +173,7 @@ This does not require a single storage system yet. It does require a consistent 
 
 Product meaning:
 
-Capabilities are the actions DeskAssist makes available over contexts and artifacts:
+Capabilities are the actions DeskAssist makes available over focuses and artifacts:
 
 - browse
 - open
@@ -190,7 +190,7 @@ Current implementation:
 - browsing and editing through Electron main and the renderer workbench
 - compare through scoped comparison chat
 - chat through the Python bridge and `ChatService`
-- scoped context through context and comparison scope resolution
+- scoped focus through context and comparison scope resolution
 - quick capture opens or creates `quick-capture.md` inside the active workspace
 
 What already aligns:
@@ -205,7 +205,7 @@ What already aligns:
 
 Where the current system leaks:
 
-- quick capture is tied to an active workspace rather than being a standalone non-code context
+- quick capture is tied to an active workspace rather than being a standalone non-code focus
 - scope adjustment exists, but still depends on context/attachment mechanics that are more implementation-shaped than product-shaped
 
 V1 target:
@@ -220,8 +220,8 @@ Recommended technical boundary:
 Treat capabilities as workflows that can be initiated from multiple surfaces. For example:
 
 - compare should be launchable from the browser or context home
-- capture should be launchable from the shell, current context, or home
-- scope controls should live with chat and context state, not only in setup-oriented screens
+- capture should be launchable from the shell, current focus, or home
+- scope controls should live with chat and focus state, not only in setup-oriented screens
 
 ## Layer 5: Extensions
 
@@ -241,7 +241,7 @@ Examples from the roadmap:
 Current implementation:
 
 - no formal extension framework yet
-- explicit context attachments are the closest existing example of an external context source
+- explicit context attachments are the closest existing example of an external material source
 - provider integrations exist, but they are model providers rather than product extensions
 
 V1 target:
@@ -270,15 +270,15 @@ What should evolve:
 
 - renderer state ownership
 - visible navigation and panel structure
-- user-facing language around context, scope, comparison, and files
+- user-facing language around focus, scope, comparison, and files
 - artifact presentation from tab silos to unified access patterns
 
 What should be introduced:
 
 - durable user-level home and resume state beyond renderer `localStorage`
-- fuller context session framing above raw contexts
+- fuller focus session framing above raw contexts
 - artifact descriptors and artifact-oriented entry points
-- clearer artifact discovery and non-code context support
+- clearer artifact discovery and non-code focus support
 - extension contracts after core loops are strong
 
 ## Most Important Separation To Add
@@ -293,15 +293,15 @@ Today those layers overlap too much.
 
 Examples:
 
-- contexts are both a storage record and a user-facing concept
-- chat sessions are now the right-panel focus, but artifact and context discovery still lack a unified presentation layer
+- contexts are storage records that still leak into user-facing concepts
+- chat sessions are now the right-panel focus, but artifact and focus discovery still lack a unified presentation layer
 - `App.tsx` mixes shell coordination with domain session logic
 
 V1 should aim for:
 
 - storage modeled by casefile and context persistence
 - scope modeled by dedicated scope services and visible scope UI
-- presentation modeled by workspace, context, and artifact surfaces
+- presentation modeled by workspace, focus, and artifact surfaces
 
 ## Refactor Seams To Respect
 
@@ -318,7 +318,7 @@ The current code suggests several safe seams for incremental improvement:
 V1 architecture should explicitly avoid:
 
 - turning every artifact type into a top-level destination
-- building integrations before the shell and context model feel complete
+- building integrations before the shell and focus model feel complete
 - collapsing all persistence into one generic database purely for symmetry
 - replacing working scope mechanics just to make the naming cleaner
 
@@ -330,7 +330,7 @@ It is:
 
 - keep the current runtime split
 - keep the current scope engine
-- keep context language consistent across product and implementation docs
+- keep focus and context language consistent across product and implementation docs
 - raise the information model from tabs to artifacts
 - strengthen the shell so DeskAssist feels like one reliable daily workspace
 

@@ -6,11 +6,11 @@ DeskAssist is a unified workspace for people whose work does not stay in one mod
 
 It is for users who move constantly between code, drafts, experiments, comparisons, and everyday capture, and who are tired of losing context every time they switch tools.
 
-DeskAssist should feel like an always-open second brain for messy real-world work: a place where a user can keep active threads of thought in one environment, control exactly what AI can see, and return to work without reconstructing their state from scratch.
+DeskAssist should feel like an always-open second brain for messy real-world work: a place where a user can keep active focuses in one environment, control exactly what AI can see, and return to work without reconstructing their state from scratch.
 
 This is not a "repo chat app with extra tabs."
 It is not a generic "AI desktop assistant."
-It is a context-switching workspace with scoped AI.
+It is a focus-switching workspace with scoped AI.
 
 ## The Problem DeskAssist Solves
 
@@ -30,7 +30,7 @@ A user may need to:
 - capture a thought before it disappears
 - ask AI about one specific folder and not the rest
 - compare version X with version Y and then discuss both together
-- switch from project work to a non-code context and back again without losing the thread
+- switch from project work to a non-code focus and back again without losing the thread
 
 Current tools make those transitions awkward.
 They force the user to split context across multiple apps, multiple workspaces, or multiple mental models.
@@ -61,7 +61,7 @@ The user should be able to stay in one environment while moving between differen
 
 That means DeskAssist should support:
 
-- switching between active contexts
+- switching between active focuses
 - resuming where the user left off
 - quick capture without breaking flow
 - keeping related work near each other even when the formats differ
@@ -79,7 +79,7 @@ That means DeskAssist should support:
 
 This is the product edge.
 Not "AI plus files."
-But a unified workspace where context is deliberate.
+But a unified workspace where focus and AI scope are deliberate.
 
 ## What DeskAssist Is Not
 
@@ -103,7 +103,7 @@ The product has to earn expansion by first being excellent at its core loops.
 
 DeskAssist V1 is:
 
-**a unified desktop workspace where a user can switch between contexts, work with files, and have AI conversations scoped to exactly the material they choose.**
+**a unified desktop workspace where a user can switch between focuses, work with files, and have AI conversations scoped to exactly the material they choose.**
 
 That is enough for V1.
 
@@ -132,7 +132,7 @@ If a feature does not strengthen that promise, it probably does not belong in th
 
 The center of gravity for DeskAssist should be:
 
-**unified context-switching workspace with scoped AI**
+**unified focus-switching workspace with scoped AI**
 
 This is the filter that should keep the product from drifting.
 
@@ -141,11 +141,11 @@ DeskAssist is broader than a code tool, but narrower than a full life-operating 
 The product should mature around these capabilities:
 
 1. stable shell
-2. strong context switching
+2. strong focus switching
 3. visible and controllable AI scope
 4. home and resume flow
 5. coherent artifacts and capture
-6. one validated non-code context
+6. one validated non-code focus
 7. extension boundaries for future integrations
 
 The canonical execution order lives in [`../planning/roadmap.md`](../planning/roadmap.md). If this product north star and the roadmap appear to disagree about sequencing, the roadmap wins.
@@ -158,7 +158,7 @@ It should open into purposeful continuity.
 A user opening DeskAssist should be able to:
 
 - resume recent work
-- jump to active contexts
+- jump to active focuses
 - quick-capture a thought
 - reopen a comparison or chat
 - switch from code to draft to comparison without friction
@@ -174,15 +174,15 @@ If the app opens like a shell full of infrastructure, it is reinforcing the impl
 Use these terms when talking about the product:
 
 - **workspace** = the overall DeskAssist environment
-- **context** = the current or resumable unit of work
+- **focus** = the current or resumable unit of work
 - **scope** = what the AI can currently read
 - **artifact** = the durable things the user works with
-- **comparison** = a multi-context inspection or discussion session
+- **comparison** = a multi-focus inspection or discussion session
 
 Use these terms when talking about the implementation:
 
 - **casefile** = the current storage container
-- **context** = the current implementation of a scoped context
+- **context** = the current implementation of a scoped focus
 - **attachment** = related material added to a scoped context, with read-only or writable access
 
 The goal is not to hide implementation reality.
@@ -193,7 +193,7 @@ The goal is to stop implementation terms from accidentally defining the product.
 DeskAssist V1 is successful if a user can:
 
 - use it daily without fighting the shell
-- switch between multiple active contexts naturally
+- switch between multiple active focuses naturally
 - understand what AI can currently see
 - narrow or widen that scope intentionally
 - compare related work in one place
@@ -206,7 +206,8 @@ Then broader personal assistant and integration features can be added from a pos
 
 After the core is strong, DeskAssist may expand into:
 
-- journal or daily log contexts
+- journal or daily log focuses
+- full web browser support
 - email, messaging, or Slack integrations
 - reminder and follow-up flows
 - calendar or task views
@@ -221,8 +222,8 @@ They are not the product definition of V1.
 
 DeskAssist should be built as a workspace for continuous, messy, multi-mode work.
 
-It should help users stay oriented while moving between projects, files, comparisons, and conversations.
-It should make AI more useful by making context explicit and controllable.
+It should help users stay oriented while moving between focuses, files, comparisons, and conversations.
+It should make AI more useful by making scope explicit and controllable.
 And it should grow carefully, without letting every interesting feature turn the product into an unfocused pile of surfaces.
 
 The simplest way to keep DeskAssist on track is this:

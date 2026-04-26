@@ -4,15 +4,15 @@ This document is the baseline for DeskAssist as it exists now. It is not a histo
 
 ## Product Baseline
 
-DeskAssist is currently a desktop workspace for context switching with scoped AI.
+DeskAssist is currently a desktop workspace for switching focus with scoped AI.
 
 The app can:
 
 - open a workspace-backed casefile
-- create and switch between contexts
+- create and switch between context-backed focuses
 - browse, create, edit, rename, move, trash, and restore files
-- chat with AI inside one context
-- compare two or more contexts in a multi-context chat
+- chat with AI inside one focus
+- compare two or more focuses in a multi-focus chat
 - control which scoped directories are read-only or writable
 - persist context and comparison chat history
 - show a lightweight home view with recent and pinned work
@@ -20,9 +20,9 @@ The app can:
 
 The app is not yet:
 
-- a full user-level context registry
+- a full user-level focus registry
 - a complete home/resume system
-- a standalone non-code context system
+- a standalone non-code focus system
 - an integration platform
 - a system where one scoped chat can explicitly reference another scoped chat discussion
 
@@ -32,11 +32,13 @@ The app is not yet:
 
 **Casefile** is the selected directory plus its `.casefile/` metadata folder.
 
-**Context** is the durable scoped work unit inside a casefile. A context has an id, stable session id, name, kind, root directory, optional parent, attachments, and a writable flag.
+**Focus** is the product-facing unit of active or resumable work.
 
-**Scope** is the exact set of directories and context files the AI can read or write in a chat session.
+**Context** is the current implementation record for a scoped focus inside a casefile. A context has an id, stable session id, name, kind, root directory, optional parent, attachments, and a writable flag.
 
-**Comparison** is a multi-context chat session over two or more contexts.
+**Scope** is the exact set of directories and context files the AI can read or write in a chat session. Scoped directories are exposed to the model as `_scope/<label>/...`; bare relative paths resolve inside the primary writable scoped directory when one exists.
+
+**Comparison** is a multi-focus chat session over two or more focuses. The current implementation stores those participants as context ids.
 
 **Attachment** is an additional directory associated with a context or comparison. It can be read-only or writable.
 
@@ -46,7 +48,7 @@ DeskAssist currently uses four main runtime layers:
 
 - Electron main process owns desktop capabilities, file IO, menus, watchers, terminals, API key storage, and IPC enforcement.
 - Preload exposes the constrained `window.assistantApi` surface to the renderer.
-- React renderer owns workbench UI state, open tabs, recent contexts, chat session state, comparison session state, and most workflow orchestration.
+- React renderer owns workbench UI state, open tabs, recent work records, chat session state, comparison session state, and most workflow orchestration.
 - Python bridge and domain services own casefile persistence, scope resolution, chat orchestration, provider/tool integration, and scoped filesystem tools.
 
 This split is working and should be preserved unless a future task explicitly changes it.
@@ -60,7 +62,7 @@ Each casefile stores metadata under `.casefile/`:
 - `chats/<session_uuid>.jsonl`: context and comparison chat logs
 - `context.json`: casefile-wide context file manifest
 
-The renderer also stores recent and pinned contexts in `localStorage`.
+The renderer also stores recent and pinned work records in `localStorage`.
 
 Important limitation: recent work is not yet a durable user-level index. It is a useful local renderer feature, not a full cross-workspace persistence layer.
 
@@ -74,7 +76,7 @@ Remaining concern: this still needs product QA at common window sizes, but no ob
 
 ### Files And Browser
 
-The file browser is a real control surface. It supports normal file operations and connects file-tree actions to context workflows.
+The file browser is a real control surface. It supports normal file operations and connects file-tree actions to focus workflows.
 
 Implemented:
 
@@ -86,19 +88,19 @@ Implemented:
 - trash files and folders with undo
 - create a context from a directory
 - attach a directory to a context
-- switch contexts from context-root rows
+- switch focuses from context-root rows
 - start comparison chat from context-root rows
 - update or remove contexts from browser actions
 
-### Contexts
+### Context-Backed Focuses
 
-Contexts are durable scoped work units inside a casefile.
+Focuses are durable scoped work units. The current implementation stores them as contexts inside a casefile.
 
 Implemented:
 
 - default `main` context on casefile initialization
 - context registration
-- context switching
+- focus switching through active-context changes
 - context rename/update/remove
 - parent relationships for UI organization
 - attachments with read/write access mode
@@ -122,16 +124,16 @@ Implemented:
 
 Important limitation: the user-facing language around scope is still rough. The implementation is stronger than the explanation.
 
-### Context Chat
+### Focus Chat
 
-Single-context chat works against the active context's resolved scope.
+Single-focus chat works against the active context's resolved scope.
 
 Implemented:
 
 - provider selection
 - persisted chat history by stable session UUID
 - assistant charter injection
-- casefile context injection
+- casefile context reference injection
 - scoped read tools
 - write tools gated by explicit approval
 - `@` file inclusion
@@ -140,7 +142,7 @@ Implemented:
 
 ### Comparison Chat
 
-Comparison chat works over two or more contexts.
+Comparison chat works over two or more focuses.
 
 Implemented:
 
@@ -153,7 +155,7 @@ Implemented:
 - per-directory read/write access
 - write-tool approval flow
 
-Important limitation: comparison chat and context chat share the backend scope shape, but still use separate renderer and bridge flows.
+Important limitation: comparison chat and focus chat share the backend scope shape, but still use separate renderer and bridge flows.
 
 ### Home And Resume
 
@@ -161,8 +163,8 @@ Home exists, but it is lightweight.
 
 Implemented:
 
-- recent contexts
-- pinned contexts
+- recent work records
+- pinned work records
 - resume latest
 - reopen recent workspace and preferred active context
 - quick capture guidance
@@ -182,19 +184,19 @@ The app can show what the AI can read and write, but the explanation still feels
 
 ### 2. Cross-Session Chat Reference
 
-Scoped chats are persisted, but they are not addressable as context from other scoped chats.
+Scoped chats are persisted, but they are not addressable as readable reference material from other scoped chats.
 
-Example gap: a user cannot explicitly reference the discussion from a single-context chat inside a comparison chat.
+Example gap: a user cannot explicitly reference the discussion from a single-focus chat inside a comparison chat.
 
-This belongs to cross-context continuity. It should not merge chat histories automatically. It should let the user select a prior discussion and include it as readable referenced context with clear provenance.
+This belongs to cross-focus continuity. It should not merge chat histories automatically. It should let the user select a prior discussion and include it as readable reference material with clear provenance.
 
 ### 3. Durable User-Level Recent Work
 
-Recent and pinned contexts currently live in renderer `localStorage`. The app needs a more deliberate user-level index before home/resume can become reliable across workspaces and app lifecycle edge cases.
+Recent and pinned work records currently live in renderer `localStorage`. The app needs a more deliberate user-level index before home/resume can become reliable across workspaces and app lifecycle edge cases.
 
 ### 4. Full Resume State
 
-The app can reopen a recent casefile and preferred context, but it does not restore a complete working state:
+The app can reopen a recent casefile and preferred focus, but it does not restore a complete working state:
 
 - open editor tabs
 - focused file
@@ -202,9 +204,9 @@ The app can reopen a recent casefile and preferred context, but it does not rest
 - recent discussion targets
 - selected scope changes beyond persisted context metadata
 
-### 5. Standalone Non-Code Context
+### 5. Standalone Non-Code Focus
 
-Quick capture is a file workflow inside the active workspace. DeskAssist still needs one standalone non-code context, such as a journal, daily log, or scratch context, to prove the product is broader than project/repo work.
+Quick capture is a file workflow inside the active workspace. DeskAssist still needs one standalone non-code focus, such as a journal, daily log, or scratch focus, to prove the product is broader than project/repo work.
 
 ### 6. Current Architecture Concentration
 
@@ -217,7 +219,7 @@ From this baseline, the next work should proceed in this order:
 1. Polish scope clarity enough that users can understand what AI can see.
 2. Add cross-session chat reference access.
 3. Strengthen home/resume with durable recent work and richer resume targets.
-4. Add the first standalone non-code context.
-5. Define extension boundaries only after the core workspace/context/scope loops are stronger.
+4. Add the first standalone non-code focus.
+5. Define extension boundaries only after the core workspace/focus/scope loops are stronger.
 
 This is the current baseline for future planning. Older milestone language should not override this document when deciding what the app already does.

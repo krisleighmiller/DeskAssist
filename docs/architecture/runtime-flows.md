@@ -21,7 +21,7 @@ Most DeskAssist flows follow the same shape:
 
 That shared pattern is important because it means most future features should reuse the same boundaries instead of bypassing them.
 
-## Open Casefile And Switch Context
+## Open Casefile And Switch Focus
 
 Primary code paths:
 
@@ -46,14 +46,14 @@ Sequence:
    - workspace tree
    - context chat history
 
-Context switching follows the same shape, except the bridge command is `casefile:switchContext` and the returned snapshot updates the active context root instead of creating a new casefile.
+Focus switching follows the same shape, except the bridge command is `casefile:switchContext` and the returned snapshot updates the active context root instead of creating a new casefile.
 
 Why it matters:
 
 - the active casefile root is the enforcement boundary for renderer-side file IO
-- the active context root is still important for AI scope, terminal context, highlighting, and context-specific chat state
+- the active context root is still important for AI scope, terminal context, highlighting, and focus-specific chat state
 - the casefile snapshot is the renderer's source of truth for current scoped work
-- switching contexts is more than a selection change; it rebinds chat history, active scope, terminal context, and file-tree highlighting
+- switching focus is more than a selection change; it rebinds chat history, active scope, terminal context, and file-tree highlighting
 
 ## Scoped Chat Send
 
@@ -75,7 +75,7 @@ sequenceDiagram
   participant Chat as ChatService
   participant Provider
 
-  User->>Renderer: Send message in context chat
+  User->>Renderer: Send message in focus chat
   Renderer->>Main: chat:send
   Main->>Bridge: chat:send with casefileRoot and contextId
   Bridge->>Scope: resolve context scope
@@ -90,7 +90,7 @@ sequenceDiagram
 
 Sequence:
 
-1. The renderer appends the user message optimistically to the in-memory context session.
+1. The renderer appends the user message optimistically to the in-memory focus session.
 2. It calls `assistantApi.sendChat(...)` with:
    - provider
    - optional model override
@@ -104,7 +104,7 @@ Sequence:
 5. The bridge builds a `ChatService` with a tool registry rooted at that scope.
 6. The bridge injects system layers in order:
    - product-owned assistant charter
-   - casefile context system prompt when applicable
+   - casefile context reference block when applicable
 7. `ChatService` sends the turn to the chosen provider with tool definitions.
 8. If the model requests write tools, the turn pauses and the renderer receives pending approvals instead of executing writes immediately.
 9. If the model requests only read tools, `ChatService` executes them inside the scoped registry and continues the loop until it gets a final assistant message or hits the tool-turn cap.
@@ -114,9 +114,10 @@ Sequence:
 Important current behaviors:
 
 - the model can read only what the resolved scope exposes
+- scoped directories are addressable as `_scope/<label>/...`; bare relative paths resolve inside the primary writable scoped directory when one exists
 - the model can write only after explicit approval
 - write approval resumes the existing assistant turn instead of starting a new one
-- the scoped chat prompt stack is product-owned: charter first, then casefile context when applicable
+- the scoped chat prompt stack is product-owned: charter first, then a casefile context reference block when applicable
 
 ## Comparison Chat
 
@@ -129,7 +130,7 @@ Primary code paths:
 
 Sequence:
 
-1. The user starts a comparison from the file tree or session UI by choosing two or more context-backed contexts.
+1. The user starts a comparison from the file tree or session UI by choosing two or more context-backed focuses.
 2. The renderer calls `assistantApi.openComparison(contextIds)`.
 3. Electron main forwards `casefile:openComparison` to the Python bridge.
 4. The bridge validates the context set, ensures comparison session metadata exists, resolves the comparison scope with each directory's configured read/write access, and loads persisted comparison chat history from the session UUID log.
@@ -140,12 +141,11 @@ Sequence:
    - scoped directories for each context
    - direct context attachments and comparison-session attachments
    - write tools enabled only when at least one scoped directory is writable
-9. The assistant charter and comparison context are injected.
+9. The assistant charter and comparison context reference block are injected.
 10. The provider runs against that scoped session and the bridge persists the resulting delta to the comparison chat log.
 
 What is different from context chat:
 
-- the scope is the union of multiple contexts plus inherited scope entries
 - the scope is the union of multiple context roots plus direct attachment entries
 - each directory keeps its configured read/write access
 - write tools still require explicit approval before execution
@@ -153,7 +153,7 @@ What is different from context chat:
 
 Implementation audit note: comparison is no longer documented correctly as "pick two contexts from the `Contexts` tab." The current UI supports one or more additional contexts from the file tree, and the Python scope resolver accepts any comparison with at least two distinct context ids.
 
-This is an important early example of DeskAssist supporting multiple related contexts inside one workspace.
+This is an important early example of DeskAssist supporting multiple related focuses inside one workspace.
 
 ## File Browse, Open, Save, Rename, Move, And Trash
 
@@ -197,7 +197,7 @@ Implementation audit note: older references to file IO being active-context-cont
 
 ## Current Workbench Surface
 
-The current right panel is centered on scoped conversation sessions. Files and directories are handled by the browser and editor; comparison sessions use the same scoped-directory access model as context chat. Future product work should improve discovery and resume without recreating separate storage-shaped tabs.
+The current right panel is centered on scoped conversation sessions. Files and directories are handled by the browser and editor; comparison sessions use the same scoped-directory access model as focus chat. Future product work should improve discovery and resume without recreating separate storage-shaped tabs.
 
 ## Filesystem Watch Refresh
 
@@ -224,13 +224,13 @@ DeskAssist already treats external changes as part of the live workspace instead
 The current runtime flows already support the core of DeskAssist's scoped-work model:
 
 - open a workspace-like root
-- branch that work into contexts
-- scope AI to one context or a comparison
+- branch that work into focuses
+- scope AI to one focus or a comparison
 - save assistant responses and work with files as durable artifacts
 - keep the workbench live as files change
 
 What is missing is less about mechanics and more about product coherence:
 
 - a unified artifact model beyond files and chat logs
-- a stronger cross-context continuity model than renderer-local recents
-- a first non-code context beyond quick capture inside an active workspace
+- a stronger cross-focus continuity model than renderer-local recents
+- a first non-code focus beyond quick capture inside an active workspace

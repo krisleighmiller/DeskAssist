@@ -1,16 +1,22 @@
 # Open Questions
 
-These are the live decisions from the current DeskAssist baseline.
+These are the live product and architecture decisions from the current DeskAssist baseline. Resolved terminology and historical milestone questions are intentionally excluded. If a question does not affect what should happen next, it does not belong here.
 
-Resolved terminology and historical milestone questions are intentionally excluded. If a question does not affect what should happen next, it does not belong here.
-
-## 1. How should scope be explained to users?
+## 1. How should current AI scope be explained in the UI?
 
 Why it matters:
 
 - scope is DeskAssist's strongest differentiator
 - the implementation is solid, but the explanation can still feel technical
 - unclear scope language undermines trust in AI behavior
+
+Current implementation:
+
+- scope is a flat list of `ScopedDirectory(path, label, writable)` entries
+- focus chat and comparison chat use the same resolved scope shape
+- the chat header shows scoped directories with RW/RO state and management actions
+- scoped directories are addressable as `_scope/<label>/...`
+- bare relative paths resolve inside the primary writable scoped directory when one exists
 
 Current default:
 
@@ -20,26 +26,32 @@ Current default:
 
 Decision needed:
 
-- what words should the app use for scoped directories, attachments, readable context, and writable context?
+- what words should the app use for scoped directories, related directories, readable scope, and writable scope?
 
 Force the decision before:
 
 - adding more scope controls
 - adding cross-session chat references
-- adding the first standalone non-code context
+- adding the first standalone non-code focus
+
+Impact areas:
+
+- [`ui-electron/renderer/src/components/ChatTab.tsx`](../../ui-electron/renderer/src/components/ChatTab.tsx)
+- [`ui-electron/renderer/src/components/FileTree.tsx`](../../ui-electron/renderer/src/components/FileTree.tsx)
+- [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
 
 ## 2. What is the smallest useful cross-session chat reference?
 
 Why it matters:
 
-- context and comparison chats are persisted, but isolated
+- focus and comparison chats are persisted, but isolated
 - users need to bring one discussion into another without copying text manually
 - doing this badly could become automatic memory or a generic artifact system too early
 
 Current default:
 
 - references should be explicit user actions
-- referenced discussions should be readable context, not merged history
+- referenced discussions should be readable reference material, not merged history
 - the UI should show provenance
 - the original discussion should remain unchanged
 
@@ -58,7 +70,14 @@ Why it matters:
 
 - home currently uses renderer `localStorage`
 - that is enough for a lightweight home view, but weak for a durable workspace product
-- richer resume needs a user-level index of recent contexts, files, chats, and comparisons
+- richer resume needs a user-level index of recent focuses, files, chats, and comparisons
+
+Current implementation:
+
+- home view exists
+- recent and pinned work records are stored in renderer `localStorage`
+- each recent entry references a casefile root plus the last active context id/name
+- quick capture opens or creates a file inside the active workspace
 
 Current default:
 
@@ -79,7 +98,7 @@ Force the decision before:
 
 Why it matters:
 
-- reopening a context is useful but not enough to feel like true resume
+- reopening a focus is useful but not enough to feel like true resume
 - restoring too much state can be brittle
 - restoring too little keeps home shallow
 
@@ -97,30 +116,51 @@ Force the decision before:
 - rewriting home
 - adding a durable recent-work index
 
-## 5. What is the first standalone non-code context?
+## 5. What is the first standalone non-code focus?
 
 Why it matters:
 
 - DeskAssist must prove it is broader than project/repo work
 - quick capture is useful but still tied to an active workspace
-- the first non-code context should validate the product without creating a platform
+- the first non-code focus should validate the product without creating a platform
 
 Current default:
 
-- choose one local, file-backed context type
-- likely candidates: journal, daily log, or scratch context
+- choose one local, file-backed focus type
+- likely candidates: journal, daily log, or scratch focus
 - reuse existing file/editor/scope mechanics where possible
 
 Decision needed:
 
-- which non-code context best validates the product with the least new machinery?
+- which non-code focus best validates the product with the least new machinery?
 
 Force the decision before:
 
 - adding capture outside an active workspace
 - building integration or inbox behavior
 
-## 6. When should extension boundaries be defined?
+## 6. Should focus chat and comparison chat converge further?
+
+Why it matters:
+
+- the backend now resolves both into the same scoped-directory shape
+- the renderer and bridge still have separate command paths and UI flows
+
+Current implementation:
+
+- `ScopeContext` carries a flat list of scoped directories
+- comparison metadata lives in `.casefile/comparisons.json`
+- both context and comparison chats persist through stable UUID-backed chat logs
+
+Decision needed:
+
+- keep separate UI/API flows because they are understandable, or introduce one broader scoped-session abstraction?
+
+Force the decision before:
+
+- deeper work on cross-focus navigation or session discovery
+
+## 7. When should extension boundaries be defined?
 
 Why it matters:
 
@@ -129,7 +169,7 @@ Why it matters:
 
 Current default:
 
-- defer extension boundary work until scope clarity, cross-session references, home/resume, and the first non-code context are stronger
+- defer extension boundary work until scope clarity, cross-session references, home/resume, and the first non-code focus are stronger
 - model providers are not product extensions
 
 Decision needed:
@@ -144,124 +184,10 @@ Force the decision before:
 
 Until changed:
 
-- `context` is the product and implementation term for scoped work units.
+- `focus` is the product-facing term for the active or resumable work unit.
+- `context` remains the implementation term for the current scoped work record.
 - scope stays flat, Python-resolved, and per-directory RW/RO.
 - cross-session chat reference should be explicit and provenance-preserving.
 - home/resume should graduate from renderer-local recents only when richer resume requires it.
-- the first non-code context should be local and file-backed.
-- integrations stay deferred until core workspace/context/scope loops are stronger.
-# Open Questions
-
-These are the product and architecture decisions most likely to change implementation direction. Resolved terminology and removed-surface questions have been dropped so this file only tracks live decisions.
-
-## 1. How should current AI scope be explained in the UI?
-
-Why it matters:
-
-- scope is the product differentiator
-- the implementation is strong, but the user-facing explanation still needs polish
-
-Current implementation:
-
-- scope is a flat list of `ScopedDirectory(path, label, writable)` entries
-- context and comparison chat use the same resolved scope shape
-- the chat header shows scoped directories with RW/RO state and management actions
-
-Remaining decision:
-
-- decide the clearest labels, empty states, and warnings for users who do not know the storage model
-
-Impact areas:
-
-- [`ui-electron/renderer/src/components/ChatTab.tsx`](../../ui-electron/renderer/src/components/ChatTab.tsx)
-- [`ui-electron/renderer/src/components/FileTree.tsx`](../../ui-electron/renderer/src/components/FileTree.tsx)
-- [`src/assistant_app/casefile/scope.py`](../../src/assistant_app/casefile/scope.py)
-
-## 2. How should home and resume state be persisted?
-
-Why it matters:
-
-- a home view needs recent contexts, pinned work, and resume targets
-- current recents are useful but renderer-local
-
-Current implementation:
-
-- home view exists
-- recent and pinned contexts are stored in renderer `localStorage`
-- each recent entry references a casefile root plus the last active context id/name
-- quick capture opens or creates a file inside the active workspace
-
-Remaining decision:
-
-- keep the localStorage implementation, or graduate to a durable user-level recent-context index
-
-When to decide:
-
-- before expanding home into richer resume or recent work discovery
-
-## 3. What is the minimum useful non-code context?
-
-Why it matters:
-
-- the product vision is broader than repo work
-- quick capture is not a standalone context
-- adding too much too early would distract from the core
-
-Provisional default:
-
-- validate with one lightweight local context: journal, daily log, or scratch
-- avoid external integrations for this step
-- reuse the same scope and file mechanics as project contexts
-
-When to decide:
-
-- after home/resume is strong enough to make the new context discoverable and resumable
-
-## 4. Should context chat and comparison chat converge further?
-
-Why it matters:
-
-- the backend now resolves both into the same scoped-directory shape
-- the renderer and bridge still have separate command paths and UI flows
-
-Current implementation:
-
-- `ScopeContext` carries a flat list of scoped directories
-- comparison metadata lives in `.casefile/comparisons.json`
-- both context and comparison chats persist through stable UUID-backed chat logs
-
-Remaining decision:
-
-- keep separate UI/API flows because they are understandable, or introduce one broader scoped-session abstraction
-
-When to decide:
-
-- before deeper work on cross-context navigation or session discovery
-
-## 5. Where should extension boundaries begin?
-
-Why it matters:
-
-- integrations could easily dominate the roadmap
-- without boundaries, every integration risks coupling itself to shell and scope logic
-
-Provisional default:
-
-- define contracts only after core shell, context, scope, and resume behavior are stronger
-- keep provider integrations separate from product extensions
-
-When to decide:
-
-- before the first serious external integration beyond current model providers
-
-## Summary Defaults
-
-Until the team chooses otherwise:
-
-- `context` is the only product and implementation term for scoped work units
-- browser file operations stay in Electron main
-- scope remains a flat labeled directory list with per-entry RW/RO permissions
-- sessions use stable UUIDs, not path-derived keys
-- home and recents use renderer `localStorage` for now
-- quick capture remains a file workflow inside an active workspace until Milestone 6 adds a standalone non-code context
-- extensions remain deferred until core boundaries are stronger
+- the first non-code focus should be local and file-backed.
+- integrations stay deferred until core workspace/focus/scope loops are stronger.

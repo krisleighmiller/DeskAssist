@@ -4,7 +4,7 @@ This document defines the most important DeskAssist terms and maps the current i
 
 The main problem this document solves is vocabulary drift.
 
-Today the codebase is organized around `casefile`, `context`, and `scope`. The README is organized around `workspace`, `context`, `artifact`, and `scoped AI`. Both are useful. The project needs a consistent way to talk about both without pretending they are already the same thing.
+Today the codebase is organized around `casefile`, `context`, and `scope`. The product language is organized around `workspace`, `focus`, `artifact`, and `scoped AI`. Both layers are useful. The project needs a consistent way to talk about both without pretending they are already the same thing.
 
 ## Vocabulary Principle
 
@@ -27,7 +27,7 @@ Current implementation reality:
 
 - the renderer workbench in [`ui-electron/renderer/src/App.tsx`](../../ui-electron/renderer/src/App.tsx)
 - a home surface in [`ui-electron/renderer/src/components/HomeView.tsx`](../../ui-electron/renderer/src/components/HomeView.tsx)
-- one open casefile plus its active context, open tabs, right-panel state, comparison sessions, recent-context state, and terminal sessions
+- one open casefile plus its active focus, open tabs, right-panel state, comparison sessions, recent-work state, and terminal sessions
 
 Recommendation:
 
@@ -57,38 +57,39 @@ Recommendation:
 
 Keep `casefile` as an implementation and power-user term. It is a good storage model and a good on-disk term. It should not be the main product identity of DeskAssist.
 
-## Context
+## Focus
 
 User-facing meaning:
 
-A context is the unit of work the user is currently in or can switch to. It is what the README means by moving between active contexts without losing the thread.
+A focus is the unit of work the user is currently in or can switch to. It is what the README means by moving between active work without losing the thread.
 
 Current implementation reality:
 
-There is not yet one single data structure called `context` that covers the full product meaning. The current system approximates it through a combination of:
+There is not yet one single data structure called `focus` that covers the full product meaning. The current system approximates it through a combination of:
 
 - the active casefile
 - the active context
 - resolved AI scope
 - open editor tabs
 - associated chat and comparison sessions
-- renderer-local recent context records
+- renderer-local recent work records
 
 Recommendation:
 
-Use `context` as the main product-facing umbrella term.
+Use `focus` as the main product-facing umbrella term for the active or resumable work unit.
 
 In V1, the practical rule should be:
 
-- a context is the current implementation of a scoped working context
-- a comparison session is a multi-context view
-- the current home screen lists recent casefiles with their last active context; a fuller context model is still a target, not a complete implementation
+- a focus is what users switch to, resume, and work inside
+- a context is the current implementation record for many focuses
+- a comparison session is a multi-focus view
+- the current home screen lists recent casefiles with their last active context; a fuller focus model is still a target, not a complete implementation
 
 ## Context
 
 Implementation meaning:
 
-A context is the current durable unit of scoped work inside a casefile.
+A context is the current durable implementation record for a scoped focus inside a casefile.
 
 Current definition:
 
@@ -103,19 +104,19 @@ What a context does well today:
 - travels with attachments that can be read-only or writable
 - anchors comparison and scoped chat
 
-What a context does poorly today as a user-facing term:
+Why `context` should not be the primary product term:
 
-- it sounds implementation-specific
+- it already has a strong meaning in AI systems
 - it does not naturally describe non-code or mixed-mode work
 - it is not obvious to a new user why they should create one
 
 Recommendation:
 
-Treat `context` as the current implementation of a scoped context.
+Treat `context` as the current implementation of a scoped focus.
 
 Short-term guidance:
 
-- acceptable in contributor docs and advanced UI copy
+- acceptable in contributor docs, code comments, and advanced UI copy where the implementation is visible
 - not ideal as the primary product noun for all users
 
 Longer-term guidance:
@@ -171,6 +172,12 @@ What scope currently includes:
 - casefile context files under `_context`
 - multi-context comparison entries under `_scope/<label>/...`
 
+Current path behavior:
+
+- scoped directories are addressable through `_scope/<label>/...`
+- bare relative paths resolve inside the primary writable scoped directory when one exists
+- sessions without a writable directory still expose readable scoped directories through their `_scope/<label>/...` paths
+
 Implementation audit note:
 
 The old hierarchical virtual-prefix model has been removed from the current Python scope resolver. Structural parents are not inherited into AI scope. If a doc still describes that model as current, it is stale.
@@ -189,7 +196,7 @@ This is one of the strongest pieces of DeskAssist's product language because it 
 
 User-facing meaning:
 
-A comparison is a multi-directory session where related work can be inspected and discussed together. It is not necessarily a diff — it may be synthesis, analysis, or open-ended discussion across any subset of the user's named contexts.
+A comparison is a multi-focus session where related work can be inspected and discussed together. It is not necessarily a diff — it may be synthesis, analysis, or open-ended discussion across any subset of the user's named focuses.
 
 Current implementation reality:
 
@@ -228,17 +235,17 @@ Attachments are no longer always read-only. New attachments default to writable 
 
 Recommendation:
 
-Keep `attachment` as an implementation term for a directory associated with a session. In product copy, prefer "related directory" or "additional context." The read-only assumption should not be baked into the definition.
+Keep `attachment` as an implementation term for a directory associated with a session. In product copy, prefer "related directory" or "additional material." The read-only assumption should not be baked into the definition.
 
 ## Recommended Language Rules
 
 When talking about the product:
 
 - say `workspace` for the overall environment
-- say `context` for the unit of resumed or active work
+- say `focus` for the unit of resumed or active work
 - say `scope` for what the AI can currently read
 - say `artifact` for the durable things the user is working with
-- say `comparison` for multi-context inspection and conversation
+- say `comparison` for multi-focus inspection and conversation
 
 When talking about the current implementation:
 
@@ -252,32 +259,32 @@ Use this mental mapping when writing docs, UI copy, or code comments:
 
 - workspace: the whole DeskAssist environment for a user
 - casefile: the current storage container that backs one workspace area
-- context: the user-facing work unit
-- context: the current implementation of a scoped context
-- scope: the AI-visible slice of material for a context or comparison
-- artifact: any durable thing inside or attached to a context
-- comparison: a multi-context session with per-directory AI read/write access
+- focus: the user-facing work unit
+- context: the current implementation of a scoped focus
+- scope: the AI-visible slice of material for a focus or comparison
+- artifact: any durable thing inside or attached to a focus
+- comparison: a multi-focus session with per-directory AI read/write access
 
 ## Current Implementation Versus Target Framing
 
 Today:
 
 - the code understands contexts and casefiles very well
-- the product framing understands contexts and artifacts more clearly than the UI does
+- the product framing understands focuses and artifacts more clearly than the UI does
 
 Target:
 
 - keep the current storage and scope machinery where it is strong
-- move the visible product language toward workspace, context, artifact, and scope
+- move the visible product language toward workspace, focus, artifact, and scope
 - allow `context` and `casefile` to remain important implementation concepts without making them the only way users can understand the product
 
 ## Domain Model Summary
 
 DeskAssist should be understood as:
 
-- a workspace that holds many contexts
-- each context contains or references artifacts
+- a workspace that holds many focuses
+- each focus contains or references artifacts
 - AI conversations operate over an explicit scope
-- the current implementation represents many of those contexts as contexts inside a casefile
+- the current implementation represents many focuses as contexts inside a casefile
 
 That is the cleanest bridge between the current code and the longer-term second-brain workspace vision.
